@@ -1,0 +1,7 @@
+opencv-python
+paddleocr
+pydantic>=2.5.0
+python-dotenv
+requests
+tqdm
+google-generativeai
