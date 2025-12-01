@@ -35,7 +35,7 @@ def main():
     print("\n[1/2] Processing JSON Files...")
     json_parser = JsonParser(output_dir, output_dir)
     
-    json_files = glob.glob(os.path.join(output_dir, "*.json"))
+    json_files = glob.glob(os.path.join(input_dir, "*.json"))
     if not json_files:
         print("⚠ No JSON files found.")
     
