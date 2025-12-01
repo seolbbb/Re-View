@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Lecture-Note-AI/다중 시점 샘플링.md",
+                "file": "장면 변환 프레임 캡처.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "다중 시점 샘플링"
+              "title": "장면 변환 프레임 캡처"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "Lecture-Note-AI/다중 시점 샘플링.md",
+                "file": "장면 변환 프레임 캡처.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "다중 시점 샘플링 의 백링크"
+              "title": "장면 변환 프레임 캡처 의 백링크"
             }
           },
           {
@@ -113,12 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "Lecture-Note-AI/다중 시점 샘플링.md",
+                "file": "장면 변환 프레임 캡처.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "다중 시점 샘플링 의 나가는 링크"
+              "title": "장면 변환 프레임 캡처 의 나가는 링크"
             }
           },
           {
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "Lecture-Note-AI/다중 시점 샘플링.md",
+                "file": "장면 변환 프레임 캡처.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "다중 시점 샘플링 의 개요"
+              "title": "장면 변환 프레임 캡처 의 개요"
             }
           }
         ]
@@ -186,15 +186,30 @@
   "active": "ff5c0356d5787ff7",
   "lastOpenFiles": [
     "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_364.20.jpg",
+    "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_362.33.jpg",
     "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_361.33.jpg",
-    "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_360.80.jpg",
+    "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_44.87.jpg",
     "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_1.67.jpg",
     "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_0.53.jpg",
+    "Lecture-Note-AI/docs/WORKFLOW.md",
+    "Lecture-Note-AI/docs",
     "장면 변환 프레임 캡처.md",
     "Lecture-Note-AI/다중 시점 샘플링.md",
-    "COLLABORATION_REVIEW.md",
+    "Lecture-Note-AI/tests/test_video_processor_simple.py",
+    "Lecture-Note-AI/tests",
+    "Lecture-Note-AI/src/process_content.py",
+    "Lecture-Note-AI/src/data/output/sceentime-mvp-clovaSpeech-json.mp4_2025-12-01-115754464.json",
+    "Lecture-Note-AI/src/data/json_parser.py",
+    "Lecture-Note-AI/src/data/input/screentime-mvp-video.mp4",
+    "Lecture-Note-AI/src/data/input",
+    "Lecture-Note-AI/WORKFLOW_EXPLANATION.md",
+    "Lecture-Note-AI/SUMMARY_REPORT.md",
+    "Lecture-Note-AI/README.md",
     "SUMMARY.md",
     "README.md",
-    "OPTIMIZED_PROMPT.md"
+    "OPTIMIZED_PROMPT.md",
+    "Lecture-Note-AI/src/utils/__init__.py",
+    "Lecture-Note-AI/src/data/output/screentime-mvp-video_frames/frame_360.80.jpg",
+    "COLLABORATION_REVIEW.md"
   ]
 }

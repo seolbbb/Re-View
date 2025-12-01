@@ -95,7 +95,7 @@ class VideoProcessor:
                 
                 # 다중 시점 샘플링: 0초~6초 구간에서 30개 프레임 랜덤 수집
                 # → 마우스가 다양한 위치에 있는 순간들을 확보하여 Median 계산
-                clean_frame = self._collect_and_reconstruct_multipoint(
+                clean_frame = self._apply_temporal_median_multipoint(
                     cap, 0.0, min(6.0, duration), fps, num_samples=30
                 )
                 if clean_frame is not None:
@@ -179,7 +179,7 @@ class VideoProcessor:
                     # 슬라이드 전체 구간에서 무작위로 50개 프레임 수집
                     # 장점: 마우스가 다양한 위치에 있는 순간들을 확보
                     #      → Median 계산 시 마우스가 없는 배경만 추출
-                    clean_frame = self._collect_and_reconstruct_multipoint(
+                    clean_frame = self._apply_temporal_median_multipoint(
                         cap, slide_start, slide_end, fps, num_samples=50
                     )
                 else:
@@ -187,7 +187,7 @@ class VideoProcessor:
                     # 전환 전 2초 + 전환 후 4초 = 총 6초 수집
                     # 짧은 슬라이드는 전체 구간이 부족하므로 전후 구간 활용
                     current_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
-                    clean_frame = self._collect_and_reconstruct(
+                    clean_frame = self._apply_temporal_median_bidirectional(
                         cap, current_pos, before_duration=2.0, after_duration=4.0, fps=fps
                     )
                 
@@ -219,12 +219,15 @@ class VideoProcessor:
         
         # [Logic 5] 중복 제거 (Post-processing)
         print(f"🔍 Removing duplicates (Initial: {len(keyframes)} frames)...")
-        unique_keyframes = self._remove_duplicates(keyframes)
+        unique_keyframes = self._remove_duplicates_by_dhash(keyframes)
         
         print(f"✅ Extraction complete. {len(unique_keyframes)} unique frames captured.")
         return unique_keyframes
 
-    def _collect_and_reconstruct(self, cap, start_pos, before_duration=2.0, after_duration=4.0, fps=30.0):
+    # ---------------------------------------------------------
+    # [Helper Function] 양방향 Temporal Median
+    # ---------------------------------------------------------
+    def _apply_temporal_median_bidirectional(self, cap, start_pos, before_duration=2.0, after_duration=4.0, fps=30.0):
         """
         양방향 Temporal Median: 장면 전환 전후의 프레임을 수집하여 배경 복원
         
@@ -281,7 +284,10 @@ class VideoProcessor:
         
         return median_frame
 
-    def _collect_and_reconstruct_multipoint(self, cap, start_time, end_time, fps, num_samples=50):
+    # ---------------------------------------------------------
+    # [Helper Function] 다중 시점 샘플링 Temporal Median
+    # ---------------------------------------------------------
+    def _apply_temporal_median_multipoint(self, cap, start_time, end_time, fps, num_samples=50):
         """
         [다중 시점 샘플링] 슬라이드 전체 구간에서 무작위로 프레임을 수집하여 배경 복원
         
@@ -359,7 +365,10 @@ class VideoProcessor:
         
         return median_frame
 
-    def _remove_duplicates(self, keyframes, hash_threshold=5):
+    # ---------------------------------------------------------
+    # [Helper Function] 중복 프레임 제거 (dHash)
+    # ---------------------------------------------------------
+    def _remove_duplicates_by_dhash(self, keyframes, hash_threshold=5):
         """
         dHash(Difference Hash)를 사용하여 중복 프레임 제거
         """
@@ -380,7 +389,7 @@ class VideoProcessor:
             if img is None:
                 continue
                 
-            curr_hash = self._compute_dhash(img)
+            curr_hash = self._calculate_dhash(img)
             
             is_duplicate = False
             if last_hash is not None:
@@ -402,7 +411,10 @@ class VideoProcessor:
         print(f"🗑 Removed {removed_count} duplicate frames.")
         return unique_frames
 
-    def _compute_dhash(self, image):
+    # ---------------------------------------------------------
+    # [Helper Function] dHash 계산
+    # ---------------------------------------------------------
+    def _calculate_dhash(self, image):
         """이미지의 dHash (Difference Hash) 계산"""
         resized = cv2.resize(image, (9, 8))
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
@@ -413,6 +425,9 @@ class VideoProcessor:
                     hash_val |= 1 << (row * 8 + col)
         return hash_val
 
+    # ---------------------------------------------------------
+    # [Helper Function] 프레임 저장
+    # ---------------------------------------------------------
     def _save_frame(self, frame, timestamp, output_dir, keyframes_list):
         """프레임 저장 헬퍼 함수"""
         filename = f"frame_{timestamp:.2f}.jpg"
