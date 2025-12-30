@@ -76,9 +76,10 @@ def main():
         keyframes_metadata = video_processor.extract_keyframes(
             video_path,
             output_dir=capture_output_dir,
-            threshold=8,
+            threshold=11,
             min_interval=0.5,
-            verbose=True
+            verbose=True,
+            video_name=video_name
         )
 
         # [팀 공유용] 추출 결과를 JSON 메타데이터 파일로 저장

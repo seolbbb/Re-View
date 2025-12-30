@@ -16,7 +16,7 @@ class VideoProcessor:
         # 초기화 시 특별한 상태 저장이 필요하지 않음
         pass
 
-    def extract_keyframes(self, video_path, output_dir='captured_frames', threshold=30, min_interval=2.0, verbose=False):
+    def extract_keyframes(self, video_path, output_dir='captured_frames', threshold=30, min_interval=2.0, verbose=False, video_name=None):
         """
         [핵심 기능] 비디오를 분석하여 장면 전환 시점의 깨끗한 키프레임을 추출합니다.
         
@@ -55,6 +55,9 @@ class VideoProcessor:
         prev_frame_gray = None  # 이전 프레임 저장용 (비교 목적)
         last_capture_time = -min_interval # 중복 캡처 방지용 타임스탬프
         
+        if video_name is None:
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+        
         slide_idx = 1           # 슬라이드 순번 (1부터 시작)
         debug_idx = 1           # 디버그 이미지 순번
         last_scene_change = 0.0 # 마지막 장면 전환 시점
@@ -82,7 +85,7 @@ class VideoProcessor:
                 save_frame = clean_frame if clean_frame is not None else frame
                 self._save_frame_with_meta(
                     save_frame, current_time, frame_idx, output_dir, 
-                    keyframes_metadata, slide_idx, diff_score=0.0, prefix="slide"
+                    keyframes_metadata, slide_idx, diff_score=0.0, prefix=video_name
                 )
                 
                 slide_idx += 1
@@ -118,7 +121,7 @@ class VideoProcessor:
                 # 디버그 이미지 저장 (감지된 원본 상태 기록)
                 debug_dir = os.path.join(output_dir, "debug_scene_changes")
                 os.makedirs(debug_dir, exist_ok=True)
-                self._save_debug_frame(frame, current_time, debug_idx, mean_diff, debug_dir)
+                self._save_debug_frame(frame, current_time, debug_idx, mean_diff, debug_dir, prefix=video_name)
                 debug_idx += 1
                 
                 # 슬라이드 구간 정보 계산
@@ -143,7 +146,7 @@ class VideoProcessor:
                 save_frame = clean_frame if clean_frame is not None else frame
                 self._save_frame_with_meta(
                     save_frame, current_time, frame_idx, output_dir, 
-                    keyframes_metadata, slide_idx, diff_score=mean_diff, prefix="slide"
+                    keyframes_metadata, slide_idx, diff_score=mean_diff, prefix=video_name
                 )
                 
                 # 다음 감지를 위한 상태 업데이트
@@ -163,28 +166,38 @@ class VideoProcessor:
         print(f"✅ 처리 완료: {len(unique_metadata)}개의 고유 슬라이드 추출됨")
         return unique_metadata
 
-    def _save_frame_with_meta(self, frame, seconds, frame_idx, output_dir, meta_list, slide_idx, diff_score, prefix="slide"):
+    def _format_time(self, seconds):
+        """초 단위 시간을 00h00m00s000ms 형식의 문자열로 변환합니다."""
+        ms = int((seconds % 1) * 1000)
+        total_seconds = int(seconds)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+        return f"{hours:02d}h{minutes:02d}m{secs:02d}s{ms:03d}ms"
+
+    def _save_frame_with_meta(self, frame, seconds, frame_idx, output_dir, meta_list, slide_idx, diff_score, prefix):
         """
         프레임을 파일로 저장하고 확장된 메타데이터 형식을 리스트에 기록합니다.
-        파일명 형식: slide_001_123456ms.jpg
+        파일명 형식: {영상파일명}_{캡처인덱스}_{h_m_s_ms}_{diff:.2f}.jpg
         """
-        ms = int(seconds * 1000)
-        file_name = f"{prefix}_{slide_idx:03d}_{ms}ms.jpg"
+        time_str = self._format_time(seconds)
+        file_name = f"{prefix}_{slide_idx:03d}_{time_str}_{diff_score:.2f}.jpg"
         file_path = os.path.join(output_dir, file_name)
         
         cv2.imwrite(file_path, frame)
         
         meta_list.append({
-            "timestamp_ms": ms,
+            "timestamp_ms": int(seconds * 1000),
+            "timestamp_human": time_str,
             "frame_index": frame_idx,
             "file_name": file_name,
             "diff_score": round(float(diff_score), 2)
         })
 
-    def _save_debug_frame(self, frame, seconds, idx, diff, debug_dir):
+    def _save_debug_frame(self, frame, seconds, idx, diff, debug_dir, prefix):
         """디버그용 원본 프레임 저장 (파일명에 점수 포함)"""
-        ms = int(seconds * 1000)
-        file_name = f"debug_{idx:03d}_{ms}ms_diff{diff:.1f}.jpg"
+        time_str = self._format_time(seconds)
+        file_name = f"debug_{prefix}_{idx:03d}_{time_str}_diff{diff:.2f}.jpg"
         cv2.imwrite(os.path.join(debug_dir, file_name), frame)
 
     def _apply_temporal_median_multipoint(self, cap, start_time, end_time, fps, num_samples=50):

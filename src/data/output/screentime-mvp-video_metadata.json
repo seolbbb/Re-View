@@ -1,56 +1,65 @@
 [
     {
         "timestamp_ms": 0,
+        "timestamp_human": "00h00m00s000ms",
         "frame_index": 0,
-        "file_name": "slide_001_0ms.jpg",
+        "file_name": "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
         "diff_score": 0.0
     },
     {
         "timestamp_ms": 533,
+        "timestamp_human": "00h00m00s533ms",
         "frame_index": 16,
-        "file_name": "slide_002_533ms.jpg",
+        "file_name": "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
         "diff_score": 12.25
     },
     {
         "timestamp_ms": 1666,
+        "timestamp_human": "00h00m01s666ms",
         "frame_index": 50,
-        "file_name": "slide_003_1666ms.jpg",
+        "file_name": "screentime-mvp-video_003_00h00m01s666ms_11.04.jpg",
         "diff_score": 11.04
     },
     {
-        "timestamp_ms": 44866,
-        "frame_index": 1346,
-        "file_name": "slide_004_44866ms.jpg",
-        "diff_score": 9.79
+        "timestamp_ms": 47199,
+        "timestamp_human": "00h00m47s199ms",
+        "frame_index": 1416,
+        "file_name": "screentime-mvp-video_004_00h00m47s199ms_11.09.jpg",
+        "diff_score": 11.09
     },
     {
-        "timestamp_ms": 337066,
-        "frame_index": 10112,
-        "file_name": "slide_005_337066ms.jpg",
-        "diff_score": 11.08
+        "timestamp_ms": 337266,
+        "timestamp_human": "00h05m37s266ms",
+        "frame_index": 10118,
+        "file_name": "screentime-mvp-video_005_00h05m37s266ms_11.01.jpg",
+        "diff_score": 11.01
     },
     {
-        "timestamp_ms": 360799,
-        "frame_index": 10824,
-        "file_name": "slide_006_360799ms.jpg",
-        "diff_score": 10.74
+        "timestamp_ms": 360866,
+        "timestamp_human": "00h06m00s866ms",
+        "frame_index": 10826,
+        "file_name": "screentime-mvp-video_006_00h06m00s866ms_12.80.jpg",
+        "diff_score": 12.8
     },
     {
-        "timestamp_ms": 361333,
-        "frame_index": 10840,
-        "file_name": "slide_007_361333ms.jpg",
-        "diff_score": 9.69
+        "timestamp_ms": 361399,
+        "timestamp_human": "00h06m01s399ms",
+        "frame_index": 10842,
+        "file_name": "screentime-mvp-video_007_00h06m01s399ms_11.81.jpg",
+        "diff_score": 11.81
     },
     {
         "timestamp_ms": 362333,
+        "timestamp_human": "00h06m02s333ms",
         "frame_index": 10870,
-        "file_name": "slide_008_362333ms.jpg",
+        "file_name": "screentime-mvp-video_008_00h06m02s333ms_11.82.jpg",
         "diff_score": 11.82
     },
     {
-        "timestamp_ms": 364199,
-        "frame_index": 10926,
-        "file_name": "slide_009_364199ms.jpg",
-        "diff_score": 10.79
+        "timestamp_ms": 364266,
+        "timestamp_human": "00h06m04s266ms",
+        "frame_index": 10928,
+        "file_name": "screentime-mvp-video_009_00h06m04s266ms_11.74.jpg",
+        "diff_score": 11.74
     }
 ]
