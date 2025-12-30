@@ -39,3 +39,7 @@ SUMMARY.md
 # IDE
 .vscode/
 .idea/
+.obsidian/
+
+# Docs
+"장면 변환 프레임 캡처.md"
