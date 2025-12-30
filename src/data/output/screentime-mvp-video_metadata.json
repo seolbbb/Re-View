@@ -1,0 +1,56 @@
+[
+    {
+        "timestamp_ms": 0,
+        "frame_index": 0,
+        "file_name": "slide_001_0ms.jpg",
+        "diff_score": 0.0
+    },
+    {
+        "timestamp_ms": 533,
+        "frame_index": 16,
+        "file_name": "slide_002_533ms.jpg",
+        "diff_score": 12.25
+    },
+    {
+        "timestamp_ms": 1666,
+        "frame_index": 50,
+        "file_name": "slide_003_1666ms.jpg",
+        "diff_score": 11.04
+    },
+    {
+        "timestamp_ms": 44866,
+        "frame_index": 1346,
+        "file_name": "slide_004_44866ms.jpg",
+        "diff_score": 9.79
+    },
+    {
+        "timestamp_ms": 337066,
+        "frame_index": 10112,
+        "file_name": "slide_005_337066ms.jpg",
+        "diff_score": 11.08
+    },
+    {
+        "timestamp_ms": 360799,
+        "frame_index": 10824,
+        "file_name": "slide_006_360799ms.jpg",
+        "diff_score": 10.74
+    },
+    {
+        "timestamp_ms": 361333,
+        "frame_index": 10840,
+        "file_name": "slide_007_361333ms.jpg",
+        "diff_score": 9.69
+    },
+    {
+        "timestamp_ms": 362333,
+        "frame_index": 10870,
+        "file_name": "slide_008_362333ms.jpg",
+        "diff_score": 11.82
+    },
+    {
+        "timestamp_ms": 364199,
+        "frame_index": 10926,
+        "file_name": "slide_009_364199ms.jpg",
+        "diff_score": 10.79
+    }
+]
