@@ -1,0 +1,219 @@
+### Segment 1 (00:00–00:30)
+- 요약
+  - (1-1) 본 강의는 미시경제학의 핵심 개념인 수요, 공급, 그리고 탄력성을 5분 동안 빠르게 정리할 것입니다.
+    - evidence: transcript=[t1], visual=[v1]
+    - confidence: high
+  - (1-2) 탄력성은 가격 변화에 대한 수요나 공급의 민감도를 나타내는 개념으로, 조세 부담 및 후생 분석과 연관됩니다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (1-3) 강의는 수요·공급 곡선, 가격 탄력성, 소비자·생산자 잉여, 조세의 영향, 그리고 탄력성을 통한 조세귀착 설명을 다룰 예정입니다.
+    - evidence: transcript=[t2], visual=[v2]
+    - confidence: high
+  - (1-4) 핵심 메시지는 시장의 민감도를 '기울기'가 아닌 '% 변화(탄력성)'로 비교해야 한다는 것입니다.
+    - evidence: transcript=[], visual=[v3]
+    - confidence: high
+  - (1-5) 강의에서 다룰 주요 키워드는 균형, 대체재/필수재, 소비자·생산자 잉여, 조세 쐐기, 그리고 사중손실입니다.
+    - evidence: transcript=[t2], visual=[v4]
+    - confidence: high
+- 정의
+  - 탄력성: 가격이 변할 때 수요나 공급이 얼마나 민감하게 반응하는지 나타내는 개념
+    - evidence: transcript=[t1], visual=[]
+
+### Segment 2 (00:30–01:00)
+- 요약
+  - (2-1) 강의는 수요·공급 곡선과 균형, 가격 탄력성, 소비자·생산자 잉여, 조세의 시장 영향, 그리고 조세귀착을 탄력성으로 설명하는 다섯 가지 주제로 진행됩니다.
+    - evidence: transcript=[t1], visual=[v1,v2,v3,v4,v5,v6]
+    - confidence: high
+  - (2-2) 그래프를 설명할 때 핵심은 '기울기'가 아닌 '탄력성'이며, 이는 단위가 다른 경우에도 비교를 가능하게 합니다.
+    - evidence: transcript=[t2,t3], visual=[]
+    - confidence: high
+  - (2-3) 표준 수요·공급 그래프는 수요 곡선이 우하향하고 공급 곡선이 우상향하며, 두 곡선의 교차점이 균형을 이룹니다.
+    - evidence: transcript=[t3], visual=[]
+    - confidence: high
+  - (2-4) 가격 변화에 따른 수요량 감소를 파악하고 조세 부담이 전가되는 정도를 설명하는 데 탄력성이 중요한 역할을 합니다.
+    - evidence: transcript=[t3], visual=[v6]
+    - confidence: high
+- 정의
+  - 가격 탄력성: 수요량 변화율을 가격 변화율로 나눈 값(ΔQ% / ΔP%)으로, 가격 변화에 대한 민감도를 나타냅니다.
+    - evidence: transcript=[t1], visual=[v3]
+  - 조세귀착: 조세 부담이 누가 더 지는지, 즉 경제 주체들 사이에 조세 부담이 어떻게 분배되는지를 의미합니다.
+    - evidence: transcript=[t1], visual=[v6]
+  - 세금 쐐기: 조세 도입 시 소비자가격(Pc)과 생산자가격(Pp) 사이에 발생하는 차이를 나타내는 개념입니다.
+    - evidence: transcript=[t1], visual=[v5]
+
+### Segment 3 (01:00–01:15)
+- 요약
+  - (3-1) 수요 곡선은 우하향하고 공급 곡선은 우상향하며, 이들의 교차점에서 시장 균형이 결정됩니다.
+    - evidence: transcript=[t1], visual=[v1,v2,v3]
+    - confidence: high
+  - (3-2) 탄력성은 가격 변화에 대한 수량 반응을 측정하여 단위가 달라도 비교 가능하게 하며, 조세 부담 전가 설명에 활용됩니다.
+    - evidence: transcript=[t1], visual=[v5]
+    - confidence: high
+  - (3-3) 수요의 가격 탄력성은 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내며, 관례적으로 절댓값을 사용합니다.
+    - evidence: transcript=[t2], visual=[]
+    - confidence: high
+  - (3-4) 탄력성이 크다는 것은 가격 변화에 수요량이 크게 반응하는 민감한 시장임을 의미합니다.
+    - evidence: transcript=[t2], visual=[]
+    - confidence: high
+- 정의
+  - 수요의 가격 탄력성: 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내는 지표로, 보통 절댓값을 사용합니다.
+    - evidence: transcript=[t2], visual=[]
+
+### Segment 4 (01:15–01:30)
+- 요약
+  - (4-1) 수요의 가격 탄력성은 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내며, 보통 음수지만 관례적으로 절댓값을 사용한다.
+    - evidence: transcript=[t1], visual=[v2,v3]
+    - confidence: high
+  - (4-2) 탄력성이 크면 가격 변화에 수요량이 민감하게 반응하는 탄력적인 시장이고, 작으면 둔감한 비탄력적인 시장으로 해석된다.
+    - evidence: transcript=[t1], visual=[v3]
+    - confidence: high
+  - (4-3) 대체재가 많거나 장기적인 관점에서는 수요가 탄력적이며, 필수재이거나 단기적인 관점에서는 비탄력적일 가능성이 크다.
+    - evidence: transcript=[t2], visual=[v4]
+    - confidence: high
+  - (4-4) 가격 탄력성은 그래프 기울기와 동일한 개념이 아니며, 단위 의존성 때문에 백분율 변화로 측정하는 것이 유리하다.
+    - evidence: transcript=[t1], visual=[v5]
+    - confidence: high
+- 정의
+  - 수요의 가격 탄력성: 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내는 지표로, (수요량의 %변화)를 (가격의 %변화)로 나눈 값이다.
+    - evidence: transcript=[t1], visual=[v2]
+
+### Segment 5 (01:30–02:00)
+- 요약
+  - (5-1) 상품의 탄력성은 대체재의 존재 여부, 필수재 특성, 그리고 시간에 따라 달라지며, 대체재가 많거나 장기일수록 탄력성이 커집니다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (5-2) 소비자 잉여는 소비자가 지불할 의사가 있는 가격과 실제 지불 가격의 차이로 발생하는 이득이며, 그래프에서는 균형가격 위쪽 삼각형 면적으로 표현됩니다.
+    - evidence: transcript=[t2], visual=[v2]
+    - confidence: high
+  - (5-3) 생산자 잉여는 생산자가 최소한으로 수용하려는 가격과 실제 수취 가격의 차이로 발생하는 이득이며, 그래프에서는 균형가격 아래쪽 삼각형 면적으로 표현됩니다.
+    - evidence: transcript=[t2], visual=[v3]
+    - confidence: high
+  - (5-4) 소비자 잉여와 생산자 잉여의 합은 총후생의 기본 지표이며, 조세나 규제가 도입되면 이 잉여가 감소하고 효율성 손실이 발생합니다.
+    - evidence: transcript=[t2,t3], visual=[v4,v5]
+    - confidence: high
+- 정의
+  - 탄력성: 가격 변화에 대한 수요량 또는 공급량의 반응 정도를 나타내는 개념으로, 대체재 유무, 필수재 여부, 시간에 따라 달라집니다.
+    - evidence: transcript=[t1], visual=[]
+  - 소비자 잉여 (CS): 소비자가 어떤 상품에 대해 지불할 용의가 있는 최대 금액과 실제로 지불한 금액의 차이로 얻는 이득입니다.
+    - evidence: transcript=[t2], visual=[v2]
+  - 생산자 잉여 (PS): 생산자가 어떤 상품을 판매하여 실제로 받은 금액과 생산자가 최소한으로 받고자 했던 금액의 차이로 얻는 이득입니다.
+    - evidence: transcript=[t2], visual=[v3]
+  - 세금 쐐기 (Tax Wedge): 조세가 부과될 때 수요자와 공급자가 지불하고 받는 가격 사이에 발생하는 차이를 의미하며, 탄력성이 조세 부담과 사중손실을 결정하는 데 중요합니다.
+    - evidence: transcript=[t3], visual=[v5]
+
+### Segment 6 (02:00–02:56)
+- 요약
+  - (6-1) 조세 도입 시 소비자가 지불하는 가격과 생산자가 받는 가격이 분리되며, 그 차이가 세금 쐐기(tax wedge)를 형성합니다.
+    - evidence: transcript=[t1,t2], visual=[v1,v2]
+    - confidence: high
+  - (6-2) 세금의 경제적 부담은 법적 납세의무자가 아닌 시장 참여자의 탄력성에 의해 결정되며, 비탄력적인 쪽이 더 많은 부담을 집니다.
+    - evidence: transcript=[t1,t2], visual=[v7]
+    - confidence: high
+  - (6-3) 조세는 거래량 감소로 이어져 누구에게도 가지 않는 후생 손실인 사중손실(deadweight loss)을 발생시키며, 이 손실의 크기는 탄력성에 비례합니다.
+    - evidence: transcript=[t1,t2], visual=[v6,v7]
+    - confidence: high
+  - (6-4) 효율성 손실을 줄이기 위한 조세 설계 원칙은 비탄력적인 시장에 과세하는 것이며, 탄력적인 시장에 과도한 세율을 적용하면 효율성 비용이 커집니다.
+    - evidence: transcript=[t2], visual=[]
+    - confidence: high
+  - (6-5) 조세 분석에서 탄력성을 정확히 추정하려면 가격과 수량의 동시 결정 문제로 인해 단순 기울기 대신 로그-로그 추정이나 자연실험 같은 인과적 접근이 필요합니다.
+    - evidence: transcript=[t2], visual=[]
+    - confidence: high
+- 정의
+  - 세금 쐐기 (tax wedge): 조세 도입 시 소비자가 지불하는 가격(Pc)과 생산자가 실제로 받는 가격(Pp)이 분리되며, 그 차이가 세금 t가 되는 현상 또는 그 차이 자체를 의미합니다.
+    - evidence: transcript=[t1,t2], visual=[v1,v2]
+  - 사중손실 (deadweight loss): 세금 도입으로 인한 거래량 감소로 인해 발생하는, 정부 세수로도 가지 않고 누구에게도 돌아가지 않는 후생의 손실을 의미하며, 그래프에서는 삼각형 면적으로 나타납니다.
+    - evidence: transcript=[t2], visual=[v6]
+  - 경제적 부담 (economic incidence): 세금의 법적 납세의무와는 별개로, 시장에서 가격 변화를 통해 소비자와 생산자가 실제로 떠안게 되는 세금의 몫을 의미하며, 탄력성에 의해 결정됩니다.
+    - evidence: transcript=[t2], visual=[v7]
+
+### Segment 7 (02:56–04:00)
+- 요약
+  - (7-1) 조세 부담은 법적 납세의무자가 아닌 탄력성에 의해 결정되며, 사중손실은 거래량 감소로 발생하고 탄력적일수록 커질 수 있다.
+    - evidence: transcript=[t2], visual=[v3,v6,v7]
+    - confidence: high
+  - (7-2) 정책 평가 시에는 조세 부담의 분배 효과와 효율성 비용을 함께 고려해야 하며, 왜곡을 줄이려면 비탄력적인 시장에 세금을 매기는 것이 일반적이다.
+    - evidence: transcript=[t2,t3], visual=[]
+    - confidence: high
+  - (7-3) 조세 정책은 형평성 및 다른 목표와 충돌할 수 있으므로 왜곡 최소화만을 위한 단일 원칙만으로는 충분하지 않다.
+    - evidence: transcript=[t3], visual=[]
+    - confidence: high
+  - (7-4) 조세귀착의 핵심은 비탄력적인 쪽이 더 많은 부담을 지고 탄력적일수록 사중손실이 커진다는 것이며, 이는 그래프와 함께 이해해야 한다.
+    - evidence: transcript=[t4], visual=[v1,v2,v3,v4,v5,v6,v7]
+    - confidence: high
+- 정의
+  - 사중손실: 거래량 감소로 인해 발생하는 삼각형 영역으로, 누구에게도 가지 않는 비효율성 비용이다.
+    - evidence: transcript=[t2], visual=[v6]
+  - 조세귀착: 조세 부담이 법적 납세의무자가 아닌 시장의 탄력성에 따라 최종적으로 누구에게 전가되는지를 의미한다.
+    - evidence: transcript=[t2,t4], visual=[v7]
+
+### Segment 8 (04:00–04:15)
+- 요약
+  - (8-1) 조세귀착의 핵심 원리는 비탄력적인 주체가 세금 부담을 더 많이 지고, 탄력적일수록 사중손실이 커진다는 것이다.
+    - evidence: transcript=[t1], visual=[v1,v3,v7]
+    - confidence: high
+  - (8-2) 법적 납세의무자와 실제로 경제적 부담을 지는 주체는 다를 수 있으며, 탄력성이 세금 부담의 귀착을 결정한다.
+    - evidence: transcript=[], visual=[v1,v2]
+    - confidence: high
+  - (8-3) 수요가 비탄력적이면 소비자 부담이, 공급이 비탄력적이면 생산자 부담이 상대적으로 커진다.
+    - evidence: transcript=[], visual=[v5,v6]
+    - confidence: high
+  - (8-4) 대체재가 많아 수요가 탄력적인 상품에 높은 세금을 부과하면 거래량이 크게 줄어 세수 증가가 제한되고 사중손실이 커질 수 있다.
+    - evidence: transcript=[t2], visual=[v8,v9,v12,v13]
+    - confidence: high
+  - (8-5) 매우 비탄력적인 시장에서는 세금으로 인한 가격 조정에도 거래량 감소가 적어 사중손실이 상대적으로 작게 나타난다.
+    - evidence: transcript=[t2], visual=[]
+    - confidence: high
+- 정의
+  - 조세귀착(incidence): 법적 납세의무와 경제적 부담이 다를 수 있으며, 탄력성이 세금 부담을 결정하는 원리.
+    - evidence: transcript=[t1], visual=[v1,v2,v3]
+  - 사중손실(DWL): 시장의 탄력성이 높을수록 세금 부과 시 거래량 변화가 커져 발생하는 후생 손실.
+    - evidence: transcript=[t1,t2], visual=[v7,v12]
+
+### Segment 9 (04:15–04:45)
+- 요약
+  - (9-1) 탄력적인 상품에 높은 세금을 부과하면 거래량 감소로 세수 증가가 기대에 못 미치고 후생 손실이 커질 수 있습니다.
+    - evidence: transcript=[t1], visual=[v4]
+    - confidence: high
+  - (9-2) 비탄력적인 시장에서는 세금 부과 시 거래량 감소가 적어 사중손실이 상대적으로 작게 나타납니다.
+    - evidence: transcript=[t1], visual=[v4]
+    - confidence: high
+  - (9-3) 탄력성은 %변화 기준으로 비교가 가능하며, 조세귀착은 탄력성의 상대적 크기에 따라 결정됩니다.
+    - evidence: transcript=[t2], visual=[]
+    - confidence: high
+  - (9-4) 사중손실(DWL)은 거래량 감소로 발생하며, 시장의 탄력성이 클수록 그 손실이 더 커질 수 있습니다.
+    - evidence: transcript=[t1,t2], visual=[v3,v4]
+    - confidence: high
+  - (9-5) 정책을 평가할 때는 조세의 분배(귀착)와 효율(사중손실)을 함께 고려해야 합니다.
+    - evidence: transcript=[], visual=[v5]
+    - confidence: high
+- 정의
+  - 세금 쐐기: 소비자가 지불하는 가격(Pc)과 생산자가 받는 가격(Pp)의 차이가 세금(t)과 같음을 나타냅니다.
+    - evidence: transcript=[], visual=[v2]
+  - 세수: 정부로의 이전(transfer)을 의미합니다.
+    - evidence: transcript=[], visual=[v3]
+  - 사중손실: 거래량 감소로 인해 발생하는 순손실이며, 탄력성이 클수록 더 커질 수 있습니다.
+    - evidence: transcript=[t1,t2], visual=[v3,v4]
+- 확인 불가/열린 질문
+  - 대체재가 많으면 수요는 더 탄력적인가?
+  - 수요가 비탄력적일 때 세금이 소비자 가격에 더 전가되는가?
+  - 세수와 사중손실의 차이를 면적으로 설명할 수 있는가?
+  - 단기/장기의 탄력성 차이가 정책 효과를 바꿀 수 있음을 설명할 수 있는가?
+
+### Segment 10 (04:45–05:01)
+- 요약
+  - (10-1) 탄력성은 %변화 기준이므로 서로 다른 재화나 서비스 간의 비교를 가능하게 합니다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (10-2) 조세의 귀착은 수요와 공급의 상대적인 탄력성 크기에 의해 결정됩니다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (10-3) 사중손실은 거래량 감소로 발생하며, 시장이 탄력적일수록 그 크기가 커질 수 있습니다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (10-4) 오늘 강의에서는 경쟁시장에서의 수요와 공급, 탄력성, 조세귀착, 그리고 사중손실의 연관성을 학습했습니다.
+    - evidence: transcript=[t1], visual=[v2]
+    - confidence: high
+  - (10-5) 다음 시간에는 독점 시장에서의 가격 결정과 후생 손실을 경쟁시장과 비교하며 심층적으로 다룰 예정입니다.
+    - evidence: transcript=[t2], visual=[v3]
+    - confidence: high
+

@@ -326,6 +326,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
 
     run_id = compute_run_id(config.config_path, paths.stt_json, paths.vlm_json, paths.captures_manifest_json)
     output_dir = paths.output_root / "fusion"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     sync_segments: List[Dict[str, object]] = []
     trace_map_segments: List[Dict[str, object]] = []

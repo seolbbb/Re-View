@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -146,6 +147,8 @@ def load_config(config_path: str) -> ConfigBundle:
 
     config = FusionConfig.model_validate(payload)
     repo_root = _find_repo_root(config_file)
+    load_dotenv(dotenv_path=repo_root / ".env")
+
     resolved_paths = ResolvedPaths(
         stt_json=_resolve_path(config.paths.stt_json, repo_root),
         vlm_json=_resolve_path(config.paths.vlm_json, repo_root),

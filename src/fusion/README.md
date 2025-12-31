@@ -34,10 +34,11 @@ paths:
 
 ## Gemini 설정 (Developer API / Vertex AI)
 ### Developer API
-환경 변수 우선순위: `GOOGLE_API_KEY` > `GEMINI_API_KEY`
+환경 변수 우선순위: `GOOGLE_API_KEY` > `GEMINI_API_KEY`  
+`.env` 파일에서 자동으로 로드됩니다(레포 루트 기준).
 
-```bash
-export GOOGLE_API_KEY="YOUR_KEY"
+```dotenv
+GOOGLE_API_KEY=YOUR_KEY
 ```
 
 ### Vertex AI (ADC)

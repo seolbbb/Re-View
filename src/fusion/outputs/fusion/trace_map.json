@@ -1,0 +1,67 @@
+{
+  "run_id": "run_0ed4e13604e5",
+  "segments": [
+    {
+      "segment_id": 1,
+      "vlm_timestamps": [
+        0
+      ]
+    },
+    {
+      "segment_id": 2,
+      "vlm_timestamps": [
+        30000
+      ]
+    },
+    {
+      "segment_id": 3,
+      "vlm_timestamps": [
+        60000
+      ]
+    },
+    {
+      "segment_id": 4,
+      "vlm_timestamps": [
+        75000
+      ]
+    },
+    {
+      "segment_id": 5,
+      "vlm_timestamps": [
+        90000
+      ]
+    },
+    {
+      "segment_id": 6,
+      "vlm_timestamps": [
+        120000
+      ]
+    },
+    {
+      "segment_id": 7,
+      "vlm_timestamps": [
+        120000
+      ]
+    },
+    {
+      "segment_id": 8,
+      "vlm_timestamps": [
+        240000,
+        250000
+      ]
+    },
+    {
+      "segment_id": 9,
+      "vlm_timestamps": [
+        260000,
+        265000
+      ]
+    },
+    {
+      "segment_id": 10,
+      "vlm_timestamps": [
+        285000
+      ]
+    }
+  ]
+}
