@@ -9,7 +9,7 @@ from src.audio.speech_client import ClovaSpeechClient
 from src.capture.video_processor import SlideExtractor
 from src.fusion.data_fuser import ContextAligner
 from src.fusion.llm_generator import NoteGenerator
-from src.ocr.ocr_engine import PaddleHintExtractor
+from src.ocr.ocr_engine import OpenRouterOcrExtractor
 
 
 def run_pipeline() -> None:
@@ -20,7 +20,7 @@ def run_pipeline() -> None:
 
     slide_extractor = SlideExtractor()
     speech_client = ClovaSpeechClient()
-    ocr_client = PaddleHintExtractor()
+    ocr_client = OpenRouterOcrExtractor()
     aligner = ContextAligner()
     note_generator = NoteGenerator()
 
