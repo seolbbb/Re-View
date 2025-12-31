@@ -21,6 +21,14 @@ src/audio/
 
 ## 실행 방법
 
+## 설치/의존성
+- 공통(Python): `pip install -r requirements.txt`
+- 오디오 추출: `ffmpeg` 설치 필요 (예: `apt-get install ffmpeg`)
+- 토큰 계산(선택): `pip install tiktoken`
+- Whisper(선택): `pip install -U openai-whisper torch` + `ffmpeg`
+- 현재 audio 테스트에서 설치한 패키지: `requests`, `pydantic`, `python-dotenv`, `tiktoken`
+- 환경변수: `CLOVA_SPEECH_URL`, `CLOVA_SPEECH_API_KEY` (또는 `CLOVA_SPEECH_SECRET`)
+
 ### 1) Clova STT (스키마 v1 출력)
 ```bash
 python src/audio/clova_stt.py --media-path src/data/input/sample.mp4
