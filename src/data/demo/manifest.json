@@ -1,0 +1,82 @@
+[
+  {
+    "timestamp_ms": 0,
+    "frame_index": 0,
+    "file_name": "cap_000000.png",
+    "diff_score": 0.61
+  },
+  {
+    "timestamp_ms": 30000,
+    "frame_index": 900,
+    "file_name": "cap_000030.png",
+    "diff_score": 0.47
+  },
+  {
+    "timestamp_ms": 60000,
+    "frame_index": 1800,
+    "file_name": "cap_000060.png",
+    "diff_score": 0.55
+  },
+  {
+    "timestamp_ms": 75000,
+    "frame_index": 2250,
+    "file_name": "cap_000075.png",
+    "diff_score": 0.43
+  },
+  {
+    "timestamp_ms": 90000,
+    "frame_index": 2700,
+    "file_name": "cap_000090.png",
+    "diff_score": 0.4
+  },
+  {
+    "timestamp_ms": 120000,
+    "frame_index": 3600,
+    "file_name": "cap_000120.png",
+    "diff_score": 0.68
+  },
+  {
+    "timestamp_ms": 240000,
+    "frame_index": 7200,
+    "file_name": "cap_000240.png",
+    "diff_score": 0.72
+  },
+
+  {
+    "timestamp_ms": 250000,
+    "frame_index": 7500,
+    "file_name": "cap_000250.png",
+    "diff_score": 0.23
+  },
+  {
+    "timestamp_ms": 255000,
+    "frame_index": 7650,
+    "file_name": "cap_000255.png",
+    "diff_score": 0.18
+  },
+  {
+    "timestamp_ms": 260000,
+    "frame_index": 7800,
+    "file_name": "cap_000260.png",
+    "diff_score": 0.26
+  },
+  {
+    "timestamp_ms": 262000,
+    "frame_index": 7860,
+    "file_name": "cap_000262.png",
+    "diff_score": 0.16
+  },
+  {
+    "timestamp_ms": 265000,
+    "frame_index": 7950,
+    "file_name": "cap_000265.png",
+    "diff_score": 0.21
+  },
+
+  {
+    "timestamp_ms": 285000,
+    "frame_index": 8550,
+    "file_name": "cap_000285.png",
+    "diff_score": 0.45
+  }
+]
