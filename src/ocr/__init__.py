@@ -1,2 +1,0 @@
-"""Optical Character Recognition helpers."""
-

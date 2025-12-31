@@ -134,6 +134,12 @@ class ClovaSpeechClient:
         if not media_path.exists():
             raise FileNotFoundError(f"Media file not found: {media_path}")
 
+        if output_path is None:
+            output_path = Path("src/data/output") / media_path.stem / "stt.json"
+        else:
+            output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         payload = {
             "language": language,
             "completion": completion,
@@ -170,11 +176,6 @@ class ClovaSpeechClient:
         if include_raw_response:
             stt_data["raw_response"] = raw
 
-        if output_path is None:
-            output_path = Path("src/data/output") / media_path.stem / "stt.json"
-        else:
-            output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(stt_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
         return stt_data
