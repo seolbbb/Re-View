@@ -34,6 +34,30 @@ def _load_sources_map(path: Optional[Path]) -> Dict[int, Dict[str, Any]]:
     return mapping
 
 
+def _split_evidence_refs(evidence: Any) -> tuple[List[str], List[str]]:
+    items: List[str] = []
+    if isinstance(evidence, list):
+        items = [str(item) for item in evidence]
+    elif isinstance(evidence, dict):
+        items.extend([str(item) for item in evidence.get("transcript_unit_ids", []) or []])
+        items.extend([str(item) for item in evidence.get("visual_unit_ids", []) or []])
+    elif isinstance(evidence, str):
+        items = [evidence]
+
+    t_refs: List[str] = []
+    v_refs: List[str] = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        if item.startswith("t"):
+            t_refs.append(item)
+        elif item.startswith("v"):
+            v_refs.append(item)
+    return t_refs, v_refs
+
+
 def render_segment_summaries_md(
     summaries_jsonl: Path,
     output_md: Path,
@@ -67,9 +91,9 @@ def render_segment_summaries_md(
                 for line in _wrap_line(f"  - ({bullet_id}) ", claim, md_wrap_width):
                     handle.write(line + "\n")
 
-                evidence = bullet.get("evidence_refs", {}) or {}
-                t_refs = ",".join(evidence.get("transcript_unit_ids", []) or [])
-                v_refs = ",".join(evidence.get("visual_unit_ids", []) or [])
+                t_refs_list, v_refs_list = _split_evidence_refs(bullet.get("evidence_refs"))
+                t_refs = ",".join(t_refs_list)
+                v_refs = ",".join(v_refs_list)
                 handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
                 handle.write(f"    - confidence: {bullet.get('confidence', '')}\n")
                 notes = str(bullet.get("notes", "")).strip()
@@ -84,17 +108,70 @@ def render_segment_summaries_md(
                     definition = str(item.get("definition", "")).strip()
                     for line in _wrap_line("  - ", f"{term}: {definition}", md_wrap_width):
                         handle.write(line + "\n")
-                    evidence = item.get("evidence_refs", {}) or {}
-                    t_refs = ",".join(evidence.get("transcript_unit_ids", []) or [])
-                    v_refs = ",".join(evidence.get("visual_unit_ids", []) or [])
+                    t_refs_list, v_refs_list = _split_evidence_refs(item.get("evidence_refs"))
+                    t_refs = ",".join(t_refs_list)
+                    v_refs = ",".join(v_refs_list)
                     handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                    confidence = str(item.get("confidence", "")).strip()
+                    if confidence:
+                        handle.write(f"    - confidence: {confidence}\n")
+                    notes = str(item.get("notes", "")).strip()
+                    if notes:
+                        handle.write(f"    - notes: {notes}\n")
+
+            explanations = summary.get("explanations", []) or []
+            if explanations:
+                handle.write("- 해설\n")
+                for item in explanations:
+                    if isinstance(item, dict):
+                        point = str(item.get("point", "")).strip()
+                        evidence = item.get("evidence_refs")
+                        confidence = str(item.get("confidence", "")).strip()
+                        notes = str(item.get("notes", "")).strip()
+                    else:
+                        point = str(item).strip()
+                        evidence = None
+                        confidence = ""
+                        notes = ""
+                    if not point:
+                        continue
+                    for line in _wrap_line("  - ", point, md_wrap_width):
+                        handle.write(line + "\n")
+                    t_refs_list, v_refs_list = _split_evidence_refs(evidence)
+                    t_refs = ",".join(t_refs_list)
+                    v_refs = ",".join(v_refs_list)
+                    handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                    if confidence:
+                        handle.write(f"    - confidence: {confidence}\n")
+                    if notes:
+                        handle.write(f"    - notes: {notes}\n")
 
             questions = summary.get("open_questions", []) or []
             if questions:
                 handle.write("- 확인 불가/열린 질문\n")
                 for question in questions:
-                    for line in _wrap_line("  - ", str(question).strip(), md_wrap_width):
+                    if isinstance(question, dict):
+                        text = str(question.get("question", "")).strip()
+                        evidence = question.get("evidence_refs")
+                        confidence = str(question.get("confidence", "")).strip()
+                        notes = str(question.get("notes", "")).strip()
+                    else:
+                        text = str(question).strip()
+                        evidence = None
+                        confidence = ""
+                        notes = ""
+                    if not text:
+                        continue
+                    for line in _wrap_line("  - ", text, md_wrap_width):
                         handle.write(line + "\n")
+                    t_refs_list, v_refs_list = _split_evidence_refs(evidence)
+                    t_refs = ",".join(t_refs_list)
+                    v_refs = ",".join(v_refs_list)
+                    handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                    if confidence:
+                        handle.write(f"    - confidence: {confidence}\n")
+                    if notes:
+                        handle.write(f"    - notes: {notes}\n")
 
             if include_sources:
                 sources = sources_map.get(segment_id, {})

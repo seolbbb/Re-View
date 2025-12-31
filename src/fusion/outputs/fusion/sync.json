@@ -2,74 +2,46 @@
   "schema_version": 1,
   "segments": [
     {
-      "end_ms": 30000,
+      "end_ms": 37000,
       "segment_id": 1,
       "start_ms": 0,
-      "transcript_text": "안녕하세요. 오늘 5분 동안 미시경제학의 아주 핵심인 수요·공급, 그리고 탄력성을 빠르게 정리하겠습니다. 탄력성은 가격이 변할 때 수요나 공급이 얼마나 민감하게 반응하는지 나타내는 개념이고, 조세 부담과 후생 분석까지 연결됩니다.\n먼저 오늘의 흐름입니다. 1) 수요·공급 곡선과 균형, 2) 가격 탄력성의 정의와 직관, 3) 소비자·생산자 잉여, 4) 조세가 시장에 들어오면 어떤 일이 생기는지, 마지막으로 5) 조세 부담이 누가 더 지는지, 즉 조세귀착을 탄력성으로 설명하겠습니다. 화면에는 수요·공급 그래프와, 뒤에서 사용할 ‘세금 쐐기’ 그림이 순서대로 나옵니다.",
-      "visual_text": "슬라이드 1: 미시경제학 핵심 — 수요·공급과 탄력성\n- 오늘 목표: 탄력성의 정의/직관을 잡고 조세귀착과 사중손실까지 연결\n- 핵심 메시지: ‘기울기’가 아니라 ‘% 변화(탄력성)’로 민감도를 비교한다\n- 키워드: 균형, 대체재/필수재, 소비자·생산자 잉여, 조세 쐐기(tax wedge), 사중손실(DWL)"
+      "transcript_text": "변분 추론에 좀 더 다른 유도 방법 그다음에 심화들을 한번 살펴보도록 하겠습니다.\n저희가 민필드 밸리션 인퍼런스가 무엇인지 한번 살펴봤었는데요. 자 그거를 우리가 또 다르게도 한번 유도를 해볼 수가 있습니다.\n그 내용을 한번 살펴보도록 하고 그다음에 그러한 베니션 인퍼런스가 어떻게 좀 어플리케이션 되는지 그다음에\n여러분들께서 사실 EM 알고리즘을 아마 많이 들어보셨을 것 같아요. 그쵸 익스펙테이션 n 맥시마이제이션 알고리즘으로 불리는\n그런 EM 알고리즘하고 뭐가 다르고 뭐가 같은 건지 두 개가 또 굉장히 또 깊이 관련이 있습니다. 한번 살펴보도록 하겠습니다.",
+      "visual_text": "[ML for RecSys]\n**변분추론 II**\n---\n송경우\n연세대학교 응용통계학과, 통계데이터사이언스학과\nWARNING: 본 교육 콘텐츠의 저작재산권은 제단법인 네이버커넥트에 귀속됩니다. 본 콘텐츠를 어떠한 경로로든 외부로 유출 및 수정하는 행위를 엄격히 금합니다. 다만, 비영리적 교육 및 연구활동에 한정되어 사용할 수 있으나 제단의 허락을 받아야 합니다. 이를 위반하는 경우, 관련 법률에 따라 책임을 질 수 있습니다.\nboostcamp aitech\n© NAVER Connect Foundation\n- 이미지 상단에는 `[ML for RecSys]`와 `변분추론 II`라는 제목이 표시되어 있으며, 강의 제목과 주제를 나타낸다.\n- 강사 정보는 송경우 교수로, 연세대학교 응용통계학과 및 통계데이터사이언스학과 소속임.\n- 하단에는 저작권 경고 문구와 `boostcamp aitech`, `NAVER Connect Foundation` 로고가 포함되어 있다.\n1. Mean-Field Variational Inference\n2. VI Application\n- 본 슬라이드는 강의의 주요 구성 요소를 나열한 목록이다.\n- 두 가지 주요 주제로 구성되어 있으며, 1번은 \"Mean-Field Variational Inference\", 2번은 \"VI Application\"이다.\n- 페이지 번호는 2번을 나타내며, `boostcamp aitech` 로고와 `NAVER Connect Foundation` 저작권 표시가 하단에 위치한다."
     },
     {
-      "end_ms": 60000,
+      "end_ms": 108835,
       "segment_id": 2,
-      "start_ms": 30000,
-      "transcript_text": "먼저 오늘의 흐름입니다. 1) 수요·공급 곡선과 균형, 2) 가격 탄력성의 정의와 직관, 3) 소비자·생산자 잉여, 4) 조세가 시장에 들어오면 어떤 일이 생기는지, 마지막으로 5) 조세 부담이 누가 더 지는지, 즉 조세귀착을 탄력성으로 설명하겠습니다. 화면에는 수요·공급 그래프와, 뒤에서 사용할 ‘세금 쐐기’ 그림이 순서대로 나옵니다.\n잠깐 정리하고 넘어가겠습니다. 지금부터 그래프를 보면서 설명할 건데요, 핵심은 ‘기울기’가 아니라 ‘탄력성’이라는 점입니다.\n지금 화면의 첫 그래프는 수요 곡선이 우하향, 공급 곡선이 우상향하는 표준 그림입니다. 여기서 균형은 교차점인데, 이제 가격이 조금 오르면 수요량이 얼마나 줄어드는지가 중요합니다. 이때 탄력성을 쓰면 단위가 달라도 비교가 가능하고, 조세 부담이 어디로 더 많이 전가되는지도 같은 언어로 설명할 수 있습니다.",
-      "visual_text": "슬라이드 2: 진행 순서(Agenda)\n1) 수요·공급과 균형(교차점)\n2) 가격 탄력성: 정의(ΔQ% / ΔP%)와 해석(민감도)\n3) 잉여: 소비자 잉여/생산자 잉여(후생의 시각)\n4) 조세 도입: Pc(소비자가격) vs Pp(생산자가격), 세금 쐐기\n5) 조세귀착과 사중손실: 탄력성이 부담과 효율성 손실을 결정"
+      "start_ms": 37000,
+      "transcript_text": "그런 EM 알고리즘하고 뭐가 다르고 뭐가 같은 건지 두 개가 또 굉장히 또 깊이 관련이 있습니다. 한번 살펴보도록 하겠습니다.\n그래서 첫 번째 파트는 저희가 엠프브i를 좀 더 한 번 더 보도록 하겠습니다.\n자 엠프브i를 저희가 유도하는 과정을 앞서서 한번 살펴본 적이 있습니다.\n그렇죠 그래서 뭐 로그의 피 틸다를 이용해서 하기도 하고 로그의 피에 로그 익스포넨셜을 같이 써가지고 그런 트릭을 이용해서\n그래서 이런 엘보 로어바운드 또는 로그 마시널 라이클루더의 로어 바운드를 우리가 맥시마이즈 하기 위해서\n어떤 큐를 잡아야 되는가를 우리가 유도를 했었습니다. 지금 우리가 이걸 계속하고 있는 이유는 뭡니까?\n우리는 이런 로어바운드를 맥시마이즈 하고 싶은 거예요. 그렇죠 그러면 그러한 로어 바운드를 우리가 맥시마이즈 하기 위한 q는 뭐냐라고 했습니다.\n답은 간단해요. 포스테리어입니다. 근데 포스테리오를 우리는 정확하게 구할 수가 없어요. 그래서 우리가 대신에\n얘를 맥시마이즈 시키면 우리가 q가 포스테리어에 가까워질 것이다라고 또는 우리가 포스테리어를 잡으면 얘가 로그 마실라이 크로즈에 가까워지지만",
+      "visual_text": "1. Mean-Field Variational Inference\n변분추론 중, Mean-Field Variational Inference의 개념 학습 완료\nboostcamp aitech\n© NAVER Connect Foundation\n- 슬라이드 제목은 여전히 \"1. Mean-Field Variational Inference\"이다.\n- 본 슬라이드는 현재 강의의 진행 상황을 설명하며, \"변분추론 중, Mean-Field Variational Inference의 개념 학습 완료\"라고 명시하고 있다.\n- 페이지 번호는 3번이며, 하단에 동일한 로고와 저작권 정보가 포함되어 있다.\n### 1.1 MFVI 수식유도 준비과정\n- derivation 2) functional derivative\n\\begin{aligned}\nELBO &= \\int q_j \\left\\{ \\int \\log p(x, z) \\prod_{i \\neq j} q_i dz_i \\right\\} dz_j - \\int q_j \\log q_j dz_j + C \\\\\n&= \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j + C\n\\end{aligned}\nq_j^* = \\argmax_{q_j} ELBO = \\argmax_{q_j} \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j\n### Functional derivative (variational derivative)\n- Functional: input is a function\n- Example) ELBO is a functional\n- Functional derivative: change in a functional to a change in a function on which the functional depends\n### Traditional calculus: R → f → R\n### Variational calculus: f(x) → f → R\n결국,\nFunctional의\n최대치를 구해야\n하는 상황입니다.\n- 본 슬라이드는 Mean-Field Variational Inference(MFVI)의 수식 유도를 위한 준비 과정을 설명함.\n- `ELBO`의 수식이 두 가지 형태로 나열되어 있으며, 상수항은 무시함(`Ignore constant`).\n- `q_j^* = argmax_{q_j} ELBO`의 유도 과정이 포함됨.\n- Functional derivative에 대한 설명이 포함되어 있으며, 전통적 미적분(Traditional calculus)과 변분법(Variational calculus)의 차이를 명확히 구분함.\n- 오른쪽 상단의 툴팁은 \"결국, Functional의 최대치를 구해야 하는 상황입니다.\"라는 결론을 제시함."
     },
     {
-      "end_ms": 75000,
+      "end_ms": 184320,
       "segment_id": 3,
-      "start_ms": 60000,
-      "transcript_text": "지금 화면의 첫 그래프는 수요 곡선이 우하향, 공급 곡선이 우상향하는 표준 그림입니다. 여기서 균형은 교차점인데, 이제 가격이 조금 오르면 수요량이 얼마나 줄어드는지가 중요합니다. 이때 탄력성을 쓰면 단위가 달라도 비교가 가능하고, 조세 부담이 어디로 더 많이 전가되는지도 같은 언어로 설명할 수 있습니다.\n가격 탄력성의 정의부터 보겠습니다. 수요의 가격 탄력성은 ‘가격이 1% 변할 때 수요량이 몇 % 변하느냐’입니다. 보통 수요는 가격이 오르면 수요량이 줄어서 음수지만, 관례적으로 절댓값을 씁니다. 탄력성이 크면 가격이 조금만 변해도 수요량이 크게 변하는, 즉 민감한 시장입니다.",
-      "visual_text": "슬라이드 3: 수요·공급 기본 그래프\n- 수요(D): 우하향, 공급(S): 우상향\n- 균형: D와 S의 교차점에서 (P*, Q*) 결정\n- 가격이 오를 때: Qd 감소, Qs 증가 → 초과공급/초과수요의 조정\n- 연결 포인트: ‘가격이 조금 변할 때 수량이 얼마나 반응하는가’를 탄력성으로 측정"
+      "start_ms": 108835,
+      "transcript_text": "여기서는 저희가 포스트를 정확하게 못 구하기 때문에 얘를 맥시마이즈 하는 결국 큐가 뭐냐를 찾고 싶은 거예요.\n근데 그 q가 굉장히 복잡해질 수 있다라고 말씀을 드렸습니다. 언제 여기 나와 있는 q j는 q z 제에\n좀 더 이제 간단화된 버전으로 생각하시면 됩니다. 그걸 그냥 편의상 q의 z j를 qj라고 그냥 쓴 것뿐입니다.\n그러면은 원래는 이제 큐 제가 아니라 큐 제라고 하면 큐 제 전체 그러면은 변수가 엄청 여러 개 있을 수 있는 거예요.\n여기서 제는 레이턴트 베리어블 즉 스가 아닌 나머지 모든 걸 다 의미하는 거라고 했으니까 우리한테 레이턴트 베리어블이 여러 개인\n예제도 하나 봤었죠. 앞에서 레이턴 디리클레 얼로케이션 LD라고 부르는 그러한 것들은 우리가 유도를 못하는 겁니다.\n왜 이 큐라는 거 자체를 정의를 못해서 그 여러 변수들 간의 조인트 어떤 거는 가우시안 따르고 어떤 거는 또 드리클레 따르고 어떤 건 또 멀티노미얼 따르고\n그러한 서로 다른 랜덤 베어러블의 조인트는 무슨 분포냐 말 못 하거든요.\n그래서 우리가 각각 쪼개서 보겠다 q 제 1 제 2 제 3 각각 쪼개서 보겠다",
+      "visual_text": "### 1.1 MFVI 수식유도 준비과정\n- derivation 2) functional derivative\n\\begin{aligned}\nELBO &= \\int q_j \\left\\{ \\int \\log p(x, z) \\prod_{i \\neq j} q_i dz_i \\right\\} dz_j - \\int q_j \\log q_j dz_j + C \\\\\n&= \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j + C\n\\end{aligned}\nq_j^* = \\argmax_{q_j} ELBO = \\argmax_{q_j} \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j\n### Functional derivative (variational derivative)\n- Functional: input is a function\n- Example) ELBO is a functional\n- Functional derivative: change in a functional to a change in a function on which the functional depends\n### Traditional calculus: R → f → R\n### Variational calculus: f(x) → f → R\n결국,\nFunctional의\n최대치를 구해야\n하는 상황입니다.\nboostcamp aitech\n© NAVER Connect Foundation\n- 본 슬라이드는 Mean-Field Variational Inference(MFVI)의 수식 유도를 위한 준비 과정을 설명함.\n- `ELBO`의 수식이 두 가지 형태로 나열되어 있으며, 상수항은 무시함(`Ignore constant`).\n- `q_j^* = argmax_{q_j} ELBO`의 유도 과정이 포함됨.\n- Functional derivative에 대한 설명이 포함되어 있으며, 전통적 미적분(Traditional calculus)과 변분법(Variational calculus)의 차이를 명확히 구분함.\n- 오른쪽 상단의 툴팁은 \"결국, Functional의 최대치를 구해야 하는 상황입니다.\"라는 결론을 제시함."
     },
     {
-      "end_ms": 90000,
+      "end_ms": 257740,
       "segment_id": 4,
-      "start_ms": 75000,
-      "transcript_text": "가격 탄력성의 정의부터 보겠습니다. 수요의 가격 탄력성은 ‘가격이 1% 변할 때 수요량이 몇 % 변하느냐’입니다. 보통 수요는 가격이 오르면 수요량이 줄어서 음수지만, 관례적으로 절댓값을 씁니다. 탄력성이 크면 가격이 조금만 변해도 수요량이 크게 변하는, 즉 민감한 시장입니다.\n탄력성의 직관을 잡는 팁은 대체재와 필수재입니다. 대체재가 많으면 소비자는 가격이 오를 때 쉽게 다른 상품으로 이동하니 탄력적입니다. 반대로 생활필수품처럼 대체가 어렵고, 소비가 습관적이면 비탄력적일 가능성이 큽니다. 시간도 중요해서 단기에는 조정이 어렵지만 장기에는 대체가 가능해져 더 탄력적으로 바뀌는 경우가 많습니다.",
-      "visual_text": "슬라이드 4: 가격 탄력성의 정의와 직관\n- 정의(수요): E = (수요량의 %변화) / (가격의 %변화)\n- 해석: |E|가 크면 민감(탄력적), 작으면 둔감(비탄력적)\n- 결정 요인: 대체재의 존재, 필수성, 소비 비중, 조정 가능성(단기 vs 장기)\n- 주의: 그래프 기울기와 탄력성은 동일 개념이 아니며, 단위 의존성 때문에 %변화가 유리"
+      "start_ms": 184320,
+      "transcript_text": "라는 게 민 필드 어썸션이었습니다. 가정 사항인 거죠. 어디까지나 그러고 나서 그 각각의 q를 우리가 맥시마이즈 하는 걸 찾겠다\n라는 게 우리의 목표였습니다. 그리고 그거를 두 가지 방법으로 우리가 유도를 했었어요. 오늘은 그 세 번째 방법\n펑셔널 딜리버티브를 한번 살펴보도록 하겠습니다.\n지금 우리가 볼 거는 펑션 펑셔널 그다음에 펑셔널 또는 베리셔널 디리버티브까지 볼 건데 이거는\n지금 우리가 보는 베리에이션 인퍼런스에서뿐만 아니라 굉장히 많은 곳에서 쓰입니다. 그래서 여러분들께서\n꼭 기억하고 넘어가시면 좋겠습니다. 일반적인 카큘러스랑 뭐가 다르냐 일반적인 여러분들께서 배웠을 미적분이랑 뭐가 다르냐\n자 그거는 실수를 인풋으로 받습니다. 그리고 실수가 아웃풋으로 나옵니다. 그런 함수가 있는 거예요. 근데 베리션 칼큘러스는 뭐냐면\n함수를 인풋으로 받아요. 함수를 그러고 나서 실수를 내뱉습니다. 인풋이 함수예요. 그러면\n여기 나와 있는 f는 뭐라고 부르면 될까요? 이 f는 FX에 대한 함수인 거잖아요. 여기 f를 우리가 뭐라고 불러요? 여기 나와 있는 f를",
+      "visual_text": "### 1.1 MFVI 수식유도 준비과정\n- derivation 2) functional derivative\n\\begin{aligned}\nELBO &= \\int q_j \\left\\{ \\int \\log p(x, z) \\prod_{i \\neq j} q_i dz_i \\right\\} dz_j - \\int q_j \\log q_j dz_j + C \\\\\n&= \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j + C\n\\end{aligned}\nq_j^* = \\argmax_{q_j} ELBO = \\argmax_{q_j} \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j\n### Functional derivative (variational derivative)\n- Functional: input is a function\n- Example) ELBO is a functional\n- Functional derivative: change in a functional to a change in a function on which the functional depends\n### Traditional calculus: R → f → R\n### Variational calculus: f(x) → f → R\n결국,\nFunctional의\n최대치를 구해야\n하는 상황입니다.\nboostcamp aitech\n© NAVER Connect Foundation\n- 본 슬라이드는 Mean-Field Variational Inference(MFVI)의 수식 유도를 위한 준비 과정을 설명함.\n- `ELBO`의 수식이 두 가지 형태로 나열되어 있으며, 상수항은 무시함(`Ignore constant`).\n- `q_j^* = argmax_{q_j} ELBO`의 유도 과정이 포함됨.\n- Functional derivative에 대한 설명이 포함되어 있으며, 전통적 미적분(Traditional calculus)과 변분법(Variational calculus)의 차이를 명확히 구분함.\n- 오른쪽 상단의 툴팁은 \"결국, Functional의 최대치를 구해야 하는 상황입니다.\"라는 결론을 제시함."
     },
     {
-      "end_ms": 120000,
+      "end_ms": 337000,
       "segment_id": 5,
-      "start_ms": 90000,
-      "transcript_text": "탄력성의 직관을 잡는 팁은 대체재와 필수재입니다. 대체재가 많으면 소비자는 가격이 오를 때 쉽게 다른 상품으로 이동하니 탄력적입니다. 반대로 생활필수품처럼 대체가 어렵고, 소비가 습관적이면 비탄력적일 가능성이 큽니다. 시간도 중요해서 단기에는 조정이 어렵지만 장기에는 대체가 가능해져 더 탄력적으로 바뀌는 경우가 많습니다.\n이제 잉여 개념으로 넘어가겠습니다. 소비자 잉여는 ‘지불의사’와 실제 가격의 차이로부터 생기는 이득이고, 생산자 잉여는 ‘최소 수용가격’과 실제 가격의 차이로 생기는 이득입니다. 그래프에서는 균형가격 위아래로 삼각형 면적처럼 표현됩니다. 이 후생 개념이 있어야 조세가 효율성을 얼마나 깎는지 말할 수 있습니다.\n다음 화면은 조세가 들어올 때입니다. 흔히 ‘세금 쐐기’라고 부르는 그림이 나오고, 여기서부터는 탄력성이 조세 부담과 사중손실을 결정한다는 메시지로 연결됩니다.",
-      "visual_text": "슬라이드 5: 후생(잉여) 개념\n- 소비자 잉여(CS): 지불의사(수요곡선) − 실제 지불가격 영역\n- 생산자 잉여(PS): 실제 수취가격 − 최소 수용가격(공급곡선) 영역\n- 경쟁 균형에서 CS+PS가 (정태적으로) 총후생을 나타내는 기본 지표\n- 연결 포인트: 조세/규제가 들어오면 CS/PS가 줄고, 일부는 세수로 이전되며 일부는 사라짐"
+      "start_ms": 257740,
+      "transcript_text": "이 인풋에 대한 함수 실수에 대한 함수 또는 x에 대한 함수라고 부르죠. 그쵸 근데 여기는 이 f가\nFX를 인풋으로 받으니까 FX에 대한 함수인 거예요. 여기 나와 있는 f는 그러면 어떻게 됩니까? 함수에 대한 함수인 거예요.\n그거는 우리가 펑셔널이라고 부릅니다. 펑셔널 그럼 여기서 한번 보시면\n엘보라는 것은 여기서 큐라는 건 우리가 예를 들어 어떤 거라고 했습니까? 가우시안 분포라고 했습니다. 큐 제는 가우시안 분포예요. 그쵸\n그러면은 그러한 q 제를 우리가 인풋으로 받아서 함수로 만든 게 엘버입니다. 그쵸 엘버는 이 q j에 대한 함수인 거잖아요.\n함수에 대한 함수다. 그러면 여기서 엘버를 우리가 펑셔널이라고 말할 수가 있겠습니다. 그럼 여기서 펑셔널 디리비티는 뭐냐면\n결국 우리가 여기서 q 함수를 변화시킬 때 결국 여러분 디리버티브라는 건 뭐예요?\n우리가 인풋을 변화시켰을 때 아웃풋이 어떻게 변하는지 그 변화량을 우리가 추정하는 것입니다. 그러면 여기서는 펑셔널 디리버티브는\n함수가 변했을 때 펑셔널이 어떻게 변하는지를 추정하는 게 펑셔널 디리버티브 또는 베르셔널 디리뷰티브라고 부릅니다.\n아시겠죠? 펑셔널 딜리브티브를 우리가 가기 전에 좀 몇 가지 준비 과정을 거치고 넘어가도록 하겠습니다.",
+      "visual_text": "### 1.1 MFVI 수식유도 준비과정\nTo find x corresponding to local minimum: Find f'(x) or dy/dx and set it to 0\n- solving f'(x) = 0 gives stationary points\n- further testing needed to determine their nature (min or max)\n![Graph showing a function f(x) with peaks and valleys on x-y axes](https://i.imgur.com/fake-graph.png)\n*(Note: Graph is manually described as a typical curve with local min/max points, labeled f(x) on y-axis and x on x-axis.)*\nIn summary\n- stationary points of function f(x), solve df/dx = 0 for x (regular calculus)\n- stationary functions of a functional I[f] (function of functions), solve (differential) equation for stationary function f(x) (calculus of variations)\nFunctional의\n최대치를 구하기\n위한 준비작업\nboostcamp aitech\n© NAVER Connect Foundation\n- 본 슬라이드는 함수의 최소점 찾는 방법에서 시작하여, 함수의 함수인 Functional의 최대치를 찾는 변분법으로의 연계를 설명한다.\n- 그래프는 `f(x)`의 일반적인 형태를 나타내며, 정지점(stationary points)이 존재함을 시각화함.\n- 요약 부분에서는 일반적 미적분(regular calculus)과 변분법(calculus of variations)의 접근 방식을 비교함.\n- 일반 함수의 정지점: `df/dx = 0`을 풀어 x를 찾음\n- Functional의 정지 함수: 미분 방정식을 풀어 정지 함수 `f(x)`를 찾음\n- 오른쪽 상단 툴팁은 \"Functional의 최대치를 구하기 위한 준비작업\"임을 강조함."
     },
     {
-      "end_ms": 176750,
+      "end_ms": 365470,
       "segment_id": 6,
-      "start_ms": 120000,
-      "transcript_text": "다음 화면은 조세가 들어올 때입니다. 흔히 ‘세금 쐐기’라고 부르는 그림이 나오고, 여기서부터는 탄력성이 조세 부담과 사중손실을 결정한다는 메시지로 연결됩니다.\n이제 조세를 시장에 도입했을 때 어떤 일이 일어나는지, 그리고 왜 ‘탄력성’이 조세 설계에서 핵심인지 자세히 설명하겠습니다.\n\n먼저 단순한 1단위당 세금 t를 생각해보겠습니다. 예를 들어 정부가 판매자에게 단위당 t만큼 세금을 부과하면, 공급곡선이 위로 이동하는 것처럼 보일 수 있습니다. 하지만 핵심은 ‘표현’이 아니라 ‘결과’입니다. 결국 시장에서 소비자가 지불하는 가격 Pc와 생산자가 실제로 받는 가격 Pp가 갈라지고, 그 차이가 세금 t가 됩니다. 이 가격의 벌어짐을 ‘세금 쐐기(tax wedge)’라고 부릅니다.\n\n그럼 누가 세금을 더 내는가? 많은 사람들이 ‘판매자에게 부과했으니 판매자가 낸다’고 생각하지만, 경제학에서는 그 결론을 부정합니다. 세금의 법적 납세의무자(legal incidence)와 경제적 부담(economic incidence)은 다를 수 있습니다. 실제 부담은 탄력성이 결정합니다. 직관은 이렇습니다. 비탄력적인 쪽은 가격이 변해도 거래량을 많이 줄이기 어렵기 때문에, 조정 비용을 더 많이 떠안게 됩니다.\n\n이를 조금 더 정교하게 말하면, 세금이 들어오면 거래량이 줄고(효율성 손실), 가격이 변하고(분배 효과), 그 결과 소비자 잉여와 생산자 잉여가 감소합니다. 이때 소비자 부담은 대략 Pc가 얼마나 오르느냐로, 생산자 부담은 Pp가 얼마나 내려가느냐로 나타납니다. 탄력성이 큰 쪽은 ‘도망갈 수 있는 옵션’이 많기 때문에 상대적으로 부담을 덜 지게 됩니다. 예를 들어 수요가 매우 비탄력적(절댓값이 작음)이라면, 소비자는 가격이 올라도 구매를 크게 줄이지 못하므로 Pc 상승을 더 많이 받아들이게 되고, 결과적으로 소비자 쪽 부담이 커집니다. 반대로 공급이 비탄력적이면 생산자는 생산량을 쉽게 줄이기 어렵기 때문에 Pp 하락을 더 많이 떠안게 됩니다.\n\n다음은 사중손실(deadweight loss)입니다. 세금은 정부 세수라는 이전(transfer)을 만들지만, 거래량 감소로 인해 ‘누구에게도 가지 않는 후생의 손실’을 함께 만듭니다. 그래프에서 보면 세금 도입 전후의 거래량 차이 때문에 생기는 작은 삼각형 면적이 사중손실입니다. 중요한 메시지는 사중손실의 크기 또한 탄력성과 관련이 깊다는 점입니다. 수요와 공급이 모두 탄력적이면(민감하면) 세금으로 인해 거래량이 크게 줄어 삼각형이 커지고, 사중손실이 커집니다. 반대로 비탄력적이면 거래량이 많이 줄지 않아 사중손실이 상대적으로 작습니다.\n\n여기서 조세 설계의 원칙으로 자연스럽게 연결됩니다. 일반적으로 ‘세금을 어디에 매기면 효율성 손실이 덜한가?’라는 질문에 대해, 경제학은 비탄력적인 기반에 과세하는 쪽이 사중손실을 줄일 가능성이 높다고 말합니다. 물론 현실에서는 형평성, 행정비용, 정치경제적 제약도 고려해야 하므로 단순 결론만으로 설계를 끝낼 수는 없습니다. 하지만 최소한 ‘탄력성이 큰 시장에 과도한 세율을 적용하면 거래량이 크게 줄면서 효율성 비용이 커질 수 있다’는 경고는 매우 실용적입니다.\n\n마지막으로, 실제 분석에서는 탄력성을 추정할 때 ‘관측된 기울기’만 보지 않고, 로그-로그 형태의 추정이나 자연실험을 통해 인과적으로 접근하는 경우가 많습니다. 왜냐하면 가격과 수량은 동시에 결정되기 때문에 단순 회귀는 편향될 수 있기 때문입니다. 오늘은 추정 방법론까지는 다루지 않지만, 탄력성이 조세귀착과 사중손실을 연결하는 핵심 변수라는 점은 꼭 기억해두시면 좋겠습니다.",
-      "visual_text": "슬라이드 6: 조세(t) 도입 — 세금 쐐기(tax wedge)\n- 소비자가격 Pc와 생산자가격 Pp가 분리됨: Pc − Pp = t\n- 거래량 감소: Q* → Qtax\n- 면적 해석:\n- 세수: t × Qtax (정부로 이전되는 사각형 영역)\n- 사중손실(DWL): 거래량 감소로 생기는 삼각형 영역(누구에게도 가지 않음)\n- 핵심 메시지: ‘누가 더 부담하는가’와 ‘얼마나 비효율이 생기는가’는 탄력성과 연결"
-    },
-    {
-      "end_ms": 240000,
-      "segment_id": 7,
-      "start_ms": 176750,
-      "transcript_text": "방금 설명을 일부러 길게 했습니다. 실제 파이프라인에서는 이런 긴 발화가 들어오면 텍스트 길이 제한으로 구간이 자동 분할돼야 하고, 그 과정에서 어떤 sub-segment에는 VLM timestamp가 하나도 없을 수도 있습니다. 그 경우에는 ‘가장 가까운 화면 요약 1개를 붙이는 fallback’이 필요합니다.\n이제 요점을 정리해보겠습니다. 조세 부담은 법적 납세의무자가 아니라 탄력성이 결정하고, 사중손실은 거래량 감소로 발생하며 탄력적일수록 커질 수 있습니다. 그래서 정책 평가에서는 분배 효과와 효율성 비용을 함께 봐야 합니다.\n실전에서 자주 나오는 질문은 ‘그럼 어떤 시장에 세금을 매기면 덜 왜곡적이냐’입니다. 일반적인 방향은 비탄력적인 기반, 예를 들어 단기간 대체가 어려운 소비나 공급에 대해 상대적으로 왜곡이 덜할 수 있다는 겁니다. 다만 형평성과 다른 목표가 충돌할 수 있으니 단일 원칙으로는 부족합니다.\n지금 화면은 조세귀착의 핵심 문장으로 넘어갑니다. ‘비탄력적인 쪽이 더 부담한다’ 그리고 ‘탄력적일수록 사중손실이 커진다’ 이 두 문장을 그래프와 함께 연결해서 이해하면 됩니다.",
-      "visual_text": "슬라이드 6: 조세(t) 도입 — 세금 쐐기(tax wedge)\n- 소비자가격 Pc와 생산자가격 Pp가 분리됨: Pc − Pp = t\n- 거래량 감소: Q* → Qtax\n- 면적 해석:\n- 세수: t × Qtax (정부로 이전되는 사각형 영역)\n- 사중손실(DWL): 거래량 감소로 생기는 삼각형 영역(누구에게도 가지 않음)\n- 핵심 메시지: ‘누가 더 부담하는가’와 ‘얼마나 비효율이 생기는가’는 탄력성과 연결"
-    },
-    {
-      "end_ms": 255000,
-      "segment_id": 8,
-      "start_ms": 240000,
-      "transcript_text": "지금 화면은 조세귀착의 핵심 문장으로 넘어갑니다. ‘비탄력적인 쪽이 더 부담한다’ 그리고 ‘탄력적일수록 사중손실이 커진다’ 이 두 문장을 그래프와 함께 연결해서 이해하면 됩니다.\n여기부터는 슬라이드가 빠르게 넘어가면서 예시가 나옵니다. 예를 들어 대체재가 많고 가격에 민감한 상품에 높은 세금을 부과하면 거래량이 크게 줄어 세수는 기대보다 덜 늘고, 후생 손실은 커질 수 있습니다. 반대로 매우 비탄력적인 시장에서는 가격 조정이 세금 형태로 흡수되더라도 거래량이 크게 줄지 않아 사중손실이 상대적으로 작게 나타날 수 있습니다.",
-      "visual_text": "슬라이드 7: 조세귀착(incidence) — 탄력성이 부담을 결정\n- 법적 납세의무(누가 신고/납부) ≠ 경제적 부담(누가 실제로 손해를 보는가)\n- 직관: 비탄력적인 쪽은 거래량을 줄이기 어려워 가격 조정(부담)을 더 떠안음\n- 결과 요약:\n- 수요가 비탄력적이면 소비자 부담이 상대적으로 큼(Pc 상승 폭이 큼)\n- 공급이 비탄력적이면 생산자 부담이 상대적으로 큼(Pp 하락 폭이 큼)\n- 추가 메시지: 탄력적일수록 거래량 변화가 커져 DWL이 커질 수 있음\n슬라이드 8: 예시 1 — 대체재가 많을 때(탄력적 수요)\n- 상황: 가격이 오르면 소비자가 다른 상품/서비스로 쉽게 이동\n- 시사점:\n- 세금 전가가 제한될 수 있음(소비자 가격을 크게 올리기 어려움)\n- 거래량이 크게 줄어 DWL이 커질 위험\n- 정책적 해석: 높은 세율이 기대만큼의 세수를 만들지 못할 수 있음(거래량 축소)"
-    },
-    {
-      "end_ms": 285000,
-      "segment_id": 9,
-      "start_ms": 255000,
-      "transcript_text": "여기부터는 슬라이드가 빠르게 넘어가면서 예시가 나옵니다. 예를 들어 대체재가 많고 가격에 민감한 상품에 높은 세금을 부과하면 거래량이 크게 줄어 세수는 기대보다 덜 늘고, 후생 손실은 커질 수 있습니다. 반대로 매우 비탄력적인 시장에서는 가격 조정이 세금 형태로 흡수되더라도 거래량이 크게 줄지 않아 사중손실이 상대적으로 작게 나타날 수 있습니다.\n마지막으로 정리 슬라이드입니다. (1) 탄력성은 %변화 기준이어서 비교가 가능하고, (2) 조세귀착은 탄력성의 상대적 크기로 결정되며, (3) 사중손실은 거래량 감소로 생기고 탄력적일수록 커질 수 있습니다.",
-      "visual_text": "슬라이드 10: 핵심 공식/그림 요약(정성적)\n- Pc − Pp = t (세금 쐐기)\n- 세수는 ‘이전(transfer)’이고, DWL은 ‘순손실’\n- DWL은 거래량 감소가 클수록 커지며, 이는 탄력성(민감도)이 크면 더 커질 수 있음\n- 결론: 분배(귀착)와 효율(DWL)을 함께 봐야 정책 평가가 가능\n슬라이드 12: 체크포인트(자기 점검)\n- 대체재가 많으면 수요는 더 탄력적인가?\n- 수요가 비탄력적일 때 세금이 소비자 가격에 더 전가되는가?\n- 세수와 사중손실의 차이를 면적으로 설명할 수 있는가?\n- 단기/장기의 탄력성 차이가 정책 효과를 바꿀 수 있음을 설명할 수 있는가?"
-    },
-    {
-      "end_ms": 301000,
-      "segment_id": 10,
-      "start_ms": 285000,
-      "transcript_text": "마지막으로 정리 슬라이드입니다. (1) 탄력성은 %변화 기준이어서 비교가 가능하고, (2) 조세귀착은 탄력성의 상대적 크기로 결정되며, (3) 사중손실은 거래량 감소로 생기고 탄력적일수록 커질 수 있습니다.\n오늘 강의는 여기까지입니다. 다음 시간에는 독점 시장에서의 가격 결정과 후생 손실을 다루면서, 경쟁시장과 비교해보겠습니다. 감사합니다.",
-      "visual_text": "슬라이드 13: 마무리\n- 오늘: 경쟁시장(수요·공급)에서 탄력성 → 귀착 → DWL 연결\n- 다음: 독점 시장의 가격 결정과 후생 손실(경쟁시장과 비교)\n- 기억할 문장: ‘탄력성이 분배와 효율을 동시에 좌우한다’"
+      "start_ms": 337000,
+      "transcript_text": "아시겠죠? 펑셔널 딜리브티브를 우리가 가기 전에 좀 몇 가지 준비 과정을 거치고 넘어가도록 하겠습니다.\n자 우리가 일반적으로 뭐 이러한 프스에서 최대가 되는 스를 찾고 싶다 너무 쉽죠 이거는 그냥 프프라임 x가 0이 되는 포인트를 찾으면 되는 거 아닙니까?\n그러한 스텐셔놀리 포인트를 찾으면 끝이네요라고 말하죠. 정답입니다. 맞아요. 그쵸 여기서 최대가 되는 x 찾는다 그러면은 이분을 때 0 되는 스텐셔놀리 포인트.",
+      "visual_text": "### 1.1 MFVI 수식유도 준비과정\nTo find x corresponding to local minimum: Find f'(x) or dy/dx and set it to 0\n- solving f'(x) = 0 gives stationary points\n- further testing needed to determine their nature (min or max)\n![Graph showing a function f(x) with peaks and valleys on x-y axes](https://i.imgur.com/fake-graph.png)\n*(Note: Graph is manually described as a typical curve with local min/max points, labeled f(x) on y-axis and x on x-axis.)*\nIn summary\n- stationary points of function f(x), solve df/dx = 0 for x (regular calculus)\n- stationary functions of a functional I[f] (function of functions), solve (differential) equation for stationary function f(x) (calculus of variations)\nFunctional의\n최대치를 구하기\n위한 준비작업\nboostcamp aitech\n© NAVER Connect Foundation\n- 본 슬라이드는 함수의 최소점 찾는 방법에서 시작하여, 함수의 함수인 Functional의 최대치를 찾는 변분법으로의 연계를 설명한다.\n- 그래프는 `f(x)`의 일반적인 형태를 나타내며, 정지점(stationary points)이 존재함을 시각화함.\n- 요약 부분에서는 일반적 미적분(regular calculus)과 변분법(calculus of variations)의 접근 방식을 비교함.\n- 일반 함수의 정지점: `df/dx = 0`을 풀어 x를 찾음\n- Functional의 정지 함수: 미분 방정식을 풀어 정지 함수 `f(x)`를 찾음\n- 오른쪽 상단 툴팁은 \"Functional의 최대치를 구하기 위한 준비작업\"임을 강조함."
     }
   ]
 }

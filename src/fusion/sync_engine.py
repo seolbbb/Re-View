@@ -238,40 +238,42 @@ def _extract_visual_units(
     dedup_threshold: float,
     max_visual_chars: int,
 ) -> Tuple[List[Dict[str, object]], str]:
-    lines: List[Dict[str, object]] = []
+    deduped_lines: List[str] = []
+    item_buffers: List[Dict[str, object]] = []
     for item in selected_items:
         timestamp_ms = int(item["timestamp_ms"])
         extracted_text = str(item.get("extracted_text", ""))
+        kept_lines: List[str] = []
         for raw_line in extracted_text.splitlines():
             text = raw_line.strip()
             if not text or len(text) < 3:
                 continue
-            lines.append({"timestamp_ms": timestamp_ms, "text": text})
+            line_ngrams = _char_ngrams(text)
+            if any(_jaccard(line_ngrams, _char_ngrams(prev)) >= dedup_threshold for prev in deduped_lines):
+                continue
+            kept_lines.append(text)
+            deduped_lines.append(text)
+        if kept_lines:
+            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines})
 
-    deduped: List[Dict[str, object]] = []
-    for line in lines:
-        line_ngrams = _char_ngrams(line["text"])
-        if any(_jaccard(line_ngrams, _char_ngrams(prev["text"])) >= dedup_threshold for prev in deduped):
-            continue
-        deduped.append(line)
+    visual_units: List[Dict[str, object]] = []
+    for idx, item in enumerate(item_buffers, start=1):
+        visual_units.append(
+            {
+                "unit_id": f"v{idx}",
+                "timestamp_ms": int(item["timestamp_ms"]),
+                "text": "\n".join(item["lines"]),
+            }
+        )
 
     def total_len(items: List[Dict[str, object]]) -> int:
         if not items:
             return 0
         return sum(len(item["text"]) for item in items) + (len(items) - 1)
 
-    while deduped and total_len(deduped) > max_visual_chars:
-        deduped.pop()
-
-    visual_units: List[Dict[str, object]] = []
-    for idx, line in enumerate(deduped, start=1):
-        visual_units.append(
-            {
-                "unit_id": f"v{idx}",
-                "timestamp_ms": int(line["timestamp_ms"]),
-                "text": line["text"],
-            }
-        )
+    if max_visual_chars > 0:
+        while visual_units and total_len(visual_units) > max_visual_chars:
+            visual_units.pop()
 
     visual_text = "\n".join(unit["text"] for unit in visual_units)
     return visual_units, visual_text

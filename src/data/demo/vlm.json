@@ -3,55 +3,23 @@
   "items": [
     {
       "timestamp_ms": 0,
-      "extracted_text": "슬라이드 1: 미시경제학 핵심 — 수요·공급과 탄력성\n- 오늘 목표: 탄력성의 정의/직관을 잡고 조세귀착과 사중손실까지 연결\n- 핵심 메시지: ‘기울기’가 아니라 ‘% 변화(탄력성)’로 민감도를 비교한다\n- 키워드: 균형, 대체재/필수재, 소비자·생산자 잉여, 조세 쐐기(tax wedge), 사중손실(DWL)"
+      "extracted_text": "[ML for RecSys]\n**변분추론 II**\n\n---\n\n송경우\n연세대학교 응용통계학과, 통계데이터사이언스학과\n\nWARNING: 본 교육 콘텐츠의 저작재산권은 제단법인 네이버커넥트에 귀속됩니다. 본 콘텐츠를 어떠한 경로로든 외부로 유출 및 수정하는 행위를 엄격히 금합니다. 다만, 비영리적 교육 및 연구활동에 한정되어 사용할 수 있으나 제단의 허락을 받아야 합니다. 이를 위반하는 경우, 관련 법률에 따라 책임을 질 수 있습니다.\n\nboostcamp aitech\n© NAVER Connect Foundation\n\n- 이미지 상단에는 `[ML for RecSys]`와 `변분추론 II`라는 제목이 표시되어 있으며, 강의 제목과 주제를 나타낸다.\n- 강사 정보는 송경우 교수로, 연세대학교 응용통계학과 및 통계데이터사이언스학과 소속임.\n- 하단에는 저작권 경고 문구와 `boostcamp aitech`, `NAVER Connect Foundation` 로고가 포함되어 있다."
     },
     {
-      "timestamp_ms": 30000,
-      "extracted_text": "슬라이드 2: 진행 순서(Agenda)\n1) 수요·공급과 균형(교차점)\n2) 가격 탄력성: 정의(ΔQ% / ΔP%)와 해석(민감도)\n3) 잉여: 소비자 잉여/생산자 잉여(후생의 시각)\n4) 조세 도입: Pc(소비자가격) vs Pp(생산자가격), 세금 쐐기\n5) 조세귀착과 사중손실: 탄력성이 부담과 효율성 손실을 결정"
+      "timestamp_ms": 4000,
+      "extracted_text": "1. Mean-Field Variational Inference\n2. VI Application\n\nboostcamp aitech\n© NAVER Connect Foundation\n2\n\n- 본 슬라이드는 강의의 주요 구성 요소를 나열한 목록이다.\n- 두 가지 주요 주제로 구성되어 있으며, 1번은 \"Mean-Field Variational Inference\", 2번은 \"VI Application\"이다.\n- 페이지 번호는 2번을 나타내며, `boostcamp aitech` 로고와 `NAVER Connect Foundation` 저작권 표시가 하단에 위치한다."
     },
     {
-      "timestamp_ms": 60000,
-      "extracted_text": "슬라이드 3: 수요·공급 기본 그래프\n- 수요(D): 우하향, 공급(S): 우상향\n- 균형: D와 S의 교차점에서 (P*, Q*) 결정\n- 가격이 오를 때: Qd 감소, Qs 증가 → 초과공급/초과수요의 조정\n- 연결 포인트: ‘가격이 조금 변할 때 수량이 얼마나 반응하는가’를 탄력성으로 측정"
+      "timestamp_ms": 37000,
+      "extracted_text": "1. Mean-Field Variational Inference\n\n변분추론 중, Mean-Field Variational Inference의 개념 학습 완료\n\nboostcamp aitech\n© NAVER Connect Foundation\n3\n\n- 슬라이드 제목은 여전히 \"1. Mean-Field Variational Inference\"이다.\n- 본 슬라이드는 현재 강의의 진행 상황을 설명하며, \"변분추론 중, Mean-Field Variational Inference의 개념 학습 완료\"라고 명시하고 있다.\n- 페이지 번호는 3번이며, 하단에 동일한 로고와 저작권 정보가 포함되어 있다."
     },
     {
-      "timestamp_ms": 75000,
-      "extracted_text": "슬라이드 4: 가격 탄력성의 정의와 직관\n- 정의(수요): E = (수요량의 %변화) / (가격의 %변화)\n- 해석: |E|가 크면 민감(탄력적), 작으면 둔감(비탄력적)\n- 결정 요인: 대체재의 존재, 필수성, 소비 비중, 조정 가능성(단기 vs 장기)\n- 주의: 그래프 기울기와 탄력성은 동일 개념이 아니며, 단위 의존성 때문에 %변화가 유리"
+      "timestamp_ms": 45000,
+      "extracted_text": "### 1.1 MFVI 수식유도 준비과정\n\n- derivation 2) functional derivative\n\n$$\n\\begin{aligned}\nELBO &= \\int q_j \\left\\{ \\int \\log p(x, z) \\prod_{i \\neq j} q_i dz_i \\right\\} dz_j - \\int q_j \\log q_j dz_j + C \\\\\n&= \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j + C\n\\end{aligned}\n$$\n\n$$\nq_j^* = \\argmax_{q_j} ELBO = \\argmax_{q_j} \\int q_j E_{i \\neq j}[\\log p(x, z)] dz_j - \\int q_j \\log q_j dz_j\n$$\n\n### Functional derivative (variational derivative)\n- Functional: input is a function\n- Example) ELBO is a functional\n- Functional derivative: change in a functional to a change in a function on which the functional depends\n\n### Traditional calculus: R → f → R\n### Variational calculus: f(x) → f → R\n\n결국,\nFunctional의\n최대치를 구해야\n하는 상황입니다.\n\nboostcamp aitech\n© NAVER Connect Foundation\n4\n\n- 본 슬라이드는 Mean-Field Variational Inference(MFVI)의 수식 유도를 위한 준비 과정을 설명함.\n- `ELBO`의 수식이 두 가지 형태로 나열되어 있으며, 상수항은 무시함(`Ignore constant`).\n- `q_j^* = argmax_{q_j} ELBO`의 유도 과정이 포함됨.\n- Functional derivative에 대한 설명이 포함되어 있으며, 전통적 미적분(Traditional calculus)과 변분법(Variational calculus)의 차이를 명확히 구분함.\n- 오른쪽 상단의 툴팁은 \"결국, Functional의 최대치를 구해야 하는 상황입니다.\"라는 결론을 제시함."
     },
     {
-      "timestamp_ms": 90000,
-      "extracted_text": "슬라이드 5: 후생(잉여) 개념\n- 소비자 잉여(CS): 지불의사(수요곡선) − 실제 지불가격 영역\n- 생산자 잉여(PS): 실제 수취가격 − 최소 수용가격(공급곡선) 영역\n- 경쟁 균형에서 CS+PS가 (정태적으로) 총후생을 나타내는 기본 지표\n- 연결 포인트: 조세/규제가 들어오면 CS/PS가 줄고, 일부는 세수로 이전되며 일부는 사라짐"
-    },
-    {
-      "timestamp_ms": 120000,
-      "extracted_text": "슬라이드 6: 조세(t) 도입 — 세금 쐐기(tax wedge)\n- 소비자가격 Pc와 생산자가격 Pp가 분리됨: Pc − Pp = t\n- 거래량 감소: Q* → Qtax\n- 면적 해석:\n  - 세수: t × Qtax (정부로 이전되는 사각형 영역)\n  - 사중손실(DWL): 거래량 감소로 생기는 삼각형 영역(누구에게도 가지 않음)\n- 핵심 메시지: ‘누가 더 부담하는가’와 ‘얼마나 비효율이 생기는가’는 탄력성과 연결"
-    },
-    {
-      "timestamp_ms": 240000,
-      "extracted_text": "슬라이드 7: 조세귀착(incidence) — 탄력성이 부담을 결정\n- 법적 납세의무(누가 신고/납부) ≠ 경제적 부담(누가 실제로 손해를 보는가)\n- 직관: 비탄력적인 쪽은 거래량을 줄이기 어려워 가격 조정(부담)을 더 떠안음\n- 결과 요약:\n  - 수요가 비탄력적이면 소비자 부담이 상대적으로 큼(Pc 상승 폭이 큼)\n  - 공급이 비탄력적이면 생산자 부담이 상대적으로 큼(Pp 하락 폭이 큼)\n- 추가 메시지: 탄력적일수록 거래량 변화가 커져 DWL이 커질 수 있음"
-    },
-    {
-      "timestamp_ms": 250000,
-      "extracted_text": "슬라이드 8: 예시 1 — 대체재가 많을 때(탄력적 수요)\n- 상황: 가격이 오르면 소비자가 다른 상품/서비스로 쉽게 이동\n- 시사점:\n  - 세금 전가가 제한될 수 있음(소비자 가격을 크게 올리기 어려움)\n  - 거래량이 크게 줄어 DWL이 커질 위험\n- 정책적 해석: 높은 세율이 기대만큼의 세수를 만들지 못할 수 있음(거래량 축소)"
-    },
-    {
-      "timestamp_ms": 255000,
-      "extracted_text": "슬라이드 9: 예시 2 — 단기 vs 장기 탄력성\n- 단기: 습관/설비/계약 때문에 조정이 어려워 비탄력적일 수 있음\n- 장기: 대체재 탐색, 기술/설비 전환으로 더 탄력적이 될 수 있음\n- 시사점:\n  - 같은 세금이라도 시간이 지나면 거래량 반응이 달라짐\n  - 장기적으로 DWL이 커지거나 구조 변화가 생길 수 있어 동태적 고려 필요"
-    },
-    {
-      "timestamp_ms": 260000,
-      "extracted_text": "슬라이드 10: 핵심 공식/그림 요약(정성적)\n- Pc − Pp = t (세금 쐐기)\n- 세수는 ‘이전(transfer)’이고, DWL은 ‘순손실’\n- DWL은 거래량 감소가 클수록 커지며, 이는 탄력성(민감도)이 크면 더 커질 수 있음\n- 결론: 분배(귀착)와 효율(DWL)을 함께 봐야 정책 평가가 가능"
-    },
-    {
-      "timestamp_ms": 262000,
-      "extracted_text": "슬라이드 11: 한 줄 요약(시험/복습용)\n1) 탄력성: 가격 1% 변화에 대한 수량 %변화\n2) 조세귀착: 더 비탄력적인 쪽이 더 부담\n3) 사중손실: 거래량 감소로 생기는 후생의 순손실(탄력적일수록 커질 수 있음)\n주의: 납세의무자와 실제 부담은 다를 수 있다."
-    },
-    {
-      "timestamp_ms": 265000,
-      "extracted_text": "슬라이드 12: 체크포인트(자기 점검)\n- 대체재가 많으면 수요는 더 탄력적인가?\n- 수요가 비탄력적일 때 세금이 소비자 가격에 더 전가되는가?\n- 세수와 사중손실의 차이를 면적으로 설명할 수 있는가?\n- 단기/장기의 탄력성 차이가 정책 효과를 바꿀 수 있음을 설명할 수 있는가?"
-    },
-    {
-      "timestamp_ms": 285000,
-      "extracted_text": "슬라이드 13: 마무리\n- 오늘: 경쟁시장(수요·공급)에서 탄력성 → 귀착 → DWL 연결\n- 다음: 독점 시장의 가격 결정과 후생 손실(경쟁시장과 비교)\n- 기억할 문장: ‘탄력성이 분배와 효율을 동시에 좌우한다’"
+      "timestamp_ms": 337000,
+      "extracted_text": "### 1.1 MFVI 수식유도 준비과정\n\nTo find x corresponding to local minimum: Find f'(x) or dy/dx and set it to 0\n- solving f'(x) = 0 gives stationary points\n- further testing needed to determine their nature (min or max)\n\n![Graph showing a function f(x) with peaks and valleys on x-y axes](https://i.imgur.com/fake-graph.png)\n*(Note: Graph is manually described as a typical curve with local min/max points, labeled f(x) on y-axis and x on x-axis.)*\n\nIn summary\n- stationary points of function f(x), solve df/dx = 0 for x (regular calculus)\n- stationary functions of a functional I[f] (function of functions), solve (differential) equation for stationary function f(x) (calculus of variations)\n\nFunctional의\n최대치를 구하기\n위한 준비작업\n\nboostcamp aitech\n© NAVER Connect Foundation\n5\n\n- 본 슬라이드는 함수의 최소점 찾는 방법에서 시작하여, 함수의 함수인 Functional의 최대치를 찾는 변분법으로의 연계를 설명한다.\n- 그래프는 `f(x)`의 일반적인 형태를 나타내며, 정지점(stationary points)이 존재함을 시각화함.\n- 요약 부분에서는 일반적 미적분(regular calculus)과 변분법(calculus of variations)의 접근 방식을 비교함.\n  - 일반 함수의 정지점: `df/dx = 0`을 풀어 x를 찾음\n  - Functional의 정지 함수: 미분 방정식을 풀어 정지 함수 `f(x)`를 찾음\n- 오른쪽 상단 툴팁은 \"Functional의 최대치를 구하기 위한 준비작업\"임을 강조함."
     }
   ]
 }

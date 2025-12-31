@@ -11,19 +11,19 @@ sync_engine:
   max_transcript_chars: 2000
   silence_gap_ms: 1500
   max_visual_items: 2
-  max_visual_chars: 900
+  max_visual_chars: 0
   dedup_similarity_threshold: 0.85
 
 summarizer:
-  bullets_per_segment_min: 3
-  bullets_per_segment_max: 5
-  claim_max_chars: 120
+  bullets_per_segment_min: 1
+  bullets_per_segment_max: 0
+  claim_max_chars: 0
   temperature: 0.2
-  json_repair_attempts: 2
+  json_repair_attempts: 0
 
 llm_gemini:
   backend: "developer_api"
-  model: "gemini-2.5-flash"
+  model: "gemini-3-flash-preview"
   timeout_sec: 60
   max_retries: 3
   backoff_sec: [1, 2, 4]

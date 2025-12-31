@@ -29,16 +29,16 @@ class SyncEngineConfig(BaseModel):
     max_transcript_chars: int = Field(..., ge=1)
     silence_gap_ms: int = Field(..., ge=0)
     max_visual_items: int = Field(..., ge=1)
-    max_visual_chars: int = Field(..., ge=1)
+    max_visual_chars: int = Field(..., ge=0)
     dedup_similarity_threshold: float = Field(..., ge=0.0, le=1.0)
 
 
 class SummarizerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    bullets_per_segment_min: int = Field(..., ge=1)
-    bullets_per_segment_max: int = Field(..., ge=1)
-    claim_max_chars: int = Field(..., ge=1)
+    bullets_per_segment_min: int = Field(..., ge=0)
+    bullets_per_segment_max: int = Field(..., ge=0)
+    claim_max_chars: int = Field(..., ge=0)
     temperature: float = Field(..., ge=0.0, le=1.0)
     json_repair_attempts: int = Field(..., ge=0)
 

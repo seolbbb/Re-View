@@ -62,82 +62,181 @@ def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
 
 
 def _build_response_schema() -> Dict[str, Any]:
-    return {
+    evidence_schema = {"type": "array", "items": {"type": "string"}}
+    bullet_schema = {
         "type": "object",
-        "required": ["bullets", "definitions", "open_questions"],
+        "required": ["bullet_id", "claim", "evidence_refs", "confidence", "notes"],
         "properties": {
-            "bullets": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["bullet_id", "claim", "evidence_refs", "confidence", "notes"],
-                    "properties": {
-                        "bullet_id": {"type": "string"},
-                        "claim": {"type": "string"},
-                        "evidence_refs": {
-                            "type": "object",
-                            "required": ["transcript_unit_ids", "visual_unit_ids"],
-                            "properties": {
-                                "transcript_unit_ids": {"type": "array", "items": {"type": "string"}},
-                                "visual_unit_ids": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-                        "notes": {"type": "string"},
-                    },
-                },
+            "bullet_id": {"type": "string"},
+            "claim": {"type": "string"},
+            "evidence_refs": evidence_schema,
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "notes": {"type": "string"},
+        },
+    }
+    definition_schema = {
+        "type": "object",
+        "required": ["term", "definition", "evidence_refs", "confidence", "notes"],
+        "properties": {
+            "term": {"type": "string"},
+            "definition": {"type": "string"},
+            "evidence_refs": evidence_schema,
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "notes": {"type": "string"},
+        },
+    }
+    explanation_schema = {
+        "type": "object",
+        "required": ["point", "evidence_refs", "confidence", "notes"],
+        "properties": {
+            "point": {"type": "string"},
+            "evidence_refs": evidence_schema,
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "notes": {"type": "string"},
+        },
+    }
+    question_schema = {
+        "type": "object",
+        "required": ["question", "evidence_refs", "confidence", "notes"],
+        "properties": {
+            "question": {"type": "string"},
+            "evidence_refs": evidence_schema,
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "notes": {"type": "string"},
+        },
+    }
+    summary_schema = {
+        "type": "object",
+        "required": ["bullets", "definitions", "explanations", "open_questions"],
+        "properties": {
+            "bullets": {"type": "array", "items": bullet_schema},
+            "definitions": {"type": "array", "items": definition_schema},
+            "explanations": {"type": "array", "items": explanation_schema},
+            "open_questions": {"type": "array", "items": question_schema},
+        },
+    }
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["segment_id", "summary"],
+            "properties": {
+                "segment_id": {"type": "integer"},
+                "summary": summary_schema,
             },
-            "definitions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["term", "definition", "evidence_refs"],
-                    "properties": {
-                        "term": {"type": "string"},
-                        "definition": {"type": "string"},
-                        "evidence_refs": {
-                            "type": "object",
-                            "required": ["transcript_unit_ids", "visual_unit_ids"],
-                            "properties": {
-                                "transcript_unit_ids": {"type": "array", "items": {"type": "string"}},
-                                "visual_unit_ids": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    },
-                },
-            },
-            "open_questions": {"type": "array", "items": {"type": "string"}},
         },
     }
 
 
-def _build_prompt(segment: Dict[str, Any], claim_max_chars: int, bullets_min: int, bullets_max: int) -> str:
-    transcript_units = segment.get("transcript_units", [])
-    visual_units = segment.get("visual_units", [])
-    transcript_text = segment.get("transcript_text", "")
-    visual_text = segment.get("visual_text", "")
+def _build_batch_prompt(
+    segments: List[Dict[str, Any]],
+    claim_max_chars: int,
+    bullets_min: int,
+    bullets_max: int,
+) -> str:
+    jsonl_text = "\n".join(json.dumps(segment, ensure_ascii=False) for segment in segments)
+    claim_rule = (
+        f"- claim은 {claim_max_chars}자 이하의 한 문장"
+        if claim_max_chars > 0
+        else "- claim은 한 문장으로 작성 (길이 제한 없음)"
+    )
+    if bullets_min > 0 and bullets_max > 0:
+        bullets_rule = f"- bullets는 {bullets_min}~{bullets_max}개 (권장)"
+    elif bullets_min > 0:
+        bullets_rule = f"- bullets는 최소 {bullets_min}개 (상한 없음)"
+    else:
+        bullets_rule = "- bullets는 필요한 만큼 작성"
 
-    prompt = f"""당신은 강의/발표 구간 요약 전문가입니다.
-모든 출력은 한국어로 작성하고, 아래 입력 구간만 근거로 사용하세요. 새 사실을 만들지 마세요.
+    prompt = f"""
+당신은 20년 경력의 학원 강사로서, 어려운 개념을 짧고 명확하게 풀어 설명하는 전문가입니다.
+단, 당신이 사용할 수 있는 근거는 아래 JSONL 입력뿐이며, 입력에 없는 새로운 사실(정의/정리/응용/예시)을 단정적으로 추가하면 안 됩니다.
+모든 출력은 한국어로 작성하되, 아래 용어 표기 규칙을 반드시 지키세요.
 
-출력은 반드시 순수 JSON만 반환하세요. (설명, 코드블록 금지)
+출력은 반드시 "순수 JSON 배열"만 반환하세요. (설명 문장, 코드블록, 마크다운 금지)
+배열의 각 원소는 다음 형식입니다:
+{{
+  "segment_id": int,
+  "summary": {{
+    "bullets": [...],
+    "definitions": [...],
+    "explanations": [...],
+    "open_questions": [...]
+  }}
+}}
 
 요약 규칙:
-- bullets는 {bullets_min}~{bullets_max}개
-- claim은 {claim_max_chars}자 이하의 한 문장
-- 확신이 없으면 notes에 "확인 불가", confidence는 low
-- evidence_refs는 unit_id(t*, v*)만 사용
-- bullet_id 형식: "{segment.get('segment_id')}-INDEX" (INDEX는 1부터 시작)
+{bullets_rule}
+{claim_rule}
 
-입력:
-segment_id: {segment.get('segment_id')}
-start_ms: {segment.get('start_ms')}
-end_ms: {segment.get('end_ms')}
-transcript_units: {json.dumps(transcript_units, ensure_ascii=False)}
-visual_units: {json.dumps(visual_units, ensure_ascii=False)}
-transcript_text: {json.dumps(transcript_text, ensure_ascii=False)}
-visual_text: {json.dumps(visual_text, ensure_ascii=False)}
+근거/정확성 규칙(매우 중요):
+- bullets/definitions/explanations/open_questions의 각 항목에는 반드시 evidence_refs를 포함해야 하며, evidence_refs는 unit_id(t*, v*)만 사용하세요.
+- 입력에 없는 내용을 설명하고 싶다면, "추론/외부지식"처럼 보일 수 있으므로 금지합니다.
+  대신, 입력에 있는 수식/문장의 구조가 의미하는 바를 '풀이' 형태로 설명하세요.
+  예: "log p(x) = ELBO + KL"이 보이면, "오른쪽이 두 항의 합으로 표현된다" 정도로만 풀어 말하고,
+      KL이 항상 양수라서 하한이 된다는 '일반적 성질'을 단정하지 마세요. (입력에 없으면)
+- 확신이 없으면 notes에 "확인 불가", confidence는 low로 두세요.
+
+출력 포맷 규칙:
+- bullet_id 형식: "SEGMENT_ID-INDEX" (INDEX는 1부터 시작)
+- bullets 항목 스키마:
+  {{
+    "bullet_id": "1-1",
+    "claim": "한 문장 요약(구체적으로)",
+    "evidence_refs": ["t1","v2"],
+    "confidence": "high|medium|low",
+    "notes": ""
+  }}
+- definitions 항목 스키마:
+  {{
+    "term": "용어(규칙에 따라 영어 우선)",
+    "definition": "입력 근거로부터 정리한 정의(1~2문장)",
+    "evidence_refs": ["v2"],
+    "confidence": "high|medium|low",
+    "notes": ""
+  }}
+- explanations 항목 스키마(강사 해설 전용):
+  {{
+    "point": "학생이 헷갈릴만한 지점을 짚는 설명(2~4문장)",
+    "evidence_refs": ["t3","v2"],
+    "confidence": "high|medium|low",
+    "notes": ""
+  }}
+- open_questions 항목 스키마:
+  {{
+    "question": "입력에 근거해 자연스럽게 생기는 질문(1문장)",
+    "evidence_refs": ["t2"],
+    "confidence": "high|medium|low",
+    "notes": ""
+  }}
+
+품질 가이드(설명 강화):
+- 각 segment마다 explanations를 최소 2개 작성하세요.
+- explanations는 다음 중 최소 1개를 포함해야 합니다:
+  1) 수식이 등장하면: 수식의 각 항이 무엇을 나타내는지 '문장으로 해설'
+  2) 비교가 등장하면: 두 개념의 차이를 입력 문구 기반으로 대비 설명
+  3) 용어가 등장하면: 왜 그 용어가 필요한지(입력 맥락) 한 문장으로 풀기
+- 각 segment bullets는 transcript_units 개수에 따라 최소 개수를 강제합니다:
+  * 1~3개: 최소 3개
+  * 4~6개: 최소 5개
+  * 7개 이상: 최소 7개
+
+용어 표기 규칙(중요, 다른 규칙보다 우선):
+- 출력은 기본적으로 한국어로 작성한다.
+- 단, 아래 범주의 전문 용어는 한국어 번역 대신 영어 원어 표기를 우선 사용한다.
+  1) 알고리즘/모델/방법론 명칭 (예: Expectation-Maximization (EM), Variational Inference, Mean-field Variational Inference, ELBO)
+  2) 확률/통계/최적화 핵심 개념 (예: log marginal likelihood, posterior, prior, likelihood, KL divergence, stationary point, stationary function, functional derivative)
+  3) 수식에 직접 등장하는 심볼/표현 (예: log p(x), q(z), p(z|x), \\mathcal{{L}}(q))
+
+- 괄호 규칙:
+  * 처음 등장할 때만 "영어 (약어)" 또는 "영어 (한국어 번역)" 중 하나로 병기한다.
+    - 기본: 영어 (약어) 형태 권장. 예: Expectation-Maximization (EM)
+    - 한국어 병기는 필요할 때만. 예: log marginal likelihood (로그 마지널 라이클리후드)
+  * 이후에는 영어/약어만 사용한다.
+
+입력(JSONL, 1줄=1세그먼트):
+{jsonl_text}
 """
+
     return prompt
 
 
@@ -201,14 +300,35 @@ def _generate_content(
     return _extract_text_from_response(response)
 
 
-def _normalize_evidence_refs(evidence_refs: Any) -> Dict[str, List[str]]:
-    if not isinstance(evidence_refs, dict):
-        return {"transcript_unit_ids": [], "visual_unit_ids": []}
-    transcript_ids = evidence_refs.get("transcript_unit_ids") or []
-    visual_ids = evidence_refs.get("visual_unit_ids") or []
-    transcript_ids = [str(item) for item in transcript_ids if str(item).startswith("t")]
-    visual_ids = [str(item) for item in visual_ids if str(item).startswith("v")]
-    return {"transcript_unit_ids": transcript_ids, "visual_unit_ids": visual_ids}
+def _normalize_evidence_refs(evidence_refs: Any) -> List[str]:
+    candidates: List[str] = []
+    if isinstance(evidence_refs, list):
+        candidates = [str(item) for item in evidence_refs]
+    elif isinstance(evidence_refs, dict):
+        candidates.extend([str(item) for item in evidence_refs.get("transcript_unit_ids", [])])
+        candidates.extend([str(item) for item in evidence_refs.get("visual_unit_ids", [])])
+    elif isinstance(evidence_refs, str):
+        candidates = [evidence_refs]
+    else:
+        return []
+
+    normalized: List[str] = []
+    seen = set()
+    for item in candidates:
+        if not (item.startswith("t") or item.startswith("v")):
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _normalize_confidence(value: Any) -> str:
+    confidence = str(value or "low").lower()
+    if confidence not in {"low", "medium", "high"}:
+        return "low"
+    return confidence
 
 
 def _validate_summary_payload(
@@ -220,24 +340,30 @@ def _validate_summary_payload(
 ) -> Dict[str, Any]:
     bullets = payload.get("bullets") or []
     definitions = payload.get("definitions") or []
+    explanations = payload.get("explanations") or []
     open_questions = payload.get("open_questions") or []
 
     if not isinstance(bullets, list):
         raise ValueError("bullets 형식이 올바르지 않습니다.")
-    if len(bullets) < bullets_min:
+    if not isinstance(definitions, list):
+        raise ValueError("definitions 형식이 올바르지 않습니다.")
+    if not isinstance(explanations, list):
+        raise ValueError("explanations 형식이 올바르지 않습니다.")
+    if not isinstance(open_questions, list):
+        raise ValueError("open_questions 형식이 올바르지 않습니다.")
+    if bullets_min > 0 and len(bullets) < bullets_min:
         raise ValueError("bullets 개수가 부족합니다.")
 
     normalized_bullets: List[Dict[str, Any]] = []
-    for idx, bullet in enumerate(bullets[:bullets_max], start=1):
+    max_items = bullets_max if bullets_max > 0 else len(bullets)
+    for idx, bullet in enumerate(bullets[:max_items], start=1):
         if not isinstance(bullet, dict):
             continue
         claim = str(bullet.get("claim", "")).strip()
-        if len(claim) > claim_max_chars:
+        if claim_max_chars > 0 and len(claim) > claim_max_chars:
             raise ValueError("claim 길이가 초과되었습니다.")
         evidence_refs = _normalize_evidence_refs(bullet.get("evidence_refs"))
-        confidence = str(bullet.get("confidence", "low")).lower()
-        if confidence not in {"low", "medium", "high"}:
-            confidence = "low"
+        confidence = _normalize_confidence(bullet.get("confidence"))
         notes = str(bullet.get("notes", "")).strip()
         bullet_id = f"{segment_id}-{idx}"
         normalized_bullets.append(
@@ -251,42 +377,119 @@ def _validate_summary_payload(
         )
 
     normalized_definitions: List[Dict[str, Any]] = []
-    if isinstance(definitions, list):
-        for item in definitions:
-            if not isinstance(item, dict):
-                continue
-            term = str(item.get("term", "")).strip()
-            definition = str(item.get("definition", "")).strip()
-            evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
-            if term and definition:
-                normalized_definitions.append(
-                    {"term": term, "definition": definition, "evidence_refs": evidence_refs}
-                )
+    for item in definitions:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term", "")).strip()
+        definition = str(item.get("definition", "")).strip()
+        if not term or not definition:
+            continue
+        evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
+        confidence = _normalize_confidence(item.get("confidence"))
+        notes = str(item.get("notes", "")).strip()
+        normalized_definitions.append(
+            {
+                "term": term,
+                "definition": definition,
+                "evidence_refs": evidence_refs,
+                "confidence": confidence,
+                "notes": notes,
+            }
+        )
 
-    normalized_questions: List[str] = []
-    if isinstance(open_questions, list):
-        normalized_questions = [str(item).strip() for item in open_questions if str(item).strip()]
+    normalized_explanations: List[Dict[str, Any]] = []
+    for item in explanations:
+        if isinstance(item, dict):
+            point = str(item.get("point", "")).strip()
+            if not point:
+                continue
+            evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
+            confidence = _normalize_confidence(item.get("confidence"))
+            notes = str(item.get("notes", "")).strip()
+            normalized_explanations.append(
+                {
+                    "point": point,
+                    "evidence_refs": evidence_refs,
+                    "confidence": confidence,
+                    "notes": notes,
+                }
+            )
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized_explanations.append(
+            {
+                "point": text,
+                "evidence_refs": [],
+                "confidence": "low",
+                "notes": "확인 불가",
+            }
+        )
+
+    normalized_questions: List[Dict[str, Any]] = []
+    for item in open_questions:
+        if isinstance(item, dict):
+            question = str(item.get("question", "")).strip()
+            if not question:
+                continue
+            evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
+            confidence = _normalize_confidence(item.get("confidence"))
+            notes = str(item.get("notes", "")).strip()
+            normalized_questions.append(
+                {
+                    "question": question,
+                    "evidence_refs": evidence_refs,
+                    "confidence": confidence,
+                    "notes": notes,
+                }
+            )
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized_questions.append(
+            {
+                "question": text,
+                "evidence_refs": [],
+                "confidence": "low",
+                "notes": "확인 불가",
+            }
+        )
 
     return {
         "bullets": normalized_bullets,
         "definitions": normalized_definitions,
+        "explanations": normalized_explanations,
         "open_questions": normalized_questions,
     }
 
 
-def _parse_json_response(text: str) -> Dict[str, Any]:
+def _parse_json_response(text: str) -> Any:
     cleaned = _strip_code_fences(text)
     return json.loads(cleaned)
 
 
 def _repair_prompt(bad_json: str, bullets_min: int, bullets_max: int, claim_max_chars: int) -> str:
+    claim_rule = (
+        f"- claim은 {claim_max_chars}자 이하"
+        if claim_max_chars > 0
+        else "- claim은 한 문장 (길이 제한 없음)"
+    )
+    if bullets_min > 0 and bullets_max > 0:
+        bullets_rule = f"- bullets는 {bullets_min}~{bullets_max}개"
+    elif bullets_min > 0:
+        bullets_rule = f"- bullets는 최소 {bullets_min}개 (상한 없음)"
+    else:
+        bullets_rule = "- bullets는 필요한 만큼"
     return f"""아래는 잘못된 JSON 출력입니다. 반드시 유효한 JSON만 반환하세요.
-스키마는 bullets/definitions/open_questions 구조입니다. 설명 없이 JSON만 출력하세요.
+출력은 JSON 배열이며, 각 원소는 segment_id와 summary를 포함해야 합니다.
+summary는 bullets/definitions/explanations/open_questions 구조입니다. 설명 없이 JSON만 출력하세요.
 
 규칙:
-- bullets는 {bullets_min}~{bullets_max}개
-- claim은 {claim_max_chars}자 이하
-- evidence_refs는 transcript_unit_ids/visual_unit_ids를 포함
+{bullets_rule}
+{claim_rule}
+- evidence_refs는 unit_id(t*, v*) 배열만 사용
 - confidence는 low|medium|high
 
 잘못된 출력:
@@ -327,59 +530,83 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None, dry_run: b
     paths = config.paths
     ensure_output_root(paths.output_root)
     output_dir = paths.output_root / "fusion"
+    output_dir.mkdir(parents=True, exist_ok=True)
     input_jsonl = output_dir / "segments_units.jsonl"
     if not input_jsonl.exists():
         raise FileNotFoundError(f"segments_units.jsonl이 없습니다: {input_jsonl}")
 
-    response_schema = _build_response_schema()
     bullets_min = config.raw.summarizer.bullets_per_segment_min
     bullets_max = config.raw.summarizer.bullets_per_segment_max
     claim_max_chars = config.raw.summarizer.claim_max_chars
 
-    client_bundle = None
-    if not dry_run:
-        client_bundle = _init_gemini_client(config)
+    segments: List[Dict[str, Any]] = []
+    for segment in read_jsonl(input_jsonl):
+        if limit is not None and len(segments) >= limit:
+            break
+        segments.append(segment)
+
+    if not segments:
+        raise ValueError("요약할 세그먼트가 없습니다.")
+
+    prompt = _build_batch_prompt(segments, claim_max_chars, bullets_min, bullets_max)
+
+    if dry_run:
+        print(f"[DRY RUN] segments={len(segments)} (LLM 미호출, 출력 미생성)")
+        return
+
+    response_schema = _build_response_schema()
+    client_bundle = _init_gemini_client(config)
 
     output_jsonl = output_dir / "segment_summaries.jsonl"
     output_handle = None
-    processed = 0
     try:
-        if not dry_run:
-            output_handle = output_jsonl.open("w", encoding="utf-8")
+        output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        for segment in read_jsonl(input_jsonl):
-            if limit is not None and processed >= limit:
-                break
-            processed += 1
+        llm_text = _run_with_retries(
+            client_bundle,
+            prompt,
+            response_schema,
+            config.raw.summarizer.temperature,
+            config.raw.llm_gemini.response_mime_type,
+            config.raw.llm_gemini.timeout_sec,
+            config.raw.llm_gemini.max_retries,
+            config.raw.llm_gemini.backoff_sec,
+        )
 
-            prompt = _build_prompt(segment, claim_max_chars, bullets_min, bullets_max)
+        last_error: Optional[Exception] = None
+        attempts = config.raw.summarizer.json_repair_attempts
+        for _ in range(attempts + 1):
+            try:
+                payload = _parse_json_response(llm_text)
+                if not isinstance(payload, list):
+                    raise ValueError("응답이 JSON 배열 형식이 아닙니다.")
 
-            if dry_run:
-                continue
-
-            llm_text = _run_with_retries(
-                client_bundle,
-                prompt,
-                response_schema,
-                config.raw.summarizer.temperature,
-                config.raw.llm_gemini.response_mime_type,
-                config.raw.llm_gemini.timeout_sec,
-                config.raw.llm_gemini.max_retries,
-                config.raw.llm_gemini.backoff_sec,
-            )
-
-            last_error: Optional[Exception] = None
-            attempts = config.raw.summarizer.json_repair_attempts
-            for _ in range(attempts + 1):
-                try:
-                    payload = _parse_json_response(llm_text)
-                    summary = _validate_summary_payload(
-                        payload,
-                        int(segment.get("segment_id")),
+                summary_map: Dict[int, Dict[str, Any]] = {}
+                for item in payload:
+                    if not isinstance(item, dict):
+                        raise ValueError("응답 배열의 항목 형식이 올바르지 않습니다.")
+                    if "segment_id" not in item:
+                        raise ValueError("응답에 segment_id가 없습니다.")
+                    segment_id = int(item.get("segment_id"))
+                    if segment_id in summary_map:
+                        raise ValueError(f"중복 segment_id 발견: {segment_id}")
+                    summary_map[segment_id] = _validate_summary_payload(
+                        item.get("summary", {}),
+                        segment_id,
                         claim_max_chars,
                         bullets_min,
                         bullets_max,
                     )
+
+                expected_ids = [int(seg.get("segment_id")) for seg in segments]
+                if set(summary_map.keys()) != set(expected_ids):
+                    missing = sorted(set(expected_ids) - set(summary_map.keys()))
+                    extra = sorted(set(summary_map.keys()) - set(expected_ids))
+                    raise ValueError(f"segment_id 불일치 (missing={missing}, extra={extra})")
+
+                for segment in segments:
+                    segment_id = int(segment.get("segment_id"))
+                    summary = summary_map[segment_id]
                     record = {
                         "run_id": segment.get("run_id"),
                         "segment_id": segment.get("segment_id"),
@@ -396,33 +623,28 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None, dry_run: b
                     }
                     output_handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
                     output_handle.write("\n")
-                    last_error = None
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    repair_prompt = _repair_prompt(
-                        llm_text, bullets_min, bullets_max, claim_max_chars
-                    )
-                    llm_text = _run_with_retries(
-                        client_bundle,
-                        repair_prompt,
-                        response_schema,
-                        config.raw.summarizer.temperature,
-                        config.raw.llm_gemini.response_mime_type,
-                        config.raw.llm_gemini.timeout_sec,
-                        config.raw.llm_gemini.max_retries,
-                        config.raw.llm_gemini.backoff_sec,
-                    )
-            if last_error:
-                raise RuntimeError(
-                    f"segment_id={segment.get('segment_id')} JSON/검증 실패: {last_error}"
+
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                repair_prompt = _repair_prompt(
+                    llm_text, bullets_min, bullets_max, claim_max_chars
                 )
+                llm_text = _run_with_retries(
+                    client_bundle,
+                    repair_prompt,
+                    response_schema,
+                    config.raw.summarizer.temperature,
+                    config.raw.llm_gemini.response_mime_type,
+                    config.raw.llm_gemini.timeout_sec,
+                    config.raw.llm_gemini.max_retries,
+                    config.raw.llm_gemini.backoff_sec,
+                )
+        if last_error:
+            raise RuntimeError(f"LLM JSON/검증 실패: {last_error}")
     finally:
         if output_handle:
             output_handle.close()
-
-    if dry_run:
-        print(f"[DRY RUN] segments={processed} (LLM 미호출, 출력 미생성)")
-        return
 
     print_jsonl_head(output_jsonl, max_lines=2)

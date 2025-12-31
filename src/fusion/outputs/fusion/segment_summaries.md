@@ -1,219 +1,233 @@
-### Segment 1 (00:00–00:30)
+### Segment 1 (00:00–00:37)
 - 요약
-  - (1-1) 본 강의는 미시경제학의 핵심 개념인 수요, 공급, 그리고 탄력성을 5분 동안 빠르게 정리할 것입니다.
+  - (1-1) Variational Inference (변분 추론)의 다양한 유도 방법과 심화 내용을 학습한다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (1-2) Mean-field Variational Inference (MFVI)를 다르게 유도하는 방법을 살펴본다.
+    - evidence: transcript=[t2], visual=[v2]
+    - confidence: high
+  - (1-3) Variational Inference (VI)가 실제 환경에서 어떻게 application (어플리케이션) 되는지 확인한다.
+    - evidence: transcript=[t3], visual=[v2]
+    - confidence: high
+  - (1-4) Expectation-Maximization (EM) 알고리즘의 정의와 특징을 다룬다.
+    - evidence: transcript=[t4], visual=[]
+    - confidence: high
+  - (1-5) EM 알고리즘과 VI 사이의 공통점과 차이점 및 두 개념 사이의 깊은 관련성을 분석한다.
+    - evidence: transcript=[t5], visual=[]
+    - confidence: high
+- 정의
+  - Mean-field Variational Inference (MFVI): 변분 추론의 한 종류로, 이번 강의에서 개념 학습을 완료하고 새로운 유도 방법을 배울 대상이다.
+    - evidence: transcript=[t2], visual=[v2]
+    - confidence: high
+  - Expectation-Maximization (EM): 익스펙테이션 n 맥시마이제이션으로 불리는 알고리즘으로, VI와 밀접한 관련이 있다.
+    - evidence: transcript=[t4,t5], visual=[]
+    - confidence: high
+- 해설
+  - 강의의 전반적인 구성은 MFVI의 심화 유도와 VI의 실제 적용 사례를 다루는 데 집중되어 있습니다.
+    - evidence: transcript=[t1,t2,t3], visual=[v2]
+    - confidence: high
+  - EM 알고리즘은 VI와 비교 분석될 핵심 개념으로 등장하며, 두 방법론이 서로 어떻게 연결되는지 파악하는 것이 중요합니다.
+    - evidence: transcript=[t4,t5], visual=[]
+    - confidence: high
+- 확인 불가/열린 질문
+  - EM 알고리즘과 VI는 구체적으로 어떤 수학적 구조를 공유하기에 깊은 관련이 있다고 하는가?
+    - evidence: transcript=[t5], visual=[]
+    - confidence: medium
+
+### Segment 2 (00:37–01:48)
+- 요약
+  - (2-1) MFVI를 유도하기 위해 log p(x, z)의 기댓값 등을 활용하는 트릭을 사용한다.
+    - evidence: transcript=[t4], visual=[v2]
+    - confidence: high
+  - (2-2) Evidence Lower Bound (ELBO) 또는 log marginal likelihood (로그 마지널 라이클리후드)의 하한을 최대화하는 것이 목표이다.
+    - evidence: transcript=[t5,t7], visual=[]
+    - confidence: high
+  - (2-3) ELBO를 최대화하기 위한 최적의 q를 찾는 과정이 MFVI의 핵심이다.
+    - evidence: transcript=[t6,t7], visual=[]
+    - confidence: high
+  - (2-4) 이상적인 q는 posterior (사후 확률)이지만, 이를 정확히 구할 수 없는 경우가 많다.
+    - evidence: transcript=[t8], visual=[]
+    - confidence: high
+  - (2-5) ELBO를 최대화함으로써 q를 posterior에 가깝게 만들 수 있다.
+    - evidence: transcript=[t9], visual=[]
+    - confidence: high
+  - (2-6) Functional derivative (변분 미분)는 함수를 입력으로 받아 실수를 출력하는 functional의 변화를 다룬다.
+    - evidence: transcript=[], visual=[v2]
+    - confidence: high
+  - (2-7) 전통적인 미적분은 실수를 입력으로 받지만, 변분법은 함수 자체를 입력으로 취급한다.
+    - evidence: transcript=[], visual=[v2]
+    - confidence: high
+- 정의
+  - Evidence Lower Bound (ELBO): log marginal likelihood의 로어 바운드로, 이를 최대화하여 q를 posterior에 근사시킨다.
+    - evidence: transcript=[t5,t7,t9], visual=[]
+    - confidence: high
+  - Functional derivative (변분 미분): 입력이 함수인 functional에서, 해당 함수가 변할 때 functional이 어떻게 변하는지 측정하는 것이다.
+    - evidence: transcript=[], visual=[v2]
+    - confidence: high
+- 해설
+  - ELBO 수식에서 q_j^*를 구하는 과정은 ELBO라는 functional을 최대화하는 q_j를 찾는 argmax 연산으로 표현됩니다.
+    - evidence: transcript=[], visual=[v2]
+    - confidence: high
+  - 우리가 posterior를 직접 구할 수 없기 때문에, 대신 계산 가능한 ELBO를 최대화하여 간접적으로 posterior에 접근하는 전략을 취합니다.
+    - evidence: transcript=[t8,t9], visual=[]
+    - confidence: high
+- 확인 불가/열린 질문
+  - ELBO를 최대화하는 것이 어떻게 q를 posterior에 가깝게 만드는 수학적 보장이 되는가?
+    - evidence: transcript=[t9], visual=[]
+    - confidence: medium
+
+### Segment 3 (01:48–03:04)
+- 요약
+  - (3-1) Posterior를 정확히 구할 수 없으므로 ELBO를 최대화하는 q를 찾는 것이 목적이다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (3-2) 변수가 많아질수록 q의 구조가 매우 복잡해질 수 있다.
+    - evidence: transcript=[t2,t4], visual=[]
+    - confidence: high
+  - (3-3) q_j는 전체 latent variable (레이턴트 베리어블) 중 일부를 나타내는 간소화된 버전이다.
+    - evidence: transcript=[t3,t5], visual=[]
+    - confidence: high
+  - (3-4) Latent Dirichlet Allocation (LDA)와 같이 latent variable이 여러 개인 모델은 직접적인 유도가 어렵다.
+    - evidence: transcript=[t6], visual=[]
+    - confidence: high
+  - (3-5) 서로 다른 분포(Gaussian, Dirichlet, Multinomial)를 따르는 변수들의 joint (조인트) 분포를 정의하기 어렵다.
+    - evidence: transcript=[t7,t8], visual=[]
+    - confidence: high
+  - (3-6) 복잡한 문제를 해결하기 위해 q를 q1, q2, q3와 같이 각각 쪼개서 분석한다.
+    - evidence: transcript=[t9], visual=[]
+    - confidence: high
+  - (3-7) ELBO 수식 내의 기댓값 E_{i != j}는 j를 제외한 나머지 변수들에 대한 평균을 의미한다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+- 정의
+  - Latent Dirichlet Allocation (LDA): 여러 개의 latent variable을 포함하고 있어 q를 직접 정의하거나 유도하기 어려운 모델의 예시이다.
+    - evidence: transcript=[t6], visual=[]
+    - confidence: high
+  - latent variable (잠재 변수): 데이터 이외의 관측되지 않는 변수들로, VI를 통해 이들의 분포를 추정하고자 한다.
+    - evidence: transcript=[t5], visual=[]
+    - confidence: high
+- 해설
+  - ELBO 수식에서 적분 기호와 프로덕트 기호(Π)가 사용된 이유는 여러 q_i들의 결합을 나타내기 위함이며, 특정 q_j에 대해 최적화하기 위해 나머지를 분리합니다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+  - 서로 다른 확률 분포를 따르는 변수들이 섞여 있을 때 그들의 joint 분포를 하나로 정의하는 것은 불가능에 가깝기 때문에, 각 변수별로 q를 쪼개는 Mean-field 가정이 필요합니다.
+    - evidence: transcript=[t7,t8,t9], visual=[]
+    - confidence: high
+- 확인 불가/열린 질문
+  - q를 개별적으로 쪼개서 분석할 때, 변수들 사이의 상관관계가 무시되는 문제는 어떻게 해결하는가?
+    - evidence: transcript=[t9], visual=[]
+    - confidence: low
+    - notes: 입력 내용 기반 추론
+
+### Segment 4 (03:04–04:17)
+- 요약
+  - (4-1) 각각의 q를 독립적으로 최대화하려는 시도가 Mean-field assumption (민 필드 어썸션)의 핵심이다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - (4-2) MFVI를 유도하는 세 번째 방법으로 functional derivative를 상세히 살펴본다.
+    - evidence: transcript=[t2,t3], visual=[]
+    - confidence: high
+  - (4-3) Variational calculus (변분법)는 일반적인 미적분과 달리 함수를 입력으로 받는다.
+    - evidence: transcript=[t6,t8], visual=[v1]
+    - confidence: high
+  - (4-4) 일반적인 calculus (미적분)는 실수를 입력받아 실수를 출력하는 함수를 다룬다.
+    - evidence: transcript=[t7], visual=[v1]
+    - confidence: high
+  - (4-5) Functional (펑셔널)은 함수 f(x)를 입력으로 받아 실수를 내뱉는 '함수에 대한 함수'이다.
+    - evidence: transcript=[t8,t9], visual=[v1]
+    - confidence: high
+  - (4-6) Functional derivative는 VI뿐만 아니라 다양한 분야에서 광범위하게 사용되는 도구이다.
+    - evidence: transcript=[t4,t5], visual=[]
+    - confidence: high
+  - (4-7) 결국 우리가 해결해야 할 문제는 functional의 최대치를 구하는 상황으로 귀결된다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+- 정의
+  - Mean-field assumption (민 필드 가정): 복잡한 joint 분포를 개별적인 q들의 곱으로 분리하여 각각을 최대화할 수 있다고 가정하는 사항이다.
+    - evidence: transcript=[t1], visual=[]
+    - confidence: high
+  - Variational calculus (변분법): 입력이 함수인 functional을 다루는 미적분학의 한 분야이다.
+    - evidence: transcript=[t8], visual=[v1]
+    - confidence: high
+- 해설
+  - 전통적인 미적분(Traditional calculus)이 R에서 R로의 매핑을 다룬다면, 변분법(Variational calculus)은 함수 공간에서 R로의 매핑을 다룬다는 차이가 있습니다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+  - Functional derivative가 필요한 이유는 우리가 최적화하려는 대상인 ELBO 자체가 특정 값이 아닌 '함수 q'에 의존하는 functional이기 때문입니다.
+    - evidence: transcript=[t8,t9], visual=[v1]
+    - confidence: high
+- 확인 불가/열린 질문
+  - 함수를 입력으로 받는 functional의 미분은 일반적인 함수의 미분법과 계산 방식에서 어떤 차이가 있는가?
+    - evidence: transcript=[t6], visual=[v1]
+    - confidence: medium
+
+### Segment 5 (04:17–05:37)
+- 요약
+  - (5-1) f(x)를 입력으로 받는 f는 '함수에 대한 함수'인 functional로 정의된다.
+    - evidence: transcript=[t2,t3], visual=[]
+    - confidence: high
+  - (5-2) ELBO는 확률 분포 함수 q_j를 입력으로 받아 값을 결정하므로 functional의 대표적인 예시이다.
+    - evidence: transcript=[t4,t5,t6], visual=[v1]
+    - confidence: high
+  - (5-3) Functional derivative는 입력 함수가 변할 때 functional의 출력값이 어떻게 변하는지 그 변화량을 추정한다.
+    - evidence: transcript=[t7,t8,t9], visual=[v1]
+    - confidence: high
+  - (5-4) Functional derivative는 variational derivative (변분 미분)라고도 불린다.
+    - evidence: transcript=[t9], visual=[v1]
+    - confidence: high
+  - (5-5) 일반 미적분에서는 df/dx = 0을 풀어 stationary point (정지점)를 찾는다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+  - (5-6) 변분법에서는 미분 방정식을 풀어 functional을 정지시키는 stationary function (정지 함수) f(x)를 찾는다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+  - (5-7) Functional의 최대치를 구하기 위해 이러한 미분 개념들을 준비 과정으로 학습한다.
+    - evidence: transcript=[t10], visual=[v1]
+    - confidence: high
+- 정의
+  - Functional (펑셔널): 함수를 입력으로 받아 실수를 출력하는 함수로, ELBO가 이에 해당한다.
+    - evidence: transcript=[t3,t6], visual=[v1]
+    - confidence: high
+  - stationary function (정지 함수): Functional의 변화율이 0이 되게 하는 함수로, 변분법의 미분 방정식을 통해 구한다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+- 해설
+  - ELBO 수식에서 q_j가 가우시안 분포와 같은 함수 형태를 띠고 있으며, 이 함수 전체가 ELBO의 입력이 되기 때문에 ELBO를 functional이라고 부릅니다.
+    - evidence: transcript=[t4,t5,t6], visual=[]
+    - confidence: high
+  - 일반 미적분은 최적의 '지점(point)'을 찾지만, 변분법은 최적의 '함수(function)' 자체를 찾는다는 점이 가장 큰 차이입니다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+- 확인 불가/열린 질문
+  - ELBO를 최대화하는 stationary function을 찾았을 때, 그것이 항상 전역 최댓값임을 어떻게 보장할 수 있는가?
+    - evidence: transcript=[], visual=[v1]
+    - confidence: low
+    - notes: v1에서 추가 테스트가 필요하다고 언급됨
+
+### Segment 6 (05:37–06:05)
+- 요약
+  - (6-1) 함수 f(x)에서 최대가 되는 x를 찾기 위해 미분값 f'(x)가 0이 되는 지점을 활용한다.
+    - evidence: transcript=[t2], visual=[v1]
+    - confidence: high
+  - (6-2) f'(x) = 0을 만족하는 지점을 stationary point라고 정의한다.
+    - evidence: transcript=[t3], visual=[v1]
+    - confidence: high
+  - (6-3) Stationary point를 찾은 후에는 해당 점이 극대(max)인지 극소(min)인지 판별하는 추가 과정이 필요할 수 있다.
+    - evidence: transcript=[], visual=[v1]
+    - confidence: high
+- 정의
+  - stationary point (정지점): 함수의 도함수 f'(x) 또는 dy/dx가 0이 되는 지점을 의미한다.
+    - evidence: transcript=[t3], visual=[v1]
+    - confidence: high
+- 해설
+  - 일반적인 미적분학에서 함수의 최댓값을 찾는 가장 기본적인 방법은 도함수를 0으로 만드는 x값을 구하는 것입니다.
+    - evidence: transcript=[t2,t3], visual=[v1]
+    - confidence: high
+  - 이 과정은 functional의 최대치를 구하기 위한 변분법적 접근을 이해하기 위한 기초적인 준비 단계에 해당합니다.
     - evidence: transcript=[t1], visual=[v1]
     - confidence: high
-  - (1-2) 탄력성은 가격 변화에 대한 수요나 공급의 민감도를 나타내는 개념으로, 조세 부담 및 후생 분석과 연관됩니다.
-    - evidence: transcript=[t1], visual=[]
-    - confidence: high
-  - (1-3) 강의는 수요·공급 곡선, 가격 탄력성, 소비자·생산자 잉여, 조세의 영향, 그리고 탄력성을 통한 조세귀착 설명을 다룰 예정입니다.
-    - evidence: transcript=[t2], visual=[v2]
-    - confidence: high
-  - (1-4) 핵심 메시지는 시장의 민감도를 '기울기'가 아닌 '% 변화(탄력성)'로 비교해야 한다는 것입니다.
-    - evidence: transcript=[], visual=[v3]
-    - confidence: high
-  - (1-5) 강의에서 다룰 주요 키워드는 균형, 대체재/필수재, 소비자·생산자 잉여, 조세 쐐기, 그리고 사중손실입니다.
-    - evidence: transcript=[t2], visual=[v4]
-    - confidence: high
-- 정의
-  - 탄력성: 가격이 변할 때 수요나 공급이 얼마나 민감하게 반응하는지 나타내는 개념
-    - evidence: transcript=[t1], visual=[]
-
-### Segment 2 (00:30–01:00)
-- 요약
-  - (2-1) 강의는 수요·공급 곡선과 균형, 가격 탄력성, 소비자·생산자 잉여, 조세의 시장 영향, 그리고 조세귀착을 탄력성으로 설명하는 다섯 가지 주제로 진행됩니다.
-    - evidence: transcript=[t1], visual=[v1,v2,v3,v4,v5,v6]
-    - confidence: high
-  - (2-2) 그래프를 설명할 때 핵심은 '기울기'가 아닌 '탄력성'이며, 이는 단위가 다른 경우에도 비교를 가능하게 합니다.
-    - evidence: transcript=[t2,t3], visual=[]
-    - confidence: high
-  - (2-3) 표준 수요·공급 그래프는 수요 곡선이 우하향하고 공급 곡선이 우상향하며, 두 곡선의 교차점이 균형을 이룹니다.
-    - evidence: transcript=[t3], visual=[]
-    - confidence: high
-  - (2-4) 가격 변화에 따른 수요량 감소를 파악하고 조세 부담이 전가되는 정도를 설명하는 데 탄력성이 중요한 역할을 합니다.
-    - evidence: transcript=[t3], visual=[v6]
-    - confidence: high
-- 정의
-  - 가격 탄력성: 수요량 변화율을 가격 변화율로 나눈 값(ΔQ% / ΔP%)으로, 가격 변화에 대한 민감도를 나타냅니다.
-    - evidence: transcript=[t1], visual=[v3]
-  - 조세귀착: 조세 부담이 누가 더 지는지, 즉 경제 주체들 사이에 조세 부담이 어떻게 분배되는지를 의미합니다.
-    - evidence: transcript=[t1], visual=[v6]
-  - 세금 쐐기: 조세 도입 시 소비자가격(Pc)과 생산자가격(Pp) 사이에 발생하는 차이를 나타내는 개념입니다.
-    - evidence: transcript=[t1], visual=[v5]
-
-### Segment 3 (01:00–01:15)
-- 요약
-  - (3-1) 수요 곡선은 우하향하고 공급 곡선은 우상향하며, 이들의 교차점에서 시장 균형이 결정됩니다.
-    - evidence: transcript=[t1], visual=[v1,v2,v3]
-    - confidence: high
-  - (3-2) 탄력성은 가격 변화에 대한 수량 반응을 측정하여 단위가 달라도 비교 가능하게 하며, 조세 부담 전가 설명에 활용됩니다.
-    - evidence: transcript=[t1], visual=[v5]
-    - confidence: high
-  - (3-3) 수요의 가격 탄력성은 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내며, 관례적으로 절댓값을 사용합니다.
-    - evidence: transcript=[t2], visual=[]
-    - confidence: high
-  - (3-4) 탄력성이 크다는 것은 가격 변화에 수요량이 크게 반응하는 민감한 시장임을 의미합니다.
-    - evidence: transcript=[t2], visual=[]
-    - confidence: high
-- 정의
-  - 수요의 가격 탄력성: 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내는 지표로, 보통 절댓값을 사용합니다.
-    - evidence: transcript=[t2], visual=[]
-
-### Segment 4 (01:15–01:30)
-- 요약
-  - (4-1) 수요의 가격 탄력성은 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내며, 보통 음수지만 관례적으로 절댓값을 사용한다.
-    - evidence: transcript=[t1], visual=[v2,v3]
-    - confidence: high
-  - (4-2) 탄력성이 크면 가격 변화에 수요량이 민감하게 반응하는 탄력적인 시장이고, 작으면 둔감한 비탄력적인 시장으로 해석된다.
-    - evidence: transcript=[t1], visual=[v3]
-    - confidence: high
-  - (4-3) 대체재가 많거나 장기적인 관점에서는 수요가 탄력적이며, 필수재이거나 단기적인 관점에서는 비탄력적일 가능성이 크다.
-    - evidence: transcript=[t2], visual=[v4]
-    - confidence: high
-  - (4-4) 가격 탄력성은 그래프 기울기와 동일한 개념이 아니며, 단위 의존성 때문에 백분율 변화로 측정하는 것이 유리하다.
-    - evidence: transcript=[t1], visual=[v5]
-    - confidence: high
-- 정의
-  - 수요의 가격 탄력성: 가격이 1% 변할 때 수요량이 몇 % 변하는지를 나타내는 지표로, (수요량의 %변화)를 (가격의 %변화)로 나눈 값이다.
-    - evidence: transcript=[t1], visual=[v2]
-
-### Segment 5 (01:30–02:00)
-- 요약
-  - (5-1) 상품의 탄력성은 대체재의 존재 여부, 필수재 특성, 그리고 시간에 따라 달라지며, 대체재가 많거나 장기일수록 탄력성이 커집니다.
-    - evidence: transcript=[t1], visual=[]
-    - confidence: high
-  - (5-2) 소비자 잉여는 소비자가 지불할 의사가 있는 가격과 실제 지불 가격의 차이로 발생하는 이득이며, 그래프에서는 균형가격 위쪽 삼각형 면적으로 표현됩니다.
-    - evidence: transcript=[t2], visual=[v2]
-    - confidence: high
-  - (5-3) 생산자 잉여는 생산자가 최소한으로 수용하려는 가격과 실제 수취 가격의 차이로 발생하는 이득이며, 그래프에서는 균형가격 아래쪽 삼각형 면적으로 표현됩니다.
-    - evidence: transcript=[t2], visual=[v3]
-    - confidence: high
-  - (5-4) 소비자 잉여와 생산자 잉여의 합은 총후생의 기본 지표이며, 조세나 규제가 도입되면 이 잉여가 감소하고 효율성 손실이 발생합니다.
-    - evidence: transcript=[t2,t3], visual=[v4,v5]
-    - confidence: high
-- 정의
-  - 탄력성: 가격 변화에 대한 수요량 또는 공급량의 반응 정도를 나타내는 개념으로, 대체재 유무, 필수재 여부, 시간에 따라 달라집니다.
-    - evidence: transcript=[t1], visual=[]
-  - 소비자 잉여 (CS): 소비자가 어떤 상품에 대해 지불할 용의가 있는 최대 금액과 실제로 지불한 금액의 차이로 얻는 이득입니다.
-    - evidence: transcript=[t2], visual=[v2]
-  - 생산자 잉여 (PS): 생산자가 어떤 상품을 판매하여 실제로 받은 금액과 생산자가 최소한으로 받고자 했던 금액의 차이로 얻는 이득입니다.
-    - evidence: transcript=[t2], visual=[v3]
-  - 세금 쐐기 (Tax Wedge): 조세가 부과될 때 수요자와 공급자가 지불하고 받는 가격 사이에 발생하는 차이를 의미하며, 탄력성이 조세 부담과 사중손실을 결정하는 데 중요합니다.
-    - evidence: transcript=[t3], visual=[v5]
-
-### Segment 6 (02:00–02:56)
-- 요약
-  - (6-1) 조세 도입 시 소비자가 지불하는 가격과 생산자가 받는 가격이 분리되며, 그 차이가 세금 쐐기(tax wedge)를 형성합니다.
-    - evidence: transcript=[t1,t2], visual=[v1,v2]
-    - confidence: high
-  - (6-2) 세금의 경제적 부담은 법적 납세의무자가 아닌 시장 참여자의 탄력성에 의해 결정되며, 비탄력적인 쪽이 더 많은 부담을 집니다.
-    - evidence: transcript=[t1,t2], visual=[v7]
-    - confidence: high
-  - (6-3) 조세는 거래량 감소로 이어져 누구에게도 가지 않는 후생 손실인 사중손실(deadweight loss)을 발생시키며, 이 손실의 크기는 탄력성에 비례합니다.
-    - evidence: transcript=[t1,t2], visual=[v6,v7]
-    - confidence: high
-  - (6-4) 효율성 손실을 줄이기 위한 조세 설계 원칙은 비탄력적인 시장에 과세하는 것이며, 탄력적인 시장에 과도한 세율을 적용하면 효율성 비용이 커집니다.
-    - evidence: transcript=[t2], visual=[]
-    - confidence: high
-  - (6-5) 조세 분석에서 탄력성을 정확히 추정하려면 가격과 수량의 동시 결정 문제로 인해 단순 기울기 대신 로그-로그 추정이나 자연실험 같은 인과적 접근이 필요합니다.
-    - evidence: transcript=[t2], visual=[]
-    - confidence: high
-- 정의
-  - 세금 쐐기 (tax wedge): 조세 도입 시 소비자가 지불하는 가격(Pc)과 생산자가 실제로 받는 가격(Pp)이 분리되며, 그 차이가 세금 t가 되는 현상 또는 그 차이 자체를 의미합니다.
-    - evidence: transcript=[t1,t2], visual=[v1,v2]
-  - 사중손실 (deadweight loss): 세금 도입으로 인한 거래량 감소로 인해 발생하는, 정부 세수로도 가지 않고 누구에게도 돌아가지 않는 후생의 손실을 의미하며, 그래프에서는 삼각형 면적으로 나타납니다.
-    - evidence: transcript=[t2], visual=[v6]
-  - 경제적 부담 (economic incidence): 세금의 법적 납세의무와는 별개로, 시장에서 가격 변화를 통해 소비자와 생산자가 실제로 떠안게 되는 세금의 몫을 의미하며, 탄력성에 의해 결정됩니다.
-    - evidence: transcript=[t2], visual=[v7]
-
-### Segment 7 (02:56–04:00)
-- 요약
-  - (7-1) 조세 부담은 법적 납세의무자가 아닌 탄력성에 의해 결정되며, 사중손실은 거래량 감소로 발생하고 탄력적일수록 커질 수 있다.
-    - evidence: transcript=[t2], visual=[v3,v6,v7]
-    - confidence: high
-  - (7-2) 정책 평가 시에는 조세 부담의 분배 효과와 효율성 비용을 함께 고려해야 하며, 왜곡을 줄이려면 비탄력적인 시장에 세금을 매기는 것이 일반적이다.
-    - evidence: transcript=[t2,t3], visual=[]
-    - confidence: high
-  - (7-3) 조세 정책은 형평성 및 다른 목표와 충돌할 수 있으므로 왜곡 최소화만을 위한 단일 원칙만으로는 충분하지 않다.
-    - evidence: transcript=[t3], visual=[]
-    - confidence: high
-  - (7-4) 조세귀착의 핵심은 비탄력적인 쪽이 더 많은 부담을 지고 탄력적일수록 사중손실이 커진다는 것이며, 이는 그래프와 함께 이해해야 한다.
-    - evidence: transcript=[t4], visual=[v1,v2,v3,v4,v5,v6,v7]
-    - confidence: high
-- 정의
-  - 사중손실: 거래량 감소로 인해 발생하는 삼각형 영역으로, 누구에게도 가지 않는 비효율성 비용이다.
-    - evidence: transcript=[t2], visual=[v6]
-  - 조세귀착: 조세 부담이 법적 납세의무자가 아닌 시장의 탄력성에 따라 최종적으로 누구에게 전가되는지를 의미한다.
-    - evidence: transcript=[t2,t4], visual=[v7]
-
-### Segment 8 (04:00–04:15)
-- 요약
-  - (8-1) 조세귀착의 핵심 원리는 비탄력적인 주체가 세금 부담을 더 많이 지고, 탄력적일수록 사중손실이 커진다는 것이다.
-    - evidence: transcript=[t1], visual=[v1,v3,v7]
-    - confidence: high
-  - (8-2) 법적 납세의무자와 실제로 경제적 부담을 지는 주체는 다를 수 있으며, 탄력성이 세금 부담의 귀착을 결정한다.
-    - evidence: transcript=[], visual=[v1,v2]
-    - confidence: high
-  - (8-3) 수요가 비탄력적이면 소비자 부담이, 공급이 비탄력적이면 생산자 부담이 상대적으로 커진다.
-    - evidence: transcript=[], visual=[v5,v6]
-    - confidence: high
-  - (8-4) 대체재가 많아 수요가 탄력적인 상품에 높은 세금을 부과하면 거래량이 크게 줄어 세수 증가가 제한되고 사중손실이 커질 수 있다.
-    - evidence: transcript=[t2], visual=[v8,v9,v12,v13]
-    - confidence: high
-  - (8-5) 매우 비탄력적인 시장에서는 세금으로 인한 가격 조정에도 거래량 감소가 적어 사중손실이 상대적으로 작게 나타난다.
-    - evidence: transcript=[t2], visual=[]
-    - confidence: high
-- 정의
-  - 조세귀착(incidence): 법적 납세의무와 경제적 부담이 다를 수 있으며, 탄력성이 세금 부담을 결정하는 원리.
-    - evidence: transcript=[t1], visual=[v1,v2,v3]
-  - 사중손실(DWL): 시장의 탄력성이 높을수록 세금 부과 시 거래량 변화가 커져 발생하는 후생 손실.
-    - evidence: transcript=[t1,t2], visual=[v7,v12]
-
-### Segment 9 (04:15–04:45)
-- 요약
-  - (9-1) 탄력적인 상품에 높은 세금을 부과하면 거래량 감소로 세수 증가가 기대에 못 미치고 후생 손실이 커질 수 있습니다.
-    - evidence: transcript=[t1], visual=[v4]
-    - confidence: high
-  - (9-2) 비탄력적인 시장에서는 세금 부과 시 거래량 감소가 적어 사중손실이 상대적으로 작게 나타납니다.
-    - evidence: transcript=[t1], visual=[v4]
-    - confidence: high
-  - (9-3) 탄력성은 %변화 기준으로 비교가 가능하며, 조세귀착은 탄력성의 상대적 크기에 따라 결정됩니다.
-    - evidence: transcript=[t2], visual=[]
-    - confidence: high
-  - (9-4) 사중손실(DWL)은 거래량 감소로 발생하며, 시장의 탄력성이 클수록 그 손실이 더 커질 수 있습니다.
-    - evidence: transcript=[t1,t2], visual=[v3,v4]
-    - confidence: high
-  - (9-5) 정책을 평가할 때는 조세의 분배(귀착)와 효율(사중손실)을 함께 고려해야 합니다.
-    - evidence: transcript=[], visual=[v5]
-    - confidence: high
-- 정의
-  - 세금 쐐기: 소비자가 지불하는 가격(Pc)과 생산자가 받는 가격(Pp)의 차이가 세금(t)과 같음을 나타냅니다.
-    - evidence: transcript=[], visual=[v2]
-  - 세수: 정부로의 이전(transfer)을 의미합니다.
-    - evidence: transcript=[], visual=[v3]
-  - 사중손실: 거래량 감소로 인해 발생하는 순손실이며, 탄력성이 클수록 더 커질 수 있습니다.
-    - evidence: transcript=[t1,t2], visual=[v3,v4]
 - 확인 불가/열린 질문
-  - 대체재가 많으면 수요는 더 탄력적인가?
-  - 수요가 비탄력적일 때 세금이 소비자 가격에 더 전가되는가?
-  - 세수와 사중손실의 차이를 면적으로 설명할 수 있는가?
-  - 단기/장기의 탄력성 차이가 정책 효과를 바꿀 수 있음을 설명할 수 있는가?
-
-### Segment 10 (04:45–05:01)
-- 요약
-  - (10-1) 탄력성은 %변화 기준이므로 서로 다른 재화나 서비스 간의 비교를 가능하게 합니다.
-    - evidence: transcript=[t1], visual=[]
-    - confidence: high
-  - (10-2) 조세의 귀착은 수요와 공급의 상대적인 탄력성 크기에 의해 결정됩니다.
-    - evidence: transcript=[t1], visual=[]
-    - confidence: high
-  - (10-3) 사중손실은 거래량 감소로 발생하며, 시장이 탄력적일수록 그 크기가 커질 수 있습니다.
-    - evidence: transcript=[t1], visual=[]
-    - confidence: high
-  - (10-4) 오늘 강의에서는 경쟁시장에서의 수요와 공급, 탄력성, 조세귀착, 그리고 사중손실의 연관성을 학습했습니다.
-    - evidence: transcript=[t1], visual=[v2]
-    - confidence: high
-  - (10-5) 다음 시간에는 독점 시장에서의 가격 결정과 후생 손실을 경쟁시장과 비교하며 심층적으로 다룰 예정입니다.
-    - evidence: transcript=[t2], visual=[v3]
-    - confidence: high
+  - Stationary point가 여러 개 존재할 경우, 그중에서 실제 최대치를 어떻게 특정할 수 있는가?
+    - evidence: transcript=[], visual=[v1]
+    - confidence: medium
 
