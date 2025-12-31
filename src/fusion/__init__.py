@@ -1,2 +1,2 @@
-"""Data alignment and LLM note generation."""
+"""STT/VLM 퓨전, Gemini 요약, 렌더링, 최종 요약 파이프라인."""
 

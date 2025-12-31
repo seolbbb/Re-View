@@ -4,7 +4,8 @@ pydantic>=2.5.0
 python-dotenv
 requests
 tqdm
-google-generativeai
+google-genai
+pyyaml
 mediapipe>=0.10.0
 openai-whisper
 torch
