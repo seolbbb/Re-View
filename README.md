@@ -40,6 +40,22 @@
 
 ### ▶️ 실행 방법
 
+#### Option 0: End-to-End 실행 (영상 1개 → STT/Capture/VLM → Fusion 요약) ⭐ 추천
+
+```bash
+python src/run_video_pipeline.py --video "src/data/input/screentime-mvp-video.mp4"
+```
+
+**출력 결과**(동영상별로 격리 저장):
+
+- `data/outputs/{video_name}/stt.json`
+- `data/outputs/{video_name}/captures/*.jpg`
+- `data/outputs/{video_name}/manifest.json`
+- `data/outputs/{video_name}/vlm_raw.json`
+- `data/outputs/{video_name}/vlm.json`
+- `data/outputs/{video_name}/pipeline_run.json` (구간별 소요 시간 로그)
+- `data/outputs/{video_name}/fusion/outputs/final_summary_A.md` (외 B/C)
+
 #### Option 1: 캡처만 실행 (영상 → 슬라이드 이미지) ⭐ 추천
 
 ```bash
@@ -134,8 +150,8 @@ Lecture-Note-AI/
 │   │   ├── input/                   # 입력 영상 (.mp4)
 │   │   └── output/                  # 출력 (JSON, 이미지, 텍스트)
 │   ├── audio/                       # 음성 처리 (개발 중)
-│   ├── ocr/                         # OCR (개발 중)
-│   └── fusion/                      # 데이터 융합 (개발 중)
+│   ├── vlm/                         # VLM(OpenRouter) 이미지 텍스트 추출
+│   └── fusion/                      # STT+VLM 퓨전 및 요약 파이프라인
 └── tests/
     └── test_video_processor_simple.py  # 단위 테스트
 ```

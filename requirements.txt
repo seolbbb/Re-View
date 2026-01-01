@@ -8,5 +8,5 @@ google-genai
 pyyaml
 mediapipe>=0.10.0
 openai-whisper
+openai>=1.0.0
 torch
-

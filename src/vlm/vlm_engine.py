@@ -1,3 +1,7 @@
+"""VLM(비전 LLM) 기반 슬라이드 텍스트/수식 추출(OpenRouter)."""
+
+from __future__ import annotations
+
 import argparse
 import base64
 import json
@@ -11,6 +15,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.common.schemas import OcrBox, OcrResult
+
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 SYSTEM_PROMPT = (
     "Output only Markdown. Use Markdown tables when layout matters. "
@@ -26,7 +32,6 @@ USER_PROMPT = (
     "텍스트가 거의 없거나 그림/그래프 위주라면 시각 요소를 구체적으로 설명하라"
 )
 
-# LLM output is text-only, so we attach it to a full-image placeholder bbox.
 FULL_IMAGE_BBOX = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
 DEFAULT_REQUEST_PARAMS = {
@@ -43,17 +48,28 @@ DEFAULT_REQUEST_PARAMS = {
 BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
 
 
-class OpenRouterOcrExtractor:
-    """Extract OCR hints via a vision-capable OpenRouter model."""
+def load_env() -> None:
+    if ENV_PATH.exists():
+        load_dotenv(ENV_PATH)
+    else:
+        load_dotenv()
+
+
+class OpenRouterVlmExtractor:
+    """Vision-capable OpenRouter 모델로 이미지 텍스트/수식 힌트를 추출한다."""
 
     def __init__(self, video_name: Optional[str] = None, output_root: Path = Path("data/outputs")) -> None:
-        load_dotenv()
+        load_env()
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is not set in the environment.")
 
         self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        self.model_name = os.getenv("OPENROUTER_OCR_MODEL", "qwen/qwen3-vl-32b-instruct")
+        self.model_name = (
+            os.getenv("OPENROUTER_VLM_MODEL")
+            or os.getenv("OPENROUTER_OCR_MODEL")
+            or "qwen/qwen3-vl-32b-instruct"
+        )
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         self.request_params = dict(DEFAULT_REQUEST_PARAMS)
 
@@ -75,7 +91,7 @@ class OpenRouterOcrExtractor:
     def get_output_path(self) -> Path:
         if not self.video_name:
             raise ValueError("video_name is required to build the output path.")
-        return self.output_root / self.video_name / "vlm.json"
+        return self.output_root / self.video_name / "vlm_raw.json"
 
     def _build_image_part(self, image_path: str) -> dict:
         if not os.path.exists(image_path):
@@ -135,15 +151,7 @@ class OpenRouterOcrExtractor:
         return results
 
     def extract_features(self, image_paths: List[str], batch_size: Optional[int] = None) -> List[OcrResult]:
-        """
-        Run OCR over provided images and keep text in a single bounding box.
-
-        Args:
-            batch_size: Number of images per API request. Defaults to all images per request.
-
-        Returns:
-            List[OcrResult]: Structured OCR results per image.
-        """
+        """이미지 리스트에 대해 VLM 호출을 수행하고, 결과를 이미지 단위로 반환한다."""
         if not image_paths:
             return []
         if batch_size is None:
@@ -186,17 +194,15 @@ class OpenRouterOcrExtractor:
 
         return results
 
-def _write_json(results: List[OcrResult], output_path: Path) -> None:
+
+def write_vlm_raw_json(results: List[OcrResult], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = [result.model_dump() for result in results]
-    output_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run OpenRouter OCR on one or more images.")
+    parser = argparse.ArgumentParser(description="OpenRouter VLM 실행 (이미지 → Markdown 텍스트)")
     parser.add_argument(
         "--image",
         action="append",
@@ -211,15 +217,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--video-name",
         required=True,
-        help="Video name used to build data/outputs/{video_name}/vlm.json.",
+        help="data/outputs/{video_name}/vlm_raw.json 경로를 만들 때 사용할 이름",
+    )
+    parser.add_argument(
+        "--output-root",
+        default="data/outputs",
+        help="원시 결과 출력 베이스 디렉토리 (기본: data/outputs)",
     )
     args = parser.parse_args()
 
-    extractor = OpenRouterOcrExtractor(video_name=args.video_name)
+    extractor = OpenRouterVlmExtractor(video_name=args.video_name, output_root=Path(args.output_root))
     if args.model:
         extractor.model_name = args.model
 
-    ocr_results = extractor.extract_features(args.image)
+    results = extractor.extract_features(args.image)
     output_path = extractor.get_output_path()
-    _write_json(ocr_results, output_path)
-    print(f"Saved output to {output_path}")
+    write_vlm_raw_json(results, output_path)
+    print(f"[OK] saved to {output_path}")
