@@ -9,13 +9,11 @@ src/audio/
 ├── clova_stt.py
 ├── extract_audio.py
 ├── stt_router.py
-└── test.py
 ```
 
 - `clova_stt.py`: Clova Speech STT 클라이언트. `stt.json` 스키마(v1)로 저장하며, 세그먼트마다 `confidence`를 포함할 수 있음.
-- `stt_router.py`: STT 제공자 라우터. 현재는 `clova`만 지원하며, `STT_PROVIDER` 환경변수로 선택.
+- `stt_router.py`: STT 제공자 라우터. 현재는 `clova`만 지원하며, `STT_PROVIDER` 환경변수로 선택. (영상 입력 시 `transcribe_media()` 사용)
 - `extract_audio.py`: ffmpeg로 영상에서 오디오 추출(기본 16k/mono WAV).
-- `test.py`: Clova REST 테스트용 스크립트. **원본 응답(raw)** 저장 목적.
 - `audio_processor.py`: Whisper 기반 로컬 STT 파이프라인(추출+전사) 실험용.
 - `__init__.py`: 패키지 초기화.
 
@@ -48,7 +46,11 @@ python src/audio/clova_stt.py --media-path src/data/input/sample.mp4
 from src.audio.stt_router import STTRouter
 
 router = STTRouter()  # STT_PROVIDER 없으면 clova
-router.transcribe("src/data/input/sample.mp4")
+# 오디오 파일이 이미 있을 때
+router.transcribe("src/data/input/sample_audio.wav")
+
+# 영상 → 오디오 추출 → STT
+router.transcribe_media("src/data/input/sample.mp4", mono_method="auto")
 ```
 
 ### 3) 오디오 추출
@@ -57,11 +59,6 @@ python src/audio/extract_audio.py --media-path src/data/input/sample.mp4
 ```
 
 기본 출력:
-- `src/data/output/<입력파일명>/audio.wav`
-
-### 4) Clova 원본 응답 테스트
-```bash
-python src/audio/test.py --media-path src/data/input/sample.mp4
-```
-
-`test.py`는 **원본 응답 저장용**이라 `clova_stt.py` 출력 포맷과 다릅니다.
+- `src/data/input/<입력파일명>.wav`
+모노 옵션:
+- `--mono-method downmix|left|right|phase-fix|auto` (기본: auto, 60초 구간 기준으로 자동 선택)

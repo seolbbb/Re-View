@@ -1,6 +1,9 @@
 # 실행: python src/audio/extract_audio.py --media-path src/data/input/screentime-mvp-video.mp4
-# 옵션: --output-path src/data/output/sample/audio.wav (기본: src/data/output/<입력파일명>/audio.wav)
-# 옵션: --sample-rate 16000 --channels 1 --codec pcm_s16le
+# 옵션: --output-path src/data/input/sample.wav (기본: src/data/input/<입력파일명>.wav)
+# 옵션: --sample-rate 16000 (샘플레이트 Hz, 기본 16000)
+# 옵션: --channels 1 (오디오 채널 수, 기본 1=모노)
+# 옵션: --codec pcm_s16le (오디오 코덱, 기본 WAV용 pcm_s16le)
+# 옵션: --mono-method downmix|left|right|phase-fix|auto (모노 생성 방식, 기본: auto)
 # 참고: ffmpeg 설치 필요
 """Extract audio track from a media file using ffmpeg."""
 
@@ -12,7 +15,7 @@ from pathlib import Path
 
 
 def default_output_path(media_path: Path) -> Path:
-    return Path("src/data/input") / media_path.stem / "audio.wav"
+    return Path("src/data/input") / f"{media_path.stem}.wav"
 
 
 def extract_audio(
@@ -22,6 +25,7 @@ def extract_audio(
     sample_rate: int = 16000,
     channels: int = 1,
     codec: str = "pcm_s16le",
+    mono_method: str = "auto",
 ) -> Path:
     media_path = Path(media_path).expanduser()
     if not media_path.exists():
@@ -30,12 +34,21 @@ def extract_audio(
     output_path = Path(output_path) if output_path else default_output_path(media_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    command = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(media_path),
-        "-vn",
+    if mono_method in ("left", "right", "phase-fix", "auto") and channels != 1:
+        raise ValueError("mono-method requires channels=1.")
+
+    if mono_method == "auto":
+        mono_method = _select_best_mono_method(media_path, sample_rate=sample_rate)
+
+    command = ["ffmpeg", "-y", "-i", str(media_path), "-vn"]
+    if mono_method == "left":
+        command += ["-af", "pan=mono|c0=c0"]
+    elif mono_method == "right":
+        command += ["-af", "pan=mono|c0=c1"]
+    elif mono_method == "phase-fix":
+        command += ["-af", "pan=mono|c0=0.5*c0-0.5*c1"]
+
+    command += [
         "-acodec",
         codec,
         "-ar",
@@ -56,6 +69,78 @@ def extract_audio(
     return output_path
 
 
+def _select_best_mono_method(media_path: Path, *, sample_rate: int, probe_seconds: int = 60) -> str:
+    candidates = ["downmix", "left", "right", "phase-fix"]
+    volumes: dict[str, float] = {}
+    for candidate in candidates:
+        volume = _measure_mean_volume(
+            media_path, mono_method=candidate, sample_rate=sample_rate, probe_seconds=probe_seconds
+        )
+        if volume is not None:
+            volumes[candidate] = volume
+
+    if not volumes:
+        return "downmix"
+
+    best_method = max(volumes, key=volumes.get)
+    print(f"[INFO] mono-method auto selected: {best_method} (mean_volume={volumes[best_method]} dB)")
+    return best_method
+
+
+def _measure_mean_volume(
+    media_path: Path,
+    *,
+    mono_method: str,
+    sample_rate: int,
+    probe_seconds: int,
+) -> float | None:
+    filter_chain = []
+    if mono_method == "left":
+        filter_chain.append("pan=mono|c0=c0")
+    elif mono_method == "right":
+        filter_chain.append("pan=mono|c0=c1")
+    elif mono_method == "phase-fix":
+        filter_chain.append("pan=mono|c0=0.5*c0-0.5*c1")
+    filter_chain.append("volumedetect")
+
+    command = [
+        "ffmpeg",
+        "-i",
+        str(media_path),
+        "-vn",
+        "-t",
+        str(probe_seconds),
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-af",
+        ",".join(filter_chain),
+        "-f",
+        "null",
+        "-",
+    ]
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if not result.stderr:
+        return None
+    for line in result.stderr.splitlines():
+        if "mean_volume:" in line:
+            value = line.split("mean_volume:", 1)[1].strip().split(" ")[0]
+            if value == "-inf":
+                return -9999.0
+            try:
+                return float(value)
+            except ValueError:
+                return None
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract audio from a media file.")
     parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
@@ -63,6 +148,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-rate", type=int, default=16000, help="Sample rate (Hz).")
     parser.add_argument("--channels", type=int, default=1, help="Audio channels.")
     parser.add_argument("--codec", default="pcm_s16le", help="Audio codec (ffmpeg).")
+    parser.add_argument(
+        "--mono-method",
+        default="auto",
+        choices=("downmix", "left", "right", "phase-fix", "auto"),
+        help="Mono creation method (downmix or channel select/phase-fix/auto).",
+    )
     return parser.parse_args()
 
 
@@ -74,6 +165,7 @@ def main() -> None:
         sample_rate=args.sample_rate,
         channels=args.channels,
         codec=args.codec,
+        mono_method=args.mono_method,
     )
     print(f"[OK] Audio saved to {output_path.resolve()}")
 
