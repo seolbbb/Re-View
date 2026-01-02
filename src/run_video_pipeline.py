@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 
 from src.audio.speech_client import ClovaSpeechClient
 from src.audio.preprocess_audio import preprocess_audio
-from src.capture.video_processor import VideoProcessor
+from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
 from src.fusion.final_summary_composer import compose_final_summaries
 from src.fusion.io_utils import ensure_output_root
@@ -107,25 +107,23 @@ def _run_stt_clova(video_path: Path, output_stt_json: Path) -> None:
 
 def _run_capture(
     video_path: Path,
-    captures_dir: Path,
-    manifest_json: Path,
+    output_base: Path,
     *,
     threshold: float,
+    dedupe_threshold: float,
     min_interval: float,
     verbose: bool,
     video_name: str,
 ) -> List[Dict[str, Any]]:
-    captures_dir.mkdir(parents=True, exist_ok=True)
-    processor = VideoProcessor()
-    metadata = processor.extract_keyframes(
+    # process_content.py의 표준 모듈을 호출하여 실행합니다.
+    # 이 함수는 내부적으로 {output_base}/{video_name}/captures 폴더를 생성하고 manifest.json을 관리합니다.
+    metadata = process_single_video_capture(
         str(video_path),
-        output_dir=str(captures_dir),
-        threshold=threshold,
-        min_interval=min_interval,
-        verbose=verbose,
-        video_name=video_name,
+        str(output_base),
+        scene_threshold=threshold,
+        dedupe_threshold=dedupe_threshold,
+        min_interval=min_interval
     )
-    _write_json(manifest_json, metadata)
     return metadata
 
 
@@ -225,10 +223,11 @@ def _run_fusion_pipeline(config_path: Path, *, limit: Optional[int], dry_run: bo
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="비디오 1개 입력으로 end-to-end 요약 실행")
     parser.add_argument("--video", required=True, help="입력 비디오 파일 경로")
-    parser.add_argument("--output-base", default="data/outputs", help="동영상별 outputs 베이스 디렉토리")
+    parser.add_argument("--output-base", default="src/data/output", help="동영상별 outputs 베이스 디렉토리")
     parser.add_argument("--stt-backend", choices=["clova"], default="clova", help="STT 백엔드")
     parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True, help="STT+Capture 병렬 실행")
-    parser.add_argument("--capture-threshold", type=float, default=11.0, help="장면 전환 감지 임계값")
+    parser.add_argument("--capture-threshold", type=float, default=3.0, help="장면 전환 감지 임계값")
+    parser.add_argument("--capture-dedupe-threshold", type=float, default=3.0, help="중복 제거 임계값 (2차 정제)")
     parser.add_argument("--capture-min-interval", type=float, default=0.5, help="캡처 최소 간격(초)")
     parser.add_argument("--capture-verbose", action="store_true", help="캡처 상세 로그 출력")
     parser.add_argument("--vlm-batch-size", type=int, default=None, help="VLM 배치 크기(미지정 시 전부 한 번에)")
@@ -281,9 +280,9 @@ def main() -> None:
                     "capture",
                     _run_capture,
                     video_path,
-                    captures_dir,
-                    manifest_json,
+                    output_base,
                     threshold=args.capture_threshold,
+                    dedupe_threshold=args.capture_dedupe_threshold,
                     min_interval=args.capture_min_interval,
                     verbose=args.capture_verbose,
                     video_name=video_name,
@@ -296,9 +295,9 @@ def main() -> None:
                 "capture",
                 _run_capture,
                 video_path,
-                captures_dir,
-                manifest_json,
+                output_base,
                 threshold=args.capture_threshold,
+                dedupe_threshold=args.capture_dedupe_threshold,
                 min_interval=args.capture_min_interval,
                 verbose=args.capture_verbose,
                 video_name=video_name,

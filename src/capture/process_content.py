@@ -27,6 +27,60 @@ from src.capture.video_processor import VideoProcessor
 from src.capture.scene_visualizer import SceneVisualizer
 
 
+def process_single_video_capture(video_path, output_dir, scene_threshold=3, dedupe_threshold=3, min_interval=0.5):
+    """
+    단일 비디오에 대해 키프레임 추출, 메타데이터 생성, 분석 그래프 생성을 수행합니다.
+    run_video_pipeline.py에서도 이 함수를 호출하여 동일한 로직을 공유합니다.
+    """
+    video_processor = VideoProcessor()
+    scene_visualizer = SceneVisualizer()
+    
+    filename = os.path.basename(video_path)
+    video_name = os.path.splitext(filename)[0]
+    
+    # [구조화] 비디오별 폴더 생성 (표준 구조)
+    video_root = os.path.join(output_dir, video_name)
+    capture_output_dir = os.path.join(video_root, "captures")
+    os.makedirs(capture_output_dir, exist_ok=True)
+    
+    print(f"\n🎬 분석 중: {filename}")
+    
+    # 키프레임 추출 (1차+2차 정제 통합)
+    keyframes_metadata, diff_scores, fps = video_processor.extract_keyframes(
+        video_path,
+        output_dir=capture_output_dir,
+        threshold=scene_threshold,
+        min_interval=min_interval,
+        verbose=True,
+        video_name=video_name,
+        return_analysis_data=True,
+        dedupe_threshold=dedupe_threshold
+    )
+
+    if keyframes_metadata:
+        # 메타데이터 JSON 저장 (manifest.json으로 정규화)
+        metadata_path = os.path.join(video_root, "manifest.json")
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(keyframes_metadata, f, indent=4, ensure_ascii=False)
+        print(f"   📋 메타데이터 저장: {os.path.basename(metadata_path)}")
+        
+        # Scene Change Analysis 그래프 생성
+        if diff_scores:
+            graph_path = os.path.join(video_root, f"{video_name}_scene_analysis.png")
+            scene_visualizer.create_scene_change_graph(
+                diff_scores=diff_scores,
+                keyframes_metadata=keyframes_metadata,
+                threshold=scene_threshold,
+                fps=fps,
+                video_name=video_name,
+                output_path=graph_path,
+                dedupe_threshold=dedupe_threshold
+            )
+            print(f"   📊 그래프 저장: {os.path.basename(graph_path)}")
+    
+    return keyframes_metadata
+
+
 def main():
     """
     [메인 오케스트레이터]
@@ -69,13 +123,10 @@ def main():
     print("[2/2] 비디오 분석 및 키프레임 추출")
     print("="*60)
     
-    video_processor = VideoProcessor()
-    scene_visualizer = SceneVisualizer()
-    
-    # 파이프라인 설정값 (필요시 조정)
-    SCENE_THRESHOLD = 3     # 1차 정제: 장면 전환 감지 임계값 (낮을수록 민감)
-    DEDUPE_THRESHOLD = 3      # 2차 정제: 중복 제거 임계값 (높을수록 더 많이 제거)
-    MIN_INTERVAL = 0.5         # 캡처 간 최소 시간 간격 (초)
+    # 파이프라인 설정값
+    SCENE_THRESHOLD = 3
+    DEDUPE_THRESHOLD = 3
+    MIN_INTERVAL = 0.5
     
     video_files = glob.glob(os.path.join(input_dir, "*.mp4"))
     
@@ -83,44 +134,13 @@ def main():
         print("⚠ 처리할 비디오 파일이 없습니다.")
     
     for video_path in video_files:
-        filename = os.path.basename(video_path)
-        video_name = os.path.splitext(filename)[0]
-        capture_output_dir = os.path.join(output_dir, f"{video_name}_frames")
-        
-        print(f"\n🎬 분석 중: {filename}")
-        
-        # 키프레임 추출 (1차+2차 정제 통합)
-        keyframes_metadata, diff_scores, fps = video_processor.extract_keyframes(
-            video_path,
-            output_dir=capture_output_dir,
-            threshold=SCENE_THRESHOLD,
-            min_interval=MIN_INTERVAL,
-            verbose=True,
-            video_name=video_name,
-            return_analysis_data=True,
-            dedupe_threshold=DEDUPE_THRESHOLD
+        process_single_video_capture(
+            video_path, 
+            output_dir, 
+            scene_threshold=SCENE_THRESHOLD, 
+            dedupe_threshold=DEDUPE_THRESHOLD, 
+            min_interval=MIN_INTERVAL
         )
-
-        if keyframes_metadata:
-            # 메타데이터 JSON 저장
-            metadata_path = os.path.join(output_dir, f"{video_name}_metadata.json")
-            with open(metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(keyframes_metadata, f, indent=4, ensure_ascii=False)
-            print(f"   📋 메타데이터 저장: {os.path.basename(metadata_path)}")
-            
-            # Scene Change Analysis 그래프 생성 (1차/2차 정제 표시)
-            if diff_scores:
-                graph_path = os.path.join(output_dir, f"{video_name}_scene_analysis.png")
-                scene_visualizer.create_scene_change_graph(
-                    diff_scores=diff_scores,
-                    keyframes_metadata=keyframes_metadata,
-                    threshold=SCENE_THRESHOLD,
-                    fps=fps,
-                    video_name=video_name,
-                    output_path=graph_path,
-                    dedupe_threshold=DEDUPE_THRESHOLD
-                )
-                print(f"   📊 그래프 저장: {os.path.basename(graph_path)}")
 
     print("\n" + "="*60)
     print("✅ 파이프라인 완료")
