@@ -1,0 +1,313 @@
+{
+  "video_name": "screentime-mvp-video",
+  "timestamp": "2026-01-02 19:54:02",
+  "parameters": {
+    "scene_thresholds": [
+      3,
+      4,
+      5,
+      6
+    ],
+    "dedupe_thresholds": [
+      3,
+      5,
+      7,
+      10
+    ]
+  },
+  "results": [
+    {
+      "scene_threshold": 3,
+      "dedupe_threshold": 3,
+      "execution_time_sec": 24.92,
+      "detected_scenes": 20,
+      "skipped_frames": 12,
+      "final_saved": 9,
+      "metadata_count": 9,
+      "output_folder": "scene3_dedupe3",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m04s866ms_3.04.jpg",
+        "screentime-mvp-video_005_00h00m36s866ms_3.24.jpg",
+        "screentime-mvp-video_006_00h00m44s866ms_8.36.jpg",
+        "screentime-mvp-video_007_00h00m47s399ms_3.02.jpg",
+        "screentime-mvp-video_008_00h06m00s733ms_3.96.jpg",
+        "screentime-mvp-video_009_00h06m04s133ms_9.01.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 3,
+      "dedupe_threshold": 5,
+      "execution_time_sec": 24.24,
+      "detected_scenes": 20,
+      "skipped_frames": 14,
+      "final_saved": 7,
+      "metadata_count": 7,
+      "output_folder": "scene3_dedupe5",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m36s866ms_3.24.jpg",
+        "screentime-mvp-video_005_00h00m47s399ms_3.02.jpg",
+        "screentime-mvp-video_006_00h06m00s733ms_3.96.jpg",
+        "screentime-mvp-video_007_00h06m04s133ms_9.01.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 3,
+      "dedupe_threshold": 7,
+      "execution_time_sec": 23.79,
+      "detected_scenes": 20,
+      "skipped_frames": 14,
+      "final_saved": 7,
+      "metadata_count": 7,
+      "output_folder": "scene3_dedupe7",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m44s866ms_8.36.jpg",
+        "screentime-mvp-video_005_00h00m47s399ms_3.02.jpg",
+        "screentime-mvp-video_006_00h06m00s733ms_3.96.jpg",
+        "screentime-mvp-video_007_00h06m04s133ms_9.01.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 3,
+      "dedupe_threshold": 10,
+      "execution_time_sec": 23.95,
+      "detected_scenes": 20,
+      "skipped_frames": 15,
+      "final_saved": 6,
+      "metadata_count": 6,
+      "output_folder": "scene3_dedupe10",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m04s866ms_3.04.jpg",
+        "screentime-mvp-video_004_00h00m51s799ms_3.12.jpg",
+        "screentime-mvp-video_005_00h06m00s733ms_3.96.jpg",
+        "screentime-mvp-video_006_00h06m04s133ms_9.01.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 4,
+      "dedupe_threshold": 3,
+      "execution_time_sec": 20.54,
+      "detected_scenes": 14,
+      "skipped_frames": 7,
+      "final_saved": 8,
+      "metadata_count": 8,
+      "output_folder": "scene4_dedupe3",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m06s999ms_4.09.jpg",
+        "screentime-mvp-video_005_00h00m44s866ms_8.30.jpg",
+        "screentime-mvp-video_006_00h02m43s466ms_4.24.jpg",
+        "screentime-mvp-video_007_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_008_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 4,
+      "dedupe_threshold": 5,
+      "execution_time_sec": 20.48,
+      "detected_scenes": 14,
+      "skipped_frames": 8,
+      "final_saved": 7,
+      "metadata_count": 7,
+      "output_folder": "scene4_dedupe5",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m44s866ms_8.30.jpg",
+        "screentime-mvp-video_005_00h02m43s466ms_4.24.jpg",
+        "screentime-mvp-video_006_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_007_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 4,
+      "dedupe_threshold": 7,
+      "execution_time_sec": 20.43,
+      "detected_scenes": 14,
+      "skipped_frames": 9,
+      "final_saved": 6,
+      "metadata_count": 6,
+      "output_folder": "scene4_dedupe7",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h02m43s466ms_4.24.jpg",
+        "screentime-mvp-video_005_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_006_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 4,
+      "dedupe_threshold": 10,
+      "execution_time_sec": 20.42,
+      "detected_scenes": 14,
+      "skipped_frames": 11,
+      "final_saved": 4,
+      "metadata_count": 4,
+      "output_folder": "scene4_dedupe10",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m06s999ms_4.09.jpg",
+        "screentime-mvp-video_004_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 5,
+      "dedupe_threshold": 3,
+      "execution_time_sec": 17.88,
+      "detected_scenes": 11,
+      "skipped_frames": 5,
+      "final_saved": 7,
+      "metadata_count": 7,
+      "output_folder": "scene5_dedupe3",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m13s599ms_5.05.jpg",
+        "screentime-mvp-video_005_00h05m37s066ms_11.08.jpg",
+        "screentime-mvp-video_006_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_007_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 5,
+      "dedupe_threshold": 5,
+      "execution_time_sec": 17.88,
+      "detected_scenes": 11,
+      "skipped_frames": 5,
+      "final_saved": 7,
+      "metadata_count": 7,
+      "output_folder": "scene5_dedupe5",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h00m13s599ms_5.05.jpg",
+        "screentime-mvp-video_005_00h05m37s066ms_11.08.jpg",
+        "screentime-mvp-video_006_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_007_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 5,
+      "dedupe_threshold": 7,
+      "execution_time_sec": 17.95,
+      "detected_scenes": 11,
+      "skipped_frames": 6,
+      "final_saved": 6,
+      "metadata_count": 6,
+      "output_folder": "scene5_dedupe7",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m02s133ms_5.27.jpg",
+        "screentime-mvp-video_004_00h05m37s066ms_11.08.jpg",
+        "screentime-mvp-video_005_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_006_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 5,
+      "dedupe_threshold": 10,
+      "execution_time_sec": 18.04,
+      "detected_scenes": 11,
+      "skipped_frames": 8,
+      "final_saved": 4,
+      "metadata_count": 4,
+      "output_folder": "scene5_dedupe10",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m13s599ms_5.05.jpg",
+        "screentime-mvp-video_004_00h06m04s133ms_7.79.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 6,
+      "dedupe_threshold": 3,
+      "execution_time_sec": 17.3,
+      "detected_scenes": 9,
+      "skipped_frames": 3,
+      "final_saved": 7,
+      "metadata_count": 7,
+      "output_folder": "scene6_dedupe3",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m04s866ms_8.07.jpg",
+        "screentime-mvp-video_004_00h00m44s866ms_7.81.jpg",
+        "screentime-mvp-video_005_00h05m37s066ms_11.08.jpg",
+        "screentime-mvp-video_006_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_007_00h06m04s133ms_6.86.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 6,
+      "dedupe_threshold": 5,
+      "execution_time_sec": 17.39,
+      "detected_scenes": 9,
+      "skipped_frames": 4,
+      "final_saved": 6,
+      "metadata_count": 6,
+      "output_folder": "scene6_dedupe5",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m04s866ms_8.07.jpg",
+        "screentime-mvp-video_004_00h05m37s066ms_11.08.jpg",
+        "screentime-mvp-video_005_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_006_00h06m04s133ms_6.86.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 6,
+      "dedupe_threshold": 7,
+      "execution_time_sec": 17.42,
+      "detected_scenes": 9,
+      "skipped_frames": 4,
+      "final_saved": 6,
+      "metadata_count": 6,
+      "output_folder": "scene6_dedupe7",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m04s866ms_8.07.jpg",
+        "screentime-mvp-video_004_00h05m37s066ms_11.08.jpg",
+        "screentime-mvp-video_005_00h06m00s799ms_10.74.jpg",
+        "screentime-mvp-video_006_00h06m04s133ms_6.86.jpg"
+      ]
+    },
+    {
+      "scene_threshold": 6,
+      "dedupe_threshold": 10,
+      "execution_time_sec": 19.08,
+      "detected_scenes": 9,
+      "skipped_frames": 6,
+      "final_saved": 4,
+      "metadata_count": 4,
+      "output_folder": "scene6_dedupe10",
+      "files": [
+        "screentime-mvp-video_001_00h00m00s000ms_0.00.jpg",
+        "screentime-mvp-video_002_00h00m00s533ms_12.25.jpg",
+        "screentime-mvp-video_003_00h00m04s866ms_8.07.jpg",
+        "screentime-mvp-video_004_00h06m04s133ms_6.86.jpg"
+      ]
+    }
+  ]
+}
