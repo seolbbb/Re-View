@@ -5,16 +5,16 @@
 ```
 src/audio/
 ├── __init__.py
-├── audio_processor.py
 ├── clova_stt.py
 ├── extract_audio.py
 ├── stt_router.py
+├── whisper_stt.py
 ```
 
 - `clova_stt.py`: Clova Speech STT 클라이언트. `stt.json` 스키마(v1)로 저장하며, 세그먼트마다 `confidence`를 포함할 수 있음.
-- `stt_router.py`: STT 제공자 라우터. 현재는 `clova`만 지원하며, `STT_PROVIDER` 환경변수로 선택. (영상 입력 시 `transcribe_media()` 사용)
+- `stt_router.py`: STT 제공자 라우터. `clova`/`whisper` 지원, `STT_PROVIDER`로 선택. (영상 입력 시 `transcribe_media()` 사용)
 - `extract_audio.py`: ffmpeg로 영상에서 오디오 추출(기본 16k/mono WAV).
-- `audio_processor.py`: Whisper 기반 로컬 STT 파이프라인(추출+전사) 실험용.
+- `whisper_stt.py`: Whisper 로컬 STT 클라이언트(오디오 입력 전용).
 - `__init__.py`: 패키지 초기화.
 
 ## 실행 방법
@@ -24,8 +24,16 @@ src/audio/
 - 오디오 추출: `ffmpeg` 설치 필요 (예: `apt-get install ffmpeg`)
 - 토큰 계산(선택): `pip install tiktoken`
 - Whisper(선택): `pip install -U openai-whisper torch` + `ffmpeg`
-- 현재 audio 테스트에서 설치한 패키지: `requests`, `pydantic`, `python-dotenv`, `tiktoken`
+- 현재 audio 테스트에서 설치한 패키지: `requests`, `pydantic`, `python-dotenv`, `tiktoken`, `openai-whisper`, `torch`
 - 환경변수: `CLOVA_SPEECH_URL`, `CLOVA_SPEECH_API_KEY` (또는 `CLOVA_SPEECH_SECRET`)
+- 설치 패키지 버전 (py310 기준):
+  - `requests==2.32.5`
+  - `pydantic==2.12.5`
+  - `python-dotenv==1.2.1`
+  - `tiktoken==0.12.0`
+  - `openai-whisper==20250625`
+  - `torch==2.9.1`
+  - 참고: torch 설치 시 CUDA 관련 패키지가 함께 설치될 수 있음(GPU 빌드).
 
 ### 1) Clova STT (스키마 v1 출력)
 ```bash
@@ -47,10 +55,19 @@ from src.audio.stt_router import STTRouter
 
 router = STTRouter()  # STT_PROVIDER 없으면 clova
 # 오디오 파일이 이미 있을 때
-router.transcribe("src/data/input/sample_audio.wav")
+router.transcribe("src/data/input/sample.wav", provider="whisper")
 
 # 영상 → 오디오 추출 → STT
-router.transcribe_media("src/data/input/sample.mp4", mono_method="auto")
+router.transcribe_media("src/data/input/sample.mp4", provider="clova", mono_method="auto")
+```
+
+CLI 예시:
+```bash
+# 영상 입력 + clova
+python src/audio/stt_router.py --media-path src/data/input/sample.mp4 --provider clova
+
+# 오디오 입력 + whisper (추출 스킵)
+python src/audio/stt_router.py --media-path src/data/input/sample.wav --provider whisper --no-extract --model-size base
 ```
 
 ### 3) 오디오 추출
@@ -62,3 +79,8 @@ python src/audio/extract_audio.py --media-path src/data/input/sample.mp4
 - `src/data/input/<입력파일명>.wav`
 모노 옵션:
 - `--mono-method downmix|left|right|phase-fix|auto` (기본: auto, 60초 구간 기준으로 자동 선택)
+
+### 4) Whisper STT (오디오 입력)
+```bash
+python src/audio/whisper_stt.py --audio-path src/data/input/sample.wav --model-size base
+```
