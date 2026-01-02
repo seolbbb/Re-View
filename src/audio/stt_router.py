@@ -1,13 +1,32 @@
 # 사용:
 # from src.audio.stt_router import STTRouter
 #
-# router = STTRouter()  # STT_PROVIDER 환경변수 없으면 기본 clova
-# router.transcribe("src/data/input/screentime-mvp-video.mp4")
-# router.transcribe_media("src/data/input/screentime-mvp-video.mp4")
+# router = STTRouter(provider="clova")  # 기본값은 clova, provider로 clova/whisper 선택 가능
+# router.transcribe_media(
+#     "src/data/input/screentime-mvp-video.mp4",
+#     provider="clova",
+#     include_confidence=True,  # 문장 단위 신뢰도 포함
+#     include_raw_response=True,  # segments 외에 전체 응답 포함
+#     word_alignment=True,  # 추가적으로 단어 단위 타임스탬프 포함
+#     full_text=True,  # include_raw_response가 True일 경우에만 의미 있음
+#     completion="sync",  # "sync" 기본. "async"는 폴링 미구현으로 결과 비어 있을 수 있음
+#     language="ko-KR",  # 예: ko-KR, en-US, enko, ja-JP, zh-CN, zh-TW
+#     timeout=120,  # 지정 초 내 응답 없으면 Timeout 예외
+#     mono_method="auto",  # 오디오 추출 모드 (downmix|left|right|phase-fix|auto)
+#     output_path="src/data/output/screentime-mvp-video/stt.json",
+# )
+# router.transcribe(
+#     "src/data/input/sample.wav",
+#     provider="whisper",
+#     model_size="base",
+#     language="ko",
+#     task="transcribe",
+#     temperature=0.0,
+# )
 #
 # CLI:
-# python src/audio/stt_router.py --media-path src/data/input/test2.mp4 --provider clova
-# python src/audio/stt_router.py --media-path src/data/input/test2.mp4 --provider whisper --model-size base
+# python src/audio/stt_router.py --media-path src/data/input/sample.mp4 --provider clova
+# python src/audio/stt_router.py --media-path src/data/input/sample.wav --provider whisper --no-extract --model-size base
 #
 # 현재 지원: clova, whisper (향후 google 추가 예정)
 """STT router that dispatches to provider-specific clients."""

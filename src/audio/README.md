@@ -44,6 +44,13 @@ python src/audio/clova_stt.py --media-path src/data/input/sample.mp4
 - `src/data/output/<입력파일명>/stt.json`
 - 형식: `{ "schema_version": 1, "segments": [{ "start_ms", "end_ms", "text", "confidence?" }] }`
 
+옵션 요약:
+- `include_confidence`: 세그먼트별 confidence 포함(기본 True)
+- `include_raw_response`: 원본 응답(raw_response) 포함
+- `word_alignment`: 단어 단위 타임스탬프 요청(raw_response에 words 추가)
+- `full_text`: 전체 텍스트 필드 요청(raw_response에 fullText 추가)
+- `completion`: `sync`/`async` (async는 폴링 구현 필요)
+
 환경변수:
 - `CLOVA_SPEECH_URL`
 - `CLOVA_SPEECH_API_KEY` (또는 `CLOVA_SPEECH_SECRET`)

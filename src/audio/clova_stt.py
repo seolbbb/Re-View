@@ -4,10 +4,10 @@
 # client = ClovaSpeechClient()
 # client.transcribe(
 #     "src/data/input/screentime-mvp-video.mp4",
-#     include_confidence=True,
-#     include_raw_response=True,
-#     word_alignment=True,
-#     full_text=True,
+#     include_confidence=True, 문장 단위 신뢰도 포함 (기본 True)
+#     include_raw_response=True, segments 외에 전체 응답 포함
+#     word_alignment=True, 추가적으로 단어 단위 타임스탬프 포함
+#     full_text=True, include_raw_response가 True일 경우에 사용가능, 전체 텍스트 포함
 #     completion="sync", "sync" 기본. "async"는 결과 폴링 로직이 없어 segments가 비어 저장될 수 있음.
 #     language="ko-KR", 예: ko-KR, en-US, enko, ja-JP, zh-CN, zh-TW (Clova 문서 기준)
 #     timeout=120, 지정 초 내 응답 없으면 요청이 Timeout 예외로 종료됨 (긴 파일은 늘리거나 async 권장)
