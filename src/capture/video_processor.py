@@ -6,33 +6,42 @@ class VideoProcessor:
     """
     비디오 처리 클래스: 강의 영상에서 슬라이드 전환을 감지하고 키프레임을 추출합니다.
     
-    [주요 기능]
-    1. 장면 감지 (Scene Detection): 프레임 간 픽셀 차이를 계산하여 슬라이드가 바뀌는 시점을 찾습니다.
-    2. 마우스 제거 (Temporal Median): 여러 프레임의 중앙값을 사용하여 움직이는 마우스 포인터를 지웁니다.
-    3. 중복 제거 (dHash): 시각적으로 거의 동일한 프레임을 식별하여 중복 저장을 방지합니다.
-    4. 메타데이터 생성: 팀 공유를 위해 각 추출 시점의 점수와 인덱스를 기록합니다.
+    [주요 기능 - 1차 + 2차 정제 통합]
+    1. 1차 정제 (Scene Detection): 프레임 간 픽셀 차이를 계산하여 장면 전환 시점 감지
+       - threshold: 장면 전환으로 판단하기 위한 최소 diff_score
+    2. 2차 정제 (Deduplication): 저장 전 마지막 프레임과 비교하여 중복 제거
+       - dedupe_threshold: 저장하기 위한 최소 이미지 차이
+    3. 마우스 제거 (Temporal Median): 여러 프레임의 중앙값으로 마우스 포인터 제거
+    4. 메타데이터 생성: 각 추출 시점의 점수와 인덱스를 기록
     """
     def __init__(self):
         # 초기화 시 특별한 상태 저장이 필요하지 않음
         pass
 
-    def extract_keyframes(self, video_path, output_dir='captured_frames', threshold=30, min_interval=2.0, verbose=False, video_name=None):
+    def extract_keyframes(self, video_path, output_dir='captured_frames', threshold=30, min_interval=2.0, verbose=False, video_name=None, return_analysis_data=False, dedupe_threshold=10.0):
         """
         [핵심 기능] 비디오를 분석하여 장면 전환 시점의 깨끗한 키프레임을 추출합니다.
+        1차 + 2차 정제를 한 번에 처리하여 중복 이미지를 제거합니다.
         
         Args:
             video_path (str): 입력 비디오 파일 경로
-            output_dir (str): 추출된 이미지와 메타데이터가 저장될 폴더
-            threshold (float): 장면 전환 감지 임계값 (평균 픽셀 차이)
-            min_interval (float): 캡처 간 최소 시간 간격 (초 단위)
-            verbose (bool): 상세 분석 로그 출력 여부
+            output_dir (str): 추출된 이미지와 메타데이터가 저장될 폴더 (기본값: 'captured_frames')
+            threshold (float): 장면 전환 감지를 위한 diff_score 임계값. 
+                               프레임 간 평균 픽셀 차이가 이 값을 초과하면 장면 전환으로 판단.
+                               (기본값: 30, 낮을수록 민감하게 감지)
+            min_interval (float): 캡처 간 최소 시간 간격, 초 단위 (기본값: 2.0)
+            verbose (bool): 상세 분석 로그 출력 여부 (기본값: False)
+            return_analysis_data (bool): True면 시각화용 분석 데이터도 함께 반환 (기본값: False)
+            dedupe_threshold (float): 2차 정제 임계값. 마지막 저장된 프레임과 픽셀 차이가 이 값 이상이어야 저장.
+                                       (기본값: 10.0, 0으로 설정하면 중복 검사 비활성화)
             
         Returns:
             list: 추출된 프레임 정보 리스트 (timestamp_ms, frame_index, file_name, diff_score 포함)
+            또는 return_analysis_data=True인 경우: (metadata, diff_scores, fps) 튜플
         """
         if not os.path.exists(video_path):
             print(f"❌ 비디오 파일을 찾을 수 없습니다: {video_path}")
-            return []
+            return ([], [], 0) if return_analysis_data else []
 
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -41,7 +50,7 @@ class VideoProcessor:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print("❌ 비디오 파일을 열 수 없습니다.")
-            return []
+            return ([], [], 0) if return_analysis_data else []
 
         # 비디오 기본 정보 획득
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -49,9 +58,10 @@ class VideoProcessor:
         duration = total_frames / fps if fps > 0 else 0
         
         print(f"🎬 비디오 정보: {duration:.2f}초, {fps:.2f} fps, {total_frames} 프레임")
-        print(f"⚙️ 설정값: 임계값={threshold}, 최소 간격={min_interval}초")
+        print(f"⚙️ 설정값: 임계값={threshold}, 최소 간격={min_interval}초, 2차 정제 임계값={dedupe_threshold}")
 
         keyframes_metadata = [] # 최종 반환할 메타데이터 리스트
+        diff_scores_list = []   # 시각화를 위한 diff score 수집 리스트
         prev_frame_gray = None  # 이전 프레임 저장용 (비교 목적)
         last_capture_time = -min_interval # 중복 캡처 방지용 타임스탬프
         
@@ -61,6 +71,9 @@ class VideoProcessor:
         slide_idx = 1           # 슬라이드 순번 (1부터 시작)
         debug_idx = 1           # 디버그 이미지 순번
         last_scene_change = 0.0 # 마지막 장면 전환 시점
+        last_saved_frame = None # 2차 정제용: 마지막 저장된 프레임 (중복 비교용)
+        skipped_count = 0       # 스킵된 프레임 수
+        detected_count = 0      # 감지된 장면 전환 수
         
         frame_idx = 0
 
@@ -90,6 +103,7 @@ class VideoProcessor:
                 
                 slide_idx += 1
                 last_capture_time = current_time
+                last_saved_frame = save_frame  # 2차 정제용 추적
                 # 비교를 위해 현재 프레임을 흑백/리사이즈하여 저장
                 prev_frame_gray = cv2.cvtColor(cv2.resize(frame, (640, 360)), cv2.COLOR_BGR2GRAY)
                 frame_idx += 1
@@ -109,6 +123,10 @@ class VideoProcessor:
             # 이전 프레임과 현재 프레임의 절대 차이 합계의 평균 계산
             diff = cv2.absdiff(curr_frame_gray, prev_frame_gray)
             mean_diff = np.mean(diff)
+            
+            # 시각화를 위한 diff score 저장 (샘플링 + 장면 전환 시점 포함)
+            if frame_idx % 5 == 0 or mean_diff > threshold:
+                diff_scores_list.append((frame_idx, float(mean_diff)))
 
             # 디버깅 로그 출력 (임계값의 절반 이상 변화 시 표시)
             if verbose and mean_diff > (threshold / 2):
@@ -116,6 +134,7 @@ class VideoProcessor:
 
             # [Step 4] 장면 전환 확정 및 처리
             if mean_diff > threshold:
+                detected_count += 1
                 print(f"📸 장면 전환 감지: {current_time:.2f}s (차이 점수: {mean_diff:.2f})")
                 
                 # 디버그 이미지 저장 (감지된 원본 상태 기록)
@@ -142,15 +161,36 @@ class VideoProcessor:
                         cap, current_pos, before_duration=2.0, after_duration=4.0, fps=fps
                     )
                 
-                # 최종 슬라이드 이미지 저장 및 메타데이터 추가
                 save_frame = clean_frame if clean_frame is not None else frame
-                self._save_frame_with_meta(
-                    save_frame, current_time, frame_idx, output_dir, 
-                    keyframes_metadata, slide_idx, diff_score=mean_diff, prefix=video_name
-                )
+                
+                # [2차 정제] 마지막 저장된 프레임과 비교하여 중복 검사
+                should_save = True
+                image_diff = 0.0
+                
+                if last_saved_frame is not None and dedupe_threshold > 0:
+                    # 저장된 프레임과 현재 프레임 비교
+                    saved_gray = cv2.cvtColor(cv2.resize(last_saved_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
+                    current_gray = cv2.cvtColor(cv2.resize(save_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
+                    diff_img = cv2.absdiff(saved_gray, current_gray)
+                    image_diff = np.mean(diff_img)
+                    
+                    if image_diff < dedupe_threshold:
+                        should_save = False
+                        skipped_count += 1
+                        print(f"   ⏭️ 스킵 (이미지 diff={image_diff:.2f} < {dedupe_threshold})")
+                
+                if should_save:
+                    # 최종 슬라이드 이미지 저장 및 메타데이터 추가
+                    self._save_frame_with_meta(
+                        save_frame, current_time, frame_idx, output_dir, 
+                        keyframes_metadata, slide_idx, diff_score=mean_diff, prefix=video_name
+                    )
+                    
+                    slide_idx += 1
+                    last_saved_frame = save_frame  # 2차 정제용 추적
+                    print(f"   ✅ 저장됨 (scene{slide_idx-1}, 이미지 diff={image_diff:.2f})")
                 
                 # 다음 감지를 위한 상태 업데이트
-                slide_idx += 1
                 last_capture_time = current_time
                 last_scene_change = current_time
                 prev_frame_gray = curr_frame_gray
@@ -159,12 +199,18 @@ class VideoProcessor:
 
         cap.release()
         
-        # [Step 5] 중복 제거 (유사한 슬라이드가 연속될 경우 삭제)
-        print(f"🔍 중복 프레임 검사 시작 (총 {len(keyframes_metadata)}개 후보)...")
-        unique_metadata = self._remove_duplicates_by_dhash(keyframes_metadata)
+        # [상태 저장] Grid Search 등 외부에서 접근 가능하도록 저장
+        self.last_detected_count = detected_count
+        self.last_skipped_count = skipped_count
         
-        print(f"✅ 처리 완료: {len(unique_metadata)}개의 고유 슬라이드 추출됨")
-        return unique_metadata
+        # [결과 요약]
+        print(f"\n🔍 감지된 장면 전환: {detected_count}개")
+        print(f"⏭️ 스킵된 프레임 (2차 정제): {skipped_count}개")
+        print(f"✅ 최종 저장된 슬라이드: {len(keyframes_metadata)}개")
+        
+        if return_analysis_data:
+            return keyframes_metadata, diff_scores_list, fps
+        return keyframes_metadata
 
     def _format_time(self, seconds):
         """초 단위 시간을 00h00m00s000ms 형식의 문자열로 변환합니다."""
