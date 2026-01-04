@@ -170,6 +170,9 @@ def _build_batch_prompt(
 
 근거/정확성 규칙(매우 중요):
 - bullets/definitions/explanations/open_questions의 각 항목에는 반드시 evidence_refs를 포함해야 하며, evidence_refs는 unit_id(t*, v*)만 사용하세요.
+- 각 세그먼트 입력에 visual_units가 1개 이상이면 bullets 또는 explanations 중 최소 1개는 evidence_refs에 v*를 반드시 포함하세요.
+- visual_units가 없다면 v*를 사용하지 마세요.
+- 입력에 LaTeX 수식이 포함되어 있다면 (예: `\\begin{{aligned}}`, `$$...$$`, `\\[...\\]`) bullets 또는 explanations 중 최소 1개에 수식을 원문 그대로 포함하세요.
 - 입력에 없는 내용을 설명하고 싶다면, "추론/외부지식"처럼 보일 수 있으므로 금지합니다.
   대신, 입력에 있는 수식/문장의 구조가 의미하는 바를 '풀이' 형태로 설명하세요.
   예: "log p(x) = ELBO + KL"이 보이면, "오른쪽이 두 항의 합으로 표현된다" 정도로만 풀어 말하고,

@@ -192,7 +192,7 @@ def build_summary_a(segments: List[Dict[str, object]], include_timestamps: bool)
             lines.append(f"#### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})")
         else:
             lines.append(f"#### Segment {segment_id}")
-        for bullet in bullets[:3]:
+        for bullet in bullets[:5]:
             claim = str(bullet.get("claim", "")).strip()
             if claim:
                 lines.append(f"- {claim}")
