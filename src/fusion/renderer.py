@@ -39,7 +39,9 @@ def _split_evidence_refs(evidence: Any) -> tuple[List[str], List[str]]:
     if isinstance(evidence, list):
         items = [str(item) for item in evidence]
     elif isinstance(evidence, dict):
-        items.extend([str(item) for item in evidence.get("transcript_unit_ids", []) or []])
+        items.extend(
+            [str(item) for item in evidence.get("transcript_unit_ids", []) or []]
+        )
         items.extend([str(item) for item in evidence.get("visual_unit_ids", []) or []])
     elif isinstance(evidence, str):
         items = [evidence]
@@ -81,20 +83,29 @@ def render_segment_summaries_md(
             end_ms = int(row.get("end_ms"))
             summary = row.get("summary", {}) or {}
 
-            handle.write(f"### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})\n")
+            handle.write(
+                f"### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})\n"
+            )
             handle.write("- 요약\n")
 
             bullets = summary.get("bullets", []) or []
             for bullet in bullets:
                 bullet_id = bullet.get("bullet_id", f"{segment_id}-?")
                 claim = str(bullet.get("claim", "")).strip()
-                for line in _wrap_line(f"  - ({bullet_id}) ", claim, md_wrap_width):
+                source_type = str(bullet.get("source_type", "direct")).strip()
+                for line in _wrap_line(
+                    f"  - ({bullet_id}) [{source_type}] ", claim, md_wrap_width
+                ):
                     handle.write(line + "\n")
 
-                t_refs_list, v_refs_list = _split_evidence_refs(bullet.get("evidence_refs"))
+                t_refs_list, v_refs_list = _split_evidence_refs(
+                    bullet.get("evidence_refs")
+                )
                 t_refs = ",".join(t_refs_list)
                 v_refs = ",".join(v_refs_list)
-                handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                handle.write(
+                    f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
+                )
                 handle.write(f"    - confidence: {bullet.get('confidence', '')}\n")
                 notes = str(bullet.get("notes", "")).strip()
                 if notes:
@@ -106,12 +117,19 @@ def render_segment_summaries_md(
                 for item in definitions:
                     term = str(item.get("term", "")).strip()
                     definition = str(item.get("definition", "")).strip()
-                    for line in _wrap_line("  - ", f"{term}: {definition}", md_wrap_width):
+                    source_type = str(item.get("source_type", "direct")).strip()
+                    for line in _wrap_line(
+                        "  - ", f"[{source_type}] {term}: {definition}", md_wrap_width
+                    ):
                         handle.write(line + "\n")
-                    t_refs_list, v_refs_list = _split_evidence_refs(item.get("evidence_refs"))
+                    t_refs_list, v_refs_list = _split_evidence_refs(
+                        item.get("evidence_refs")
+                    )
                     t_refs = ",".join(t_refs_list)
                     v_refs = ",".join(v_refs_list)
-                    handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                    handle.write(
+                        f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
+                    )
                     confidence = str(item.get("confidence", "")).strip()
                     if confidence:
                         handle.write(f"    - confidence: {confidence}\n")
@@ -125,22 +143,28 @@ def render_segment_summaries_md(
                 for item in explanations:
                     if isinstance(item, dict):
                         point = str(item.get("point", "")).strip()
+                        source_type = str(item.get("source_type", "direct")).strip()
                         evidence = item.get("evidence_refs")
                         confidence = str(item.get("confidence", "")).strip()
                         notes = str(item.get("notes", "")).strip()
                     else:
                         point = str(item).strip()
+                        source_type = "direct"
                         evidence = None
                         confidence = ""
                         notes = ""
                     if not point:
                         continue
-                    for line in _wrap_line("  - ", point, md_wrap_width):
+                    for line in _wrap_line(
+                        "  - ", f"[{source_type}] {point}", md_wrap_width
+                    ):
                         handle.write(line + "\n")
                     t_refs_list, v_refs_list = _split_evidence_refs(evidence)
                     t_refs = ",".join(t_refs_list)
                     v_refs = ",".join(v_refs_list)
-                    handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                    handle.write(
+                        f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
+                    )
                     if confidence:
                         handle.write(f"    - confidence: {confidence}\n")
                     if notes:
@@ -152,22 +176,28 @@ def render_segment_summaries_md(
                 for question in questions:
                     if isinstance(question, dict):
                         text = str(question.get("question", "")).strip()
+                        source_type = str(question.get("source_type", "direct")).strip()
                         evidence = question.get("evidence_refs")
                         confidence = str(question.get("confidence", "")).strip()
                         notes = str(question.get("notes", "")).strip()
                     else:
                         text = str(question).strip()
+                        source_type = "direct"
                         evidence = None
                         confidence = ""
                         notes = ""
                     if not text:
                         continue
-                    for line in _wrap_line("  - ", text, md_wrap_width):
+                    for line in _wrap_line(
+                        "  - ", f"[{source_type}] {text}", md_wrap_width
+                    ):
                         handle.write(line + "\n")
                     t_refs_list, v_refs_list = _split_evidence_refs(evidence)
                     t_refs = ",".join(t_refs_list)
                     v_refs = ",".join(v_refs_list)
-                    handle.write(f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n")
+                    handle.write(
+                        f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
+                    )
                     if confidence:
                         handle.write(f"    - confidence: {confidence}\n")
                     if notes:
@@ -179,10 +209,16 @@ def render_segment_summaries_md(
                 v_units = sources.get("visual_units", []) or []
                 handle.write("- 근거 텍스트\n")
                 if t_units:
-                    transcript_parts = [f"[{u.get('unit_id')}] {u.get('text', '')}" for u in t_units]
-                    handle.write("  - Transcript Units: " + ", ".join(transcript_parts) + "\n")
+                    transcript_parts = [
+                        f"[{u.get('unit_id')}] {u.get('text', '')}" for u in t_units
+                    ]
+                    handle.write(
+                        "  - Transcript Units: " + ", ".join(transcript_parts) + "\n"
+                    )
                 if v_units:
-                    visual_parts = [f"[{u.get('unit_id')}] {u.get('text', '')}" for u in v_units]
+                    visual_parts = [
+                        f"[{u.get('unit_id')}] {u.get('text', '')}" for u in v_units
+                    ]
                     handle.write("  - Visual Units: " + ", ".join(visual_parts) + "\n")
 
             handle.write("\n")
