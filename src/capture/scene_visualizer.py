@@ -10,6 +10,8 @@ Note: 2차 정제(dedupe_threshold)는 '저장된 이미지 간' 비교로,
       프레임 간 diff_score와는 다른 측정값입니다.
 """
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
