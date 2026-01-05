@@ -5,10 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from concurrent.futures import ThreadPoolEx
 import sys
-import time
-import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import timeecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,8 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from src.audio.speech_client import ClovaSpeechClient
-from src.audio.preprocess_audio import preprocess_audio
+
+from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
 from src.fusion.final_summary_composer import compose_final_summaries
@@ -94,15 +93,16 @@ def _generate_fusion_config(
     )
 
 
-def _run_stt_clova(video_path: Path, output_stt_json: Path) -> None:
-    client = ClovaSpeechClient()
-    with tempfile.TemporaryDirectory(prefix="stt_preprocess_") as temp_dir:
-        temp_wav = Path(temp_dir) / "stt_input.wav"
-        preprocess_audio(video_path, temp_wav)
-        client.transcribe(
-            temp_wav,
-            output_path=output_stt_json,
-        )
+def _run_stt(video_path: Path, output_stt_json: Path, *, backend: str) -> None:
+    router = STTRouter(provider=backend)
+    audio_output_path = output_stt_json.with_name(f"{video_path.stem}.wav")
+    router.transcribe_media(
+        video_path,
+        provider=backend,
+        audio_output_path=audio_output_path,
+        mono_method="auto",
+        output_path=output_stt_json,
+    )
 
 
 def _run_capture(
@@ -274,7 +274,14 @@ def main() -> None:
 
         if args.parallel:
             with ThreadPoolExecutor(max_workers=2) as executor:
-                stt_future = executor.submit(_timed, "stt", _run_stt_clova, video_path, stt_json)
+                stt_future = executor.submit(
+                    _timed,
+                    "stt",
+                    _run_stt,
+                    video_path,
+                    stt_json,
+                    backend=args.stt_backend,
+                )
                 capture_future = executor.submit(
                     _timed,
                     "capture",
@@ -290,7 +297,7 @@ def main() -> None:
                 _, stt_elapsed = stt_future.result()
                 _, capture_elapsed = capture_future.result()
         else:
-            _, stt_elapsed = _timed("stt", _run_stt_clova, video_path, stt_json)
+            _, stt_elapsed = _timed("stt", _run_stt, video_path, stt_json, backend=args.stt_backend)
             _, capture_elapsed = _timed(
                 "capture",
                 _run_capture,
