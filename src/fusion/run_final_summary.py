@@ -1,4 +1,4 @@
-"""최종 요약(A/B/C) 생성 CLI."""
+"""최종 요약(timeline/tldr_timeline) 생성 CLI."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from src.fusion.io_utils import ensure_output_root
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="최종 요약 A/B/C 생성")
+    parser = argparse.ArgumentParser(
+        description="최종 요약 timeline/tldr_timeline 생성"
+    )
     parser.add_argument("--config", default="src/fusion/config.yaml", help="config YAML 경로")
     parser.add_argument("--limit", type=int, default=None, help="근거로 사용할 segment 수 제한")
     parser.add_argument("--dry_run", action="store_true", help="출력 미생성 모드")
