@@ -73,6 +73,84 @@ def _sanitize_label(label: str) -> str:
     return sanitized or "item"
 
 
+def _normalize_for_iou(
+    bbox: List[float],
+    width: int,
+    height: int,
+) -> Optional[Tuple[int, int, int, int]]:
+    normalized = _normalize_bbox(bbox, width, height)
+    if not normalized:
+        return None
+    x1, y1, x2, y2 = normalized
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    union = area_a + area_b - inter_area
+    return inter_area / union if union else 0.0
+
+
+def _dedupe_detections(
+    detections: List[Dict[str, Any]],
+    image: np.ndarray,
+    iou_threshold: float,
+) -> List[Dict[str, Any]]:
+    height, width = image.shape[:2]
+    kept: List[Dict[str, Any]] = []
+    kept_boxes: List[Tuple[int, int, int, int]] = []
+
+    for det in detections:
+        bbox = det.get("bbox")
+        if not isinstance(bbox, list):
+            continue
+        normalized = _normalize_for_iou(bbox, width, height)
+        if not normalized:
+            continue
+        if any(_iou(normalized, prev) >= iou_threshold for prev in kept_boxes):
+            continue
+        kept.append(det)
+        kept_boxes.append(normalized)
+
+    return kept
+
+
+def _filter_large_boxes(
+    detections: List[Dict[str, Any]],
+    image: np.ndarray,
+    max_area_ratio: float,
+) -> List[Dict[str, Any]]:
+    height, width = image.shape[:2]
+    image_area = width * height
+    filtered: List[Dict[str, Any]] = []
+    for det in detections:
+        bbox = det.get("bbox")
+        if not isinstance(bbox, list):
+            continue
+        normalized = _normalize_for_iou(bbox, width, height)
+        if not normalized:
+            continue
+        x1, y1, x2, y2 = normalized
+        box_area = max(0, x2 - x1) * max(0, y2 - y1)
+        area_ratio = box_area / image_area if image_area else 0.0
+        if area_ratio >= max_area_ratio:
+            continue
+        filtered.append(det)
+    return filtered
+
+
 def _save_crops(
     image: np.ndarray,
     detections: List[Dict[str, Any]],
@@ -137,8 +215,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--query", default=DEFAULT_QUERY, help="Text query to ground.")
     parser.add_argument("--box-threshold", type=float, default=0.15, help="Box confidence threshold.")
     parser.add_argument("--text-threshold", type=float, default=0.15, help="Text confidence threshold.")
+    parser.add_argument("--iou-threshold", type=float, default=0.7, help="IoU threshold for dedupe.")
+    parser.add_argument(
+        "--max-area-ratio",
+        type=float,
+        default=0.95,
+        help="Drop boxes that cover too much of the image.",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Replicate model reference.")
-    parser.add_argument("--out", default=None, help="Output JSON path (default: stdout).")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output JSON path (default: stdout or crop-dir/detections.json).",
+    )
     parser.add_argument("--crop-dir", default=None, help="Directory to save cropped detections.")
     return parser.parse_args()
 
@@ -172,6 +261,8 @@ def main() -> None:
             print("[WARN] crop skipped (local image path required).")
         else:
             base_name = Path(args.image).expanduser().stem
+            detections = _dedupe_detections(detections, image, args.iou_threshold)
+            detections = _filter_large_boxes(detections, image, args.max_area_ratio)
             crop_paths = _save_crops(image, detections, Path(args.crop_dir).expanduser(), base_name)
 
     result_payload: Dict[str, Any] = dict(result)
@@ -179,8 +270,13 @@ def main() -> None:
         result_payload["crops"] = crop_paths
 
     payload = json.dumps(result_payload, ensure_ascii=False, indent=2, default=_json_fallback)
+    out_path = None
     if args.out:
         out_path = Path(args.out).expanduser()
+    elif args.crop_dir:
+        out_path = Path(args.crop_dir).expanduser() / "detections.json"
+
+    if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(payload, encoding="utf-8")
         print(f"[OK] saved to {out_path.resolve()}")
