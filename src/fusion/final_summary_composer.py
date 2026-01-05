@@ -47,6 +47,14 @@ class BulletItem:
     text: str
 
 
+@dataclass(frozen=True)
+class ExplanationItem:
+    segment_id: int
+    start_ms: int
+    end_ms: int
+    point: str
+
+
 def _tokenize(text: str) -> List[str]:
     tokens = re.findall(r"[A-Za-z0-9가-힣]+", text.lower())
     return [t for t in tokens if len(t) >= 2 and t not in STOPWORDS]
@@ -66,13 +74,17 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def _merge_similar_tokens(tokens: List[str], freq: Counter, threshold: float = 0.6) -> List[str]:
+def _merge_similar_tokens(
+    tokens: List[str], freq: Counter, threshold: float = 0.6
+) -> List[str]:
     merged: List[str] = []
     for token in tokens:
         placed = False
         for idx, existing in enumerate(merged):
             if _jaccard(_char_ngrams(token), _char_ngrams(existing)) >= threshold:
-                if freq[token] > freq[existing] or (freq[token] == freq[existing] and token < existing):
+                if freq[token] > freq[existing] or (
+                    freq[token] == freq[existing] and token < existing
+                ):
                     merged[idx] = token
                 placed = True
                 break
@@ -81,7 +93,9 @@ def _merge_similar_tokens(tokens: List[str], freq: Counter, threshold: float = 0
     return merged
 
 
-def _build_topics(bullets: List[BulletItem], definitions: List[BulletItem]) -> List[str]:
+def _build_topics(
+    bullets: List[BulletItem], definitions: List[BulletItem]
+) -> List[str]:
     counter: Counter = Counter()
     for item in bullets + definitions:
         counter.update(_tokenize(item.text))
@@ -109,7 +123,13 @@ def _assign_topics(
         for topic in topics:
             score = 1.0 if topic in tokens else 0.0
             if score == 0.0:
-                score = max((_jaccard(_char_ngrams(topic), _char_ngrams(tok)) for tok in tokens), default=0.0)
+                score = max(
+                    (
+                        _jaccard(_char_ngrams(topic), _char_ngrams(tok))
+                        for tok in tokens
+                    ),
+                    default=0.0,
+                )
             if score > best_score:
                 best_score = score
                 best_topic = topic
@@ -145,9 +165,12 @@ def _truncate_lines(lines: List[str], max_chars: int) -> str:
 def _collect_items(
     summaries_jsonl: Path,
     limit: Optional[int] = None,
-) -> Tuple[List[BulletItem], List[BulletItem], List[Dict[str, object]]]:
+) -> Tuple[
+    List[BulletItem], List[BulletItem], List[ExplanationItem], List[Dict[str, object]]
+]:
     bullets: List[BulletItem] = []
     definitions: List[BulletItem] = []
+    explanations: List[ExplanationItem] = []
     segments: List[Dict[str, object]] = []
     processed = 0
     for row in read_jsonl(summaries_jsonl):
@@ -177,7 +200,13 @@ def _collect_items(
                 definitions.append(
                     BulletItem(segment_id, start_ms, end_ms, f"{term}: {definition}")
                 )
-    return bullets, definitions, segments
+        for item in summary.get("explanations", []) or []:
+            point = str(item.get("point", "")).strip()
+            if point:
+                explanations.append(
+                    ExplanationItem(segment_id, start_ms, end_ms, point)
+                )
+    return bullets, definitions, explanations, segments
 
 
 def build_summary_a(segments: List[Dict[str, object]], include_timestamps: bool) -> str:
@@ -188,14 +217,27 @@ def build_summary_a(segments: List[Dict[str, object]], include_timestamps: bool)
         end_ms = int(segment["end_ms"])
         summary = segment.get("summary", {}) or {}
         bullets = summary.get("bullets", []) or []
+        explanations = summary.get("explanations", []) or []
         if include_timestamps:
-            lines.append(f"#### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})")
+            lines.append(
+                f"#### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})"
+            )
         else:
             lines.append(f"#### Segment {segment_id}")
+        # 핵심 포인트 (bullets)
         for bullet in bullets[:3]:
             claim = str(bullet.get("claim", "")).strip()
             if claim:
                 lines.append(f"- {claim}")
+        # 상세 설명 (explanations) - 처음 보는 사람 이해를 위해 추가
+        if explanations:
+            lines.append("")
+            lines.append("**해설:**")
+            for explanation in explanations[:2]:
+                point = str(explanation.get("point", "")).strip()
+                if point:
+                    lines.append(f"  - {point}")
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -208,7 +250,9 @@ def build_summary_b(
     assignments = _assign_topics(topics, bullets + definitions)
 
     lines = ["# Final Summary B (주제별 재구성)"]
-    for topic in topics + (["기타"] if "기타" in assignments and "기타" not in topics else []):
+    for topic in topics + (
+        ["기타"] if "기타" in assignments and "기타" not in topics else []
+    ):
         items = assignments.get(topic, [])
         if not items:
             continue
@@ -240,6 +284,7 @@ def build_summary_c(segments: List[Dict[str, object]], include_timestamps: bool)
             break
     lines.extend(tldr_lines)
 
+    lines.append("")
     lines.append("## 시간 순 요약")
     for segment in sorted(segments, key=lambda x: int(x["segment_id"])):
         segment_id = int(segment["segment_id"])
@@ -247,14 +292,24 @@ def build_summary_c(segments: List[Dict[str, object]], include_timestamps: bool)
         end_ms = int(segment["end_ms"])
         summary = segment.get("summary", {}) or {}
         bullets = summary.get("bullets", []) or []
+        explanations = summary.get("explanations", []) or []
         if include_timestamps:
-            lines.append(f"#### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})")
+            lines.append(
+                f"#### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})"
+            )
         else:
             lines.append(f"#### Segment {segment_id}")
-        for bullet in bullets[:1]:
+        # 핵심 포인트
+        for bullet in bullets[:2]:
             claim = str(bullet.get("claim", "")).strip()
             if claim:
                 lines.append(f"- {claim}")
+        # 핵심 해설 1개 추가 (이해 도움)
+        if explanations:
+            point = str(explanations[0].get("point", "")).strip()
+            if point:
+                lines.append(f"  > {point}")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -265,10 +320,19 @@ def compose_final_summaries(
     include_timestamps: bool,
     limit: Optional[int] = None,
 ) -> Dict[str, str]:
-    bullets, definitions, segments = _collect_items(summaries_jsonl, limit=limit)
+    bullets, definitions, explanations, segments = _collect_items(
+        summaries_jsonl, limit=limit
+    )
 
-    summary_a = _truncate_lines(build_summary_a(segments, include_timestamps).splitlines(), max_chars)
-    summary_b = _truncate_lines(build_summary_b(bullets, definitions, include_timestamps).splitlines(), max_chars)
-    summary_c = _truncate_lines(build_summary_c(segments, include_timestamps).splitlines(), max_chars)
+    summary_a = _truncate_lines(
+        build_summary_a(segments, include_timestamps).splitlines(), max_chars
+    )
+    summary_b = _truncate_lines(
+        build_summary_b(bullets, definitions, include_timestamps).splitlines(),
+        max_chars,
+    )
+    summary_c = _truncate_lines(
+        build_summary_c(segments, include_timestamps).splitlines(), max_chars
+    )
 
     return {"A": summary_a, "B": summary_b, "C": summary_c}
