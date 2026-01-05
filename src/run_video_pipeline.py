@@ -236,20 +236,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
-    video_path = Path(args.video).expanduser().resolve()
+def run_pipeline(
+    *,
+    video: str | Path,
+    output_base: str | Path = "data/outputs",
+    stt_backend: str = "clova",
+    parallel: bool = True,
+    capture_threshold: float = 3.0,
+    capture_dedupe_threshold: float = 3.0,
+    capture_min_interval: float = 0.5,
+    capture_verbose: bool = False,
+    vlm_batch_size: Optional[int] = None,
+    limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> tuple[Path, Dict[str, Any]]:
+    video_path = Path(video).expanduser().resolve()
     if not video_path.exists():
         raise FileNotFoundError(f"비디오 파일을 찾을 수 없습니다: {video_path}")
 
     repo_root = ROOT
-    output_base = (repo_root / Path(args.output_base)).resolve()
+    output_base = (repo_root / Path(output_base)).resolve()
     video_name = _sanitize_video_name(video_path.stem)
     video_root = output_base / video_name
     video_root.mkdir(parents=True, exist_ok=True)
 
     run_meta_path = video_root / "pipeline_run.json"
+    run_args = {
+        "video": str(video_path),
+        "output_base": str(output_base),
+        "stt_backend": stt_backend,
+        "parallel": parallel,
+        "capture_threshold": capture_threshold,
+        "capture_dedupe_threshold": capture_dedupe_threshold,
+        "capture_min_interval": capture_min_interval,
+        "capture_verbose": capture_verbose,
+        "vlm_batch_size": vlm_batch_size,
+        "limit": limit,
+        "dry_run": dry_run,
+    }
     run_meta: Dict[str, Any] = {
         "schema_version": 1,
         "video_path": str(video_path),
@@ -257,7 +281,7 @@ def main() -> None:
         "output_base": str(output_base),
         "video_root": str(video_root),
         "started_at_utc": _utc_now_iso(),
-        "args": vars(args),
+        "args": run_args,
         "durations_sec": {},
         "status": "running",
     }
@@ -272,7 +296,7 @@ def main() -> None:
         stt_elapsed = 0.0
         capture_elapsed = 0.0
 
-        if args.parallel:
+        if parallel:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 stt_future = executor.submit(
                     _timed,
@@ -280,7 +304,7 @@ def main() -> None:
                     _run_stt,
                     video_path,
                     stt_json,
-                    backend=args.stt_backend,
+                    backend=stt_backend,
                 )
                 capture_future = executor.submit(
                     _timed,
@@ -288,25 +312,25 @@ def main() -> None:
                     _run_capture,
                     video_path,
                     output_base,
-                    threshold=args.capture_threshold,
-                    dedupe_threshold=args.capture_dedupe_threshold,
-                    min_interval=args.capture_min_interval,
-                    verbose=args.capture_verbose,
+                    threshold=capture_threshold,
+                    dedupe_threshold=capture_dedupe_threshold,
+                    min_interval=capture_min_interval,
+                    verbose=capture_verbose,
                     video_name=video_name,
                 )
                 _, stt_elapsed = stt_future.result()
                 _, capture_elapsed = capture_future.result()
         else:
-            _, stt_elapsed = _timed("stt", _run_stt, video_path, stt_json, backend=args.stt_backend)
+            _, stt_elapsed = _timed("stt", _run_stt, video_path, stt_json, backend=stt_backend)
             _, capture_elapsed = _timed(
                 "capture",
                 _run_capture,
                 video_path,
                 output_base,
-                threshold=args.capture_threshold,
-                dedupe_threshold=args.capture_dedupe_threshold,
-                min_interval=args.capture_min_interval,
-                verbose=args.capture_verbose,
+                threshold=capture_threshold,
+                dedupe_threshold=capture_dedupe_threshold,
+                min_interval=capture_min_interval,
+                verbose=capture_verbose,
                 video_name=video_name,
             )
 
@@ -317,7 +341,7 @@ def main() -> None:
             manifest_json=manifest_json,
             video_name=video_name,
             output_base=output_base,
-            batch_size=args.vlm_batch_size,
+            batch_size=vlm_batch_size,
         )
 
         template_config = repo_root / "src" / "fusion" / "config.yaml"
@@ -334,7 +358,7 @@ def main() -> None:
             output_root=video_root,
         )
 
-        fusion_timings = _run_fusion_pipeline(fusion_config_path, limit=args.limit, dry_run=args.dry_run)
+        fusion_timings = _run_fusion_pipeline(fusion_config_path, limit=limit, dry_run=dry_run)
         total_elapsed = time.perf_counter() - total_started
         llm_elapsed = float(fusion_timings.get("llm_summarizer_sec", 0.0))
 
@@ -351,12 +375,30 @@ def main() -> None:
         _write_json(run_meta_path, run_meta)
 
         print(f"[OK] outputs: {video_root}")
+        return video_root, run_meta
     except Exception as exc:
         run_meta["ended_at_utc"] = _utc_now_iso()
         run_meta["status"] = "error"
         run_meta["error"] = str(exc)
         _write_json(run_meta_path, run_meta)
         raise
+
+
+def main() -> None:
+    args = parse_args()
+    run_pipeline(
+        video=args.video,
+        output_base=args.output_base,
+        stt_backend=args.stt_backend,
+        parallel=args.parallel,
+        capture_threshold=args.capture_threshold,
+        capture_dedupe_threshold=args.capture_dedupe_threshold,
+        capture_min_interval=args.capture_min_interval,
+        capture_verbose=args.capture_verbose,
+        vlm_batch_size=args.vlm_batch_size,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":
