@@ -54,7 +54,8 @@ python src/run_video_pipeline.py --video "src/data/input/screentime-mvp-video.mp
 - `data/outputs/{video_name}/vlm_raw.json`
 - `data/outputs/{video_name}/vlm.json`
 - `data/outputs/{video_name}/pipeline_run.json` (구간별 소요 시간 로그)
-- `data/outputs/{video_name}/fusion/outputs/final_summary_A.md` (외 B/C)
+- `data/outputs/{video_name}/fusion/outputs/final_summary_timeline.md`
+- `data/outputs/{video_name}/fusion/outputs/final_summary_tldr_timeline.md`
 
 #### Option 1: 캡처만 실행 (영상 → 슬라이드 이미지) ⭐ 추천
 
