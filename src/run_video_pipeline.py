@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from concurrent.futures import ThreadPoolEx
+from concurrent.futures import ThreadPoolExecutor
 import sys
-import timeecutor
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -223,7 +223,7 @@ def _run_fusion_pipeline(config_path: Path, *, limit: Optional[int], dry_run: bo
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="비디오 1개 입력으로 end-to-end 요약 실행")
     parser.add_argument("--video", required=True, help="입력 비디오 파일 경로")
-    parser.add_argument("--output-base", default="src/data/output", help="동영상별 outputs 베이스 디렉토리")
+    parser.add_argument("--output-base", default="data/outputs", help="동영상별 outputs 베이스 디렉토리")
     parser.add_argument("--stt-backend", choices=["clova"], default="clova", help="STT 백엔드")
     parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True, help="STT+Capture 병렬 실행")
     parser.add_argument("--capture-threshold", type=float, default=3.0, help="장면 전환 감지 임계값")
