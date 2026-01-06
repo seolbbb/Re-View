@@ -1,0 +1,224 @@
+{
+  "decision": "fail",
+  "evaluation_details": {
+    "missing_core_points": [
+      {
+        "id": "seg7-P1-01",
+        "priority": "P1",
+        "ref_id": "v1",
+        "segment_id": 7,
+        "text": "섹션 제목 '2.1 Embedding feature analysis'"
+      }
+    ],
+    "missing_optional_visual_details": [
+      {
+        "id": "seg1-P2-01",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 1,
+        "text": "Bandicam playback controls at the bottom of the slide"
+      },
+      {
+        "id": "seg1-P2-02",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 1,
+        "text": "Watermark 'www.BANDICAM.com' at the top center"
+      },
+      {
+        "id": "seg1-P2-03",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 1,
+        "text": "boostcamp logo and NAVER Content Foundation copyright in the footer"
+      },
+      {
+        "id": "seg1-P2-04",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 1,
+        "text": "Slide number 5"
+      },
+      {
+        "id": "seg1-P2-05",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 1,
+        "text": "Speaker appearing in the bottom-left corner with eyes closed"
+      },
+      {
+        "id": "seg2-P2-01",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 2,
+        "text": "Slide number 7"
+      },
+      {
+        "id": "seg2-P2-02",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 2,
+        "text": "Speaker with mouth open in the bottom-left corner"
+      },
+      {
+        "id": "seg2-P2-03",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 2,
+        "text": "Label 'Input image' under the diagram image"
+      },
+      {
+        "id": "seg3-P2-01",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 3,
+        "text": "Reference text: Zeiler and Fergus, Visualizing and Understanding Convolutional Networks, ECCV 2014"
+      },
+      {
+        "id": "seg3-P2-02",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 3,
+        "text": "Magnifying glass icon over the black box diagram"
+      },
+      {
+        "id": "seg3-P2-03",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 3,
+        "text": "Slide numbers 8 and 9"
+      },
+      {
+        "id": "seg3-P2-04",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 3,
+        "text": "Visual details of feature grids showing edges, curves, and recognizable shapes"
+      },
+      {
+        "id": "seg4-P2-01",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 4,
+        "text": "Input image of a dog wearing a hotdog costume"
+      },
+      {
+        "id": "seg4-P2-02",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 4,
+        "text": "Grid of 32 filter kernels and 32 activation maps for the 1st conv. layer"
+      },
+      {
+        "id": "seg4-P2-03",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 4,
+        "text": "Slide number 10 and copyright footer"
+      },
+      {
+        "id": "seg5-P2-01",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 5,
+        "text": "Color coding of taxonomy categories (e.g., red for Parameter examination, yellow for Feature analysis)"
+      },
+      {
+        "id": "seg5-P2-02",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 5,
+        "text": "Purple arrow indicating the shift from model-centric to data-centric focus"
+      },
+      {
+        "id": "seg5-P2-03",
+        "priority": "P2",
+        "ref_id": "v2",
+        "segment_id": 5,
+        "text": "Slide numbers 11 and 12, and the boostcamp logo"
+      },
+      {
+        "id": "seg6-P2-01",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 6,
+        "text": "Input image of a sausage dog in the diagram"
+      },
+      {
+        "id": "seg6-P2-02",
+        "priority": "P2",
+        "ref_id": "v1",
+        "segment_id": 6,
+        "text": "Red outline enclosing the low, middle, and high level feature boxes"
+      }
+    ]
+  },
+  "final_decision_reason_codes": [
+    "VALIDITY_GATE_FAIL"
+  ],
+  "final_decision_reasons_ko": [
+    "segment 2 evidence_refs invalid"
+  ],
+  "meta": {
+    "generated_at_utc": "2026-01-05T13:19:36.254769+00:00",
+    "model": "gemini-3-flash-preview",
+    "prompt_version": "judge_stage1_v1",
+    "segment_summaries_path": "/data/ephemeral/home/Screentime-MVP/data/outputs/test2/fusion/segment_summaries.jsonl",
+    "segments_units_path": "/data/ephemeral/home/Screentime-MVP/data/outputs/test2/fusion/segments_units.jsonl",
+    "stage": "stage1"
+  },
+  "quality_gate": {
+    "decision": "pass",
+    "failed_segments": [],
+    "min_score": 3,
+    "uncertain_segments": [],
+    "warnings": [
+      {
+        "missing_core_p1_count": 1,
+        "segment_id": 7
+      }
+    ]
+  },
+  "schema_version": 1,
+  "scores": {
+    "adherence": 3.714,
+    "clarity": null,
+    "coverage": 3.857,
+    "faithfulness": 4.0,
+    "usefulness": null
+  },
+  "scores_100": {
+    "adherence": 92.85,
+    "clarity": null,
+    "coverage": 96.43,
+    "faithfulness": 100.0,
+    "usefulness": null
+  },
+  "segment_coverage": {
+    "matched_segments": 7,
+    "missing_summaries": [],
+    "missing_units": [],
+    "summary_present_segments": 7,
+    "units_present_segments": 7
+  },
+  "validity_gate": {
+    "decision": "fail",
+    "failed_segments": [
+      2
+    ]
+  },
+  "visual_metrics": {
+    "llm_visual_reflection_score": null,
+    "visual_ref_usage_denominator": 37,
+    "visual_ref_usage_numerator": 11,
+    "visual_ref_usage_rate": 0.2973,
+    "visual_unit_coverage_denominator": 10,
+    "visual_unit_coverage_numerator": 2,
+    "visual_unit_coverage_rate": 0.2
+  },
+  "visual_metrics_100": {
+    "llm_visual_reflection_score": null,
+    "visual_ref_usage_rate": 29.73,
+    "visual_unit_coverage_rate": 20.0
+  }
+}

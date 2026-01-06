@@ -284,7 +284,15 @@ def main() -> None:
     video_root_value = st.session_state.video_root
     if video_path or video_root_value:
         st.markdown("---")
-        video_col, summary_col = st.columns([3, 2], gap="large")
+        video_ratio = st.slider(
+            "Layout ratio (video : summary)",
+            min_value=1,
+            max_value=5,
+            value=3,
+            step=1,
+        )
+        summary_ratio = 6 - video_ratio
+        video_col, summary_col = st.columns([video_ratio, summary_ratio], gap="large")
 
         with video_col:
             st.markdown("### Video")
