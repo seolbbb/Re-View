@@ -24,7 +24,7 @@ Demo 입력
 Output root
 - 확정: src/fusion/outputs
 - 실제 산출물 위치: output_root/fusion/*
-- 최종 요약(A/B/C) 위치: output_root/fusion/outputs/*
+- 최종 요약(timeline/tldr_timeline) 위치: output_root/fusion/outputs/*
 
 README
 - 확정: src/fusion/README.md
