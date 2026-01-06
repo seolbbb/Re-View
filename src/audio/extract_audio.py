@@ -41,12 +41,9 @@ def extract_audio(
         mono_method = _select_best_mono_method(media_path, sample_rate=sample_rate)
 
     command = ["ffmpeg", "-y", "-i", str(media_path), "-vn"]
-    if mono_method == "left":
-        command += ["-af", "pan=mono|c0=c0"]
-    elif mono_method == "right":
-        command += ["-af", "pan=mono|c0=c1"]
-    elif mono_method == "phase-fix":
-        command += ["-af", "pan=mono|c0=0.5*c0-0.5*c1"]
+    mono_filter = _mono_filter_for_method(mono_method)
+    if mono_filter:
+        command += ["-af", mono_filter]
 
     command += [
         "-acodec",
@@ -69,6 +66,18 @@ def extract_audio(
     return output_path
 
 
+def _mono_filter_for_method(mono_method: str) -> str | None:
+    if mono_method == "downmix":
+        return "pan=mono|c0=0.5*c0+0.5*c1"
+    if mono_method == "left":
+        return "pan=mono|c0=c0"
+    if mono_method == "right":
+        return "pan=mono|c0=c1"
+    if mono_method == "phase-fix":
+        return "pan=mono|c0=0.5*c0-0.5*c1"
+    return None
+
+
 def _select_best_mono_method(media_path: Path, *, sample_rate: int, probe_seconds: int = 60) -> str:
     candidates = ["downmix", "left", "right", "phase-fix"]
     volumes: dict[str, float] = {}
@@ -76,8 +85,11 @@ def _select_best_mono_method(media_path: Path, *, sample_rate: int, probe_second
         volume = _measure_mean_volume(
             media_path, mono_method=candidate, sample_rate=sample_rate, probe_seconds=probe_seconds
         )
-        if volume is not None:
-            volumes[candidate] = volume
+        if volume is None:
+            print(f"[INFO] mono-method candidate={candidate} mean_volume=NA")
+            continue
+        volumes[candidate] = volume
+        print(f"[INFO] mono-method candidate={candidate} mean_volume={volume} dB")
 
     if not volumes:
         return "downmix"
@@ -95,12 +107,9 @@ def _measure_mean_volume(
     probe_seconds: int,
 ) -> float | None:
     filter_chain = []
-    if mono_method == "left":
-        filter_chain.append("pan=mono|c0=c0")
-    elif mono_method == "right":
-        filter_chain.append("pan=mono|c0=c1")
-    elif mono_method == "phase-fix":
-        filter_chain.append("pan=mono|c0=0.5*c0-0.5*c1")
+    mono_filter = _mono_filter_for_method(mono_method)
+    if mono_filter:
+        filter_chain.append(mono_filter)
     filter_chain.append("volumedetect")
 
     command = [
