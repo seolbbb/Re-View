@@ -1,5 +1,3 @@
-"""VLM(비전 LLM) 기반 슬라이드 텍스트/수식 추출(OpenRouter)."""
-
 from __future__ import annotations
 
 import argparse

@@ -6,13 +6,14 @@
 1. sync_engine: STT/VLM 동기화 및 세그먼트 생성
 2. summarizer: Gemini 기반 구간 요약(JSONL, 전체 세그먼트 단일 호출)
 3. renderer: segment_summaries.jsonl → Markdown
-4. final_summary_composer: 최종 요약 A/B/C 생성
+4. final_summary_composer: 최종 요약(timeline/tldr_timeline) 생성
 
 ## 산출물 위치
 output_root는 config(`paths.output_root`)로 제어됩니다.
 
 - 기본값: `src/fusion/outputs`
 - End-to-End(`src/run_video_pipeline.py`) 사용 시: `data/outputs/{video_name}` 아래에 동영상별로 생성
+- summarizer 프롬프트 버전 기록: `src/fusion/outputs/prompt_versions.md`
 
 예시(기본 output_root 기준):
 
@@ -23,9 +24,8 @@ output_root는 config(`paths.output_root`)로 제어됩니다.
 - `src/fusion/outputs/fusion/segment_summaries.jsonl`
 - `src/fusion/outputs/fusion/segment_summaries.md`
 - `src/fusion/outputs/fusion/segment_summaries_nl.md`
-- `src/fusion/outputs/fusion/outputs/final_summary_A.md`
-- `src/fusion/outputs/fusion/outputs/final_summary_B.md`
-- `src/fusion/outputs/fusion/outputs/final_summary_C.md`
+- `src/fusion/outputs/fusion/outputs/final_summary_timeline.md`
+- `src/fusion/outputs/fusion/outputs/final_summary_tldr_timeline.md`
 
 ## 설정 파일
 `src/fusion/config.yaml`을 사용합니다. 입력 경로와 output_root는 반드시 설정해야 합니다.
@@ -103,6 +103,6 @@ python src/fusion/run_final_summary.py --config src/fusion/config.yaml
 
 ## 주의사항
 - Judge/재생성 루프는 이번 스코프에서 제외되었습니다.
-- 최종 요약(A/B/C)은 `segment_summaries.jsonl`만 근거로 작성됩니다(새 사실 생성 금지).
+- 최종 요약(timeline/tldr_timeline)은 `segment_summaries.jsonl`만 근거로 작성됩니다(새 사실 생성 금지).
 - 모든 JSONL 입출력은 스트리밍 방식으로 처리합니다.
 
