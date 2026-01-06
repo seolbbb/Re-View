@@ -84,6 +84,30 @@ def _load_manifest_scores(path: Optional[Path]) -> Dict[int, float]:
     return scores
 
 
+def _load_qwen3_detect_items(path: Optional[Path]) -> Dict[int, Dict[str, object]]:
+    if not path:
+        return {}
+    if not path.exists():
+        return {}
+    payload = read_json(path, "qwen3_detect.json")
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"qwen3_detect.json schema_version이 1이 아닙니다: {path}")
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError(f"qwen3_detect.json items 형식이 올바르지 않습니다: {path}")
+
+    mapping: Dict[int, Dict[str, object]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            timestamp_ms = int(item["timestamp_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        mapping[timestamp_ms] = item
+    return mapping
+
+
 def _compute_duration_ms(
     stt_segments: List[Dict[str, object]],
     vlm_items: List[Dict[str, object]],
@@ -279,6 +303,61 @@ def _extract_visual_units(
     return visual_units, visual_text
 
 
+def _append_detection_units(
+    visual_units: List[Dict[str, object]],
+    selected_items: List[Dict[str, object]],
+    detect_map: Dict[int, Dict[str, object]],
+    max_visual_chars: int,
+) -> Tuple[List[Dict[str, object]], str]:
+    next_idx = len(visual_units) + 1
+    for item in selected_items:
+        timestamp_ms = int(item["timestamp_ms"])
+        detect_item = detect_map.get(timestamp_ms)
+        if not detect_item:
+            continue
+        detections = detect_item.get("detections", [])
+        if not isinstance(detections, list) or not detections:
+            continue
+        image_size = detect_item.get("image_size", {})
+        coord_space = detect_item.get("coord_space", "")
+        bbox_format = detect_item.get("bbox_format", "")
+        header = (
+            f"[qwen3_detect] coord_space={coord_space} "
+            f"bbox_format={bbox_format} image_size={image_size}"
+        )
+        lines = [header]
+        for det in detections:
+            if not isinstance(det, dict):
+                continue
+            label = det.get("label", "")
+            box = det.get("box")
+            desc = det.get("description", "")
+            line = f"- label={label}, box={box}"
+            if desc:
+                line += f", desc={desc}"
+            lines.append(line)
+        visual_units.append(
+            {
+                "unit_id": f"v{next_idx}",
+                "timestamp_ms": timestamp_ms,
+                "text": "\n".join(lines),
+            }
+        )
+        next_idx += 1
+
+    def total_len(items: List[Dict[str, object]]) -> int:
+        if not items:
+            return 0
+        return sum(len(item["text"]) for item in items) + (len(items) - 1)
+
+    if max_visual_chars > 0:
+        while visual_units and total_len(visual_units) > max_visual_chars:
+            visual_units.pop()
+
+    visual_text = "\n".join(unit["text"] for unit in visual_units)
+    return visual_units, visual_text
+
+
 def _build_transcript_units(
     stt_segments: List[Dict[str, object]], start_ms: int, end_ms: int
 ) -> Tuple[List[Dict[str, object]], str]:
@@ -304,6 +383,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
     stt_segments, stt_duration_ms = _load_stt_segments(paths.stt_json)
     vlm_items, vlm_duration_ms = _load_vlm_items(paths.vlm_json)
     manifest_scores = _load_manifest_scores(paths.captures_manifest_json)
+    detect_map = _load_qwen3_detect_items(paths.qwen3_detect_json)
 
     duration_ms = _compute_duration_ms(stt_segments, vlm_items, stt_duration_ms, vlm_duration_ms)
     min_segment_ms = config.raw.sync_engine.min_segment_sec * 1000
@@ -356,6 +436,13 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
                 config.raw.sync_engine.dedup_similarity_threshold,
                 config.raw.sync_engine.max_visual_chars,
             )
+            if detect_map:
+                visual_units, visual_text = _append_detection_units(
+                    visual_units,
+                    selected_vlm_items,
+                    detect_map,
+                    config.raw.sync_engine.max_visual_chars,
+                )
 
             sync_segments.append(
                 {

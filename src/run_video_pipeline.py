@@ -29,6 +29,9 @@ from src.fusion.summarizer import run_summarizer
 from src.fusion.sync_engine import run_sync_engine
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+from src.vlm.qwen3_detect import DEFAULT_DETECT_PROMPT, OpenRouterQwen3Detector
+
+DETECT_SCHEMA_VERSION = 1
 
 
 def _sanitize_video_name(stem: str) -> str:
@@ -67,6 +70,7 @@ def _generate_fusion_config(
     stt_json: Path,
     vlm_json: Path,
     manifest_json: Path,
+    qwen3_detect_json: Optional[Path],
     output_root: Path,
 ) -> None:
     payload: Dict[str, Any]
@@ -83,6 +87,7 @@ def _generate_fusion_config(
         "stt_json": _rel(stt_json),
         "vlm_json": _rel(vlm_json),
         "captures_manifest_json": _rel(manifest_json),
+        "qwen3_detect_json": _rel(qwen3_detect_json) if qwen3_detect_json else None,
         "output_root": _rel(output_root),
     }
 
@@ -139,6 +144,22 @@ def _run_vlm_openrouter(
     if batch_size is not None and batch_size < 1:
         raise ValueError("batch_size는 1 이상이어야 합니다.")
 
+    image_paths = _collect_capture_images(manifest_json, captures_dir)
+    if not image_paths:
+        raise ValueError("VLM 입력 이미지가 없습니다(manifest.json을 확인하세요).")
+
+    results = extractor.extract_features(image_paths, batch_size=batch_size)
+    raw_path = extractor.get_output_path()
+    write_vlm_raw_json(results, raw_path)
+
+    convert_vlm_raw_to_fusion_vlm(
+        manifest_json=manifest_json,
+        vlm_raw_json=raw_path,
+        output_vlm_json=raw_path.with_name("vlm.json"),
+    )
+
+
+def _collect_capture_images(manifest_json: Path, captures_dir: Path) -> List[str]:
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     if not isinstance(manifest_payload, list):
         raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
@@ -152,18 +173,121 @@ def _run_vlm_openrouter(
         if not file_name:
             continue
         image_paths.append(str(captures_dir / file_name))
+    return image_paths
 
+
+def _run_qwen3_detect_openrouter(
+    *,
+    captures_dir: Path,
+    manifest_json: Path,
+    output_root: Path,
+    batch_size: Optional[int],
+    prompt: str,
+) -> Path:
+    detector = OpenRouterQwen3Detector()
+    if batch_size is not None and batch_size < 1:
+        raise ValueError("batch_size는 1 이상이어야 합니다.")
+
+    image_paths = _collect_capture_images(manifest_json, captures_dir)
     if not image_paths:
-        raise ValueError("VLM 입력 이미지가 없습니다(manifest.json을 확인하세요).")
+        raise ValueError("qwen3 detect 입력 이미지가 없습니다(manifest.json을 확인하세요).")
 
-    results = extractor.extract_features(image_paths, batch_size=batch_size)
-    raw_path = extractor.get_output_path()
-    write_vlm_raw_json(results, raw_path)
+    outputs = detector.extract_features(image_paths, prompt, batch_size=batch_size)
+    raw_path = output_root / "qwen3_detect_raw.json"
+    raw_path.write_text(json.dumps(outputs, ensure_ascii=False, indent=2), encoding="utf-8")
+    return raw_path
 
-    convert_vlm_raw_to_fusion_vlm(
-        manifest_json=manifest_json,
-        vlm_raw_json=raw_path,
-        output_vlm_json=raw_path.with_name("vlm.json"),
+
+def _strip_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = [line.strip() for line in stripped.splitlines()]
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _load_manifest_map(manifest_json: Path) -> Dict[str, int]:
+    payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+    mapping: Dict[str, int] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        file_name = str(item.get("file_name", "")).strip()
+        if not file_name:
+            continue
+        try:
+            timestamp_ms = int(item["timestamp_ms"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        mapping[file_name] = timestamp_ms
+    return mapping
+
+
+def _postprocess_qwen3_detect(
+    raw_json: Path,
+    manifest_json: Path,
+    output_json: Path,
+) -> None:
+    payload = json.loads(raw_json.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("qwen3_detect.json 형식이 올바르지 않습니다(배열이어야 함).")
+
+    manifest_map = _load_manifest_map(manifest_json)
+    items: List[Dict[str, Any]] = []
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        image_path = entry.get("image")
+        if not isinstance(image_path, str) or not image_path.strip():
+            continue
+        file_name = Path(image_path).name
+        timestamp_ms = manifest_map.get(file_name)
+        if timestamp_ms is None:
+            continue
+
+        raw = entry.get("raw", "")
+        cleaned = _strip_code_fence(str(raw))
+        detections: List[Dict[str, Any]] = []
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                for det in parsed:
+                    if not isinstance(det, dict):
+                        continue
+                    box = det.get("box") or det.get("bbox")
+                    if not isinstance(box, list) or len(box) != 4:
+                        continue
+                    detections.append(
+                        {
+                            "label": det.get("label", ""),
+                            "box": box,
+                            "description": det.get("description", ""),
+                        }
+                    )
+        except json.JSONDecodeError:
+            detections = []
+
+        items.append(
+            {
+                "timestamp_ms": timestamp_ms,
+                "file_name": file_name,
+                "image_path": image_path,
+                "image_size": entry.get("image_size"),
+                "coord_space": entry.get("coord_space"),
+                "bbox_format": entry.get("bbox_format"),
+                "detections": detections,
+            }
+        )
+
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    output_json.write_text(
+        json.dumps({"schema_version": DETECT_SCHEMA_VERSION, "items": items}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
 
 
@@ -320,6 +444,16 @@ def main() -> None:
             batch_size=args.vlm_batch_size,
         )
 
+        raw_detect_path = _run_qwen3_detect_openrouter(
+            captures_dir=captures_dir,
+            manifest_json=manifest_json,
+            output_root=video_root,
+            batch_size=args.vlm_batch_size,
+            prompt=DEFAULT_DETECT_PROMPT,
+        )
+        qwen3_detect_clean = video_root / "qwen3_detect.json"
+        _postprocess_qwen3_detect(raw_detect_path, manifest_json, qwen3_detect_clean)
+
         template_config = repo_root / "src" / "fusion" / "config.yaml"
         if not template_config.exists():
             raise FileNotFoundError(f"fusion config template을 찾을 수 없습니다: {template_config}")
@@ -331,6 +465,7 @@ def main() -> None:
             stt_json=stt_json,
             vlm_json=video_root / "vlm.json",
             manifest_json=manifest_json,
+            qwen3_detect_json=qwen3_detect_clean,
             output_root=video_root,
         )
 

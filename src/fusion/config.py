@@ -17,6 +17,7 @@ class PathsConfig(BaseModel):
     stt_json: str
     vlm_json: str
     captures_manifest_json: Optional[str] = None
+    qwen3_detect_json: Optional[str] = None
     output_root: str
 
 
@@ -110,6 +111,7 @@ class ResolvedPaths:
     stt_json: Path
     vlm_json: Path
     captures_manifest_json: Optional[Path]
+    qwen3_detect_json: Optional[Path]
     output_root: Path
 
 
@@ -153,6 +155,7 @@ def load_config(config_path: str) -> ConfigBundle:
         stt_json=_resolve_path(config.paths.stt_json, repo_root),
         vlm_json=_resolve_path(config.paths.vlm_json, repo_root),
         captures_manifest_json=_resolve_path(config.paths.captures_manifest_json, repo_root),
+        qwen3_detect_json=_resolve_path(config.paths.qwen3_detect_json, repo_root),
         output_root=_resolve_path(config.paths.output_root, repo_root),
     )
     return ConfigBundle(raw=config, config_path=config_file, repo_root=repo_root, paths=resolved_paths)
