@@ -12,7 +12,7 @@ from .config import ConfigBundle
 from .io_utils import ensure_output_root, print_jsonl_head, read_jsonl
 
 
-PROMPT_VERSION = "sum_v1.1"
+PROMPT_VERSION = "sum_v1.5"
 
 
 @dataclass(frozen=True)
@@ -246,19 +246,41 @@ def _build_batch_prompt(
   (예: "예시로 x_0는 선명한 이미지, x_t는 노이즈가 섞인 이미지, x_T는 거의 순수 노이즈라는 단계적 변화가 제시된다.")
 
 ========================
+정의(Definitions) 커버리지 규칙 (필수)
+========================
+- 각 segment의 definitions는 해당 segment에서 등장하는 "핵심 용어/약어/수식 기호"를 빠짐없이 포함해야 합니다.
+- "등장"의 범위는 다음 3가지의 합집합입니다.
+  (A) transcript_text / transcript_units에 실제로 등장한 전문 용어/약어/영문 표현
+  (B) visual_text / visual_units의 Title/Labels/Equation/Description에 실제로 등장한 전문 용어/약어/수식 기호
+  (C) 당신이 bullets/explanations/open_questions에서 사용한 전문 용어/약어/수식 기호
+- 포함 대상의 예시(유형): ELBO, KL divergence, likelihood, prior matching, denoising matching, objective function,
+  Bayes rule, reparameterization trick, q(·), p(·), p_{{\\theta}}(·), E_q[·], x_0/x_1/x_t/x_T, α_t, ε, I 등.
+- 제외 가능: 일반어(예: "생각", "정답", "문제", "결과"), 감탄사/군더더기 표현, 지시어.
+- 정의 누락 금지: bullets/explanations/open_questions에 등장하는 용어/기호가 definitions에 없으면 출력은 실패로 간주합니다.
+- 정의 개수 최소치: definitions의 길이는 "후보 용어 개수" 이상이어야 합니다.
+  단, 관련 기호는 묶어서 1개 항목으로 정의해도 됩니다(예: {{x_0, x_1, x_t, x_T}}를 하나의 term으로 묶어 정의).
+- 정의 길이 제한: 각 definition은 1~2문장(최대 3문장)으로 간결하게 작성합니다.
+- 작성 절차(권장): (1) 먼저 용어/기호 목록을 만들고 (2) definitions를 채운 뒤 (3) bullets/explanations를 쓰되,
+  새 용어를 추가로 쓰게 되면 definitions에도 반드시 추가합니다.
+
+========================
 시각/지시어 금지 규칙 (필수, 강화)
 ========================
 - "이/해당/위/아래/여기/수식의/그림의/슬라이드의/마지막 항" 같은 지시어만으로 대상을 지칭하지 마세요.
 - "이 수식은", "수식의 마지막 항인", "슬라이드의 고양이 그림은" 같은 문장 형태를 금지합니다.
 - 반드시 대상 이름을 먼저 명시하세요.
-  좋은 예: "ELBO 3항 분해 식", "Denoising matching 항", "KL(q(x_T|x_0) || p(x_T))", "Reparameterization trick", "정규분포 N(x_t; sqrt(alpha_t)x_{{t-1}}, (1-alpha_t)I)"
+  좋은 예: "ELBO 3항 분해 식", "Denoising matching 항", "KL(q(x_T|x_0) || p(x_T))", "Reparameterization trick",
+          "정규분포 $N(x_t; sqrt(α_t) x_{{t-1}}, (1-α_t) I)$"
 - 그림/도식/표/그래프가 있으면, 무엇을 보여주는지 "텍스트로" 서술하세요. (사용자가 실제 그림을 보지 못한다는 전제)
 
 ========================
 수식/도식 선제 제시 규칙 (필수)
 ========================
 - 수식이 있으면 explanations에서 해당 수식을 처음 설명하는 시점에 반드시 전체 수식(입력에 있는 형태 그대로)을 1회 이상 먼저 제시하라.
-  - 제시 방식: 문장 안에 LaTeX 문자열을 그대로 포함한다.
+  - 제시 방식: 문장 안에 수식을 반드시 `$...$` 또는 `$$...$$`로 감싸서 포함한다.
+  - LaTeX 백슬래시 명령을 사용할 수 있다. 단, 출력은 JSON이므로 문자열 값 내부의 백슬래시는 반드시 두 번 연속으로 출력해야 한다(예: `\\theta`, `\\alpha_t`, `\\mathcal{{L}}`).
+  - 표기 정규화(권장): `p_theta` 같은 평문 표기 대신 LaTeX 표기인 `$p_{{\\theta}}$`를 사용하라.
+  - 표기 정규화(권장): `sum_{{t=2}}^T`/`product_{{t=2}}^T` 같은 평문 표기 대신 `\\sum_{{t=2}}^T`/`\\prod_{{t=2}}^T`를 사용하라.
   - 이후에 각 기호/항의 의미를 풀어쓴다.
 - 도식/예시 이미지가 있으면 explanations에서 처음 활용하는 시점에 반드시 다음을 먼저 텍스트로 정의하라:
   1) 무엇이 등장하는지(예: x_0, x_t, x_T의 예시)
@@ -297,13 +319,23 @@ source_type / evidence_refs (추적 가능성 유지)
 
 - definitions 항목:
 {{
-  "term": "용어(규칙에 따라 영어 우선)",
+  "term": "용어(규칙에 따라 영어 우선). term에는 일반 용어뿐 아니라 수식 기호/표현도 허용됨.",
   "definition": "초학자 기준 정의 1~2문장 + (선택) 쉬운 말 풀이 1개",
   "source_type": "direct|inferred|background",
   "evidence_refs": ["v2"],
   "confidence": "high|medium|low",
   "notes": "오해 포인트가 있으면 1문장. background 사용 시: 어떤 일반 지식인지 1문장으로 명시."
 }}
+- term 예시(기호/표현 포함):
+  "$x_0, x_t, x_T$", "$p_{{\\theta}}(x_{{t-1}} | x_t)$", "$q(x_{{t-1}} | x_t, x_0)$", "$\\alpha_t$", "$\\varepsilon ~ \\mathcal{{N}}(0, I)$", "$E_{{q(\\cdot)}}[\\cdot]$"
+
+========================
+JSON 문자열 안정성 규칙 (필수)
+========================
+- 문자열 값(claim/definition/point/question/notes/term) 내부에는 큰따옴표 문자(")를 절대 포함하지 마세요.
+  - JSON 문법을 위한 큰따옴표(키/값을 감싸는 따옴표)는 예외입니다.
+  - 인용이 필요하면 괄호() 또는 따옴표 대신 ‘ ’ 같은 문자를 사용하세요.
+- LaTeX 등으로 백슬래시(역슬래시) 문자를 써야 한다면, JSON 문자열 안에서는 반드시 `\\` 형태로 이중 이스케이프해서 출력하세요.
 
 - explanations 항목(가장 중요: '가르치기'):
 {{
@@ -349,7 +381,7 @@ source_type / evidence_refs (추적 가능성 유지)
 - 단, 아래 범주의 전문 용어는 한국어 번역 대신 영어 원어 표기를 우선 사용한다.
   1) 알고리즘/모델/방법론 명칭 (예: Expectation-Maximization (EM), Variational Inference, Mean-field Variational Inference, ELBO)
   2) 확률/통계/최적화 핵심 개념 (예: log marginal likelihood, posterior, prior, likelihood, KL divergence, stationary point, stationary function, functional derivative)
-  3) 수식에 직접 등장하는 심볼/표현 (예: log p(x), q(z), p(z|x), \\mathcal{{L}}(q))
+  3) 수식에 직접 등장하는 심볼/표현 (예: log p(x), q(z), p(z|x), L(q))
 
 - 괄호 규칙:
   * 처음 등장할 때만 "영어 (약어)" 또는 "영어 (한국어 번역)" 중 하나로 병기한다.
@@ -371,6 +403,7 @@ source_type / evidence_refs (추적 가능성 유지)
 - 금지 표현이 없는가? (슬라이드/화면/그림을 보면/보시면/위/아래/여기/방금/앞에서/다음으로/이 수식/마지막 항)
 - 수식/관계는 처음 설명하는 시점에 전체 수식을 1회 이상 먼저 제시했는가?
 - 시각 정보는 사용자가 그림을 본다는 전제 없이 텍스트로 재서술했는가?
+- definitions가 (A) transcript, (B) visual, (C) bullets/explanations/open_questions에서 등장한 핵심 용어/기호를 모두 포함하는가?
 - 재구성한 수식/관계는 source_type/notes/confidence로 출처와 확실성을 표시했는가?
 - JSON이 깨지지 않았는가? (코드블록/마크다운 금지, 순수 JSON 배열만 출력)
 """

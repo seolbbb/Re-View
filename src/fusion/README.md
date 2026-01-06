@@ -13,6 +13,7 @@ output_root는 config(`paths.output_root`)로 제어됩니다.
 
 - 기본값: `src/fusion/outputs`
 - End-to-End(`src/run_video_pipeline.py`) 사용 시: `data/outputs/{video_name}` 아래에 동영상별로 생성
+- summarizer 프롬프트 버전 기록: `src/fusion/outputs/prompt_versions.md`
 
 예시(기본 output_root 기준):
 
