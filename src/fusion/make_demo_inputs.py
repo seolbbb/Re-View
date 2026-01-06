@@ -37,7 +37,11 @@ def main() -> None:
             {"start_ms": 0, "end_ms": 8000, "text": "안녕하세요. 오늘은 데모 파이프라인을 설명합니다."},
             {"start_ms": 8000, "end_ms": 18000, "text": "첫 번째 주제는 동기화 규칙과 세그먼트 분할입니다."},
             {"start_ms": 20000, "end_ms": 30000, "text": "두 번째 주제는 Gemini 요약 출력 형식입니다."},
-            {"start_ms": 32000, "end_ms": 45000, "text": "마지막으로 최종 요약 A/B/C 형식을 확인합니다."},
+            {
+                "start_ms": 32000,
+                "end_ms": 45000,
+                "text": "마지막으로 최종 요약 timeline/tldr_timeline 형식을 확인합니다.",
+            },
         ],
     }
     vlm_payload = {
@@ -46,7 +50,10 @@ def main() -> None:
             {"timestamp_ms": 0, "extracted_text": "슬라이드 1: 파이프라인 개요\n- STT/VLM 동기화\n- 요약 생성"},
             {"timestamp_ms": 15000, "extracted_text": "슬라이드 2: 세그먼트 규칙\n- min/max 길이\n- 침묵 구간 분할"},
             {"timestamp_ms": 28000, "extracted_text": "슬라이드 3: 요약 스키마\n- bullets/definitions\n- evidence_refs"},
-            {"timestamp_ms": 42000, "extracted_text": "슬라이드 4: 최종 요약\n- A/B/C 형식"},
+            {
+                "timestamp_ms": 42000,
+                "extracted_text": "슬라이드 4: 최종 요약\n- timeline/tldr_timeline 형식",
+            },
         ],
     }
 

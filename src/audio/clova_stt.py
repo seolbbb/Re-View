@@ -1,23 +1,23 @@
 # 사용:
-# from src.audio.speech_client import ClovaSpeechClient
+# from src.audio.clova_stt import ClovaSpeechClient
 #
 # client = ClovaSpeechClient()
 # client.transcribe(
 #     "src/data/input/screentime-mvp-video.mp4",
-#     include_confidence=True,
-#     include_raw_response=True,
-#     word_alignment=True,
-#     full_text=True,
+#     include_confidence=True, 문장 단위 신뢰도 포함 (기본 True)
+#     include_raw_response=True, segments 외에 전체 응답 포함
+#     word_alignment=True, 추가적으로 단어 단위 타임스탬프 포함
+#     full_text=True, include_raw_response가 True일 경우에 사용가능, 전체 텍스트 포함
 #     completion="sync", "sync" 기본. "async"는 결과 폴링 로직이 없어 segments가 비어 저장될 수 있음.
-#     language="ko-KR", 예: ko-KR, en-US, enko ja-JP, zh-CN, zh-TW (Clova 문서 기준)
+#     language="ko-KR", 예: ko-KR, en-US, enko, ja-JP, zh-CN, zh-TW (Clova 문서 기준)
 #     timeout=120, 지정 초 내 응답 없으면 요청이 Timeout 예외로 종료됨 (긴 파일은 늘리거나 async 권장)
 #     output_path="src/data/output/screentime-mvp-video/stt.json",
 # )
 #
-# CLI사용: python /data/ephemeral/home/Screentime-MVP/src/audio/speech_client.py --media-path src/data/input/screentime-mvp-video.mp4
-# 출력: {schema_version: 1, segments: [{start_ms, end_ms, text}], ...(옵션)}
-# 옵션: include_confidence(기본 True), include_raw_response, word_alignment, full_text, completion, language, timeout, output_path
-# .env: /data/ephemeral/home/Screentime-MVP/.env 우선 로드, 없으면 기본 load_dotenv().
+# CLI사용: python src/audio/clova_stt.py --media-path src/data/input/screentime-mvp-video.mp4
+# 출력: {schema_version: 1, segments: [{start_ms, end_ms, text, confidence?}], ...(옵션)}
+# 옵션: include_confidence(기본 True, 세그먼트별), include_raw_response, word_alignment, full_text, completion, language, timeout, output_path
+# .env: Screentime-MVP/.env 우선 로드, 없으면 기본 load_dotenv().
 """
 Clova Speech API client (recognizer/upload).
 
@@ -33,7 +33,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import requests
 from dotenv import load_dotenv
@@ -64,7 +64,7 @@ def _coerce_ms(value: object) -> int:
         return 0
 
 
-def _extract_segments(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[Dict[str, Any]]:
     segments_out: List[Dict[str, Any]] = []
     for segment in raw.get("segments", []):
         if not isinstance(segment, dict):
@@ -75,28 +75,18 @@ def _extract_segments(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
         text = text.strip()
         if not text:
             continue
-        segments_out.append(
-            {
-                "start_ms": _coerce_ms(segment.get("start")),
-                "end_ms": _coerce_ms(segment.get("end")),
-                "text": text,
-            }
-        )
+        item = {
+            "start_ms": _coerce_ms(segment.get("start")),
+            "end_ms": _coerce_ms(segment.get("end")),
+            "text": text,
+        }
+        if include_confidence:
+            try:
+                item["confidence"] = float(segment.get("confidence"))
+            except (TypeError, ValueError):
+                pass
+        segments_out.append(item)
     return segments_out
-
-
-def _average_confidence(raw: Dict[str, Any]) -> Optional[float]:
-    values: List[float] = []
-    for segment in raw.get("segments", []):
-        if not isinstance(segment, dict):
-            continue
-        try:
-            values.append(float(segment.get("confidence")))
-        except (TypeError, ValueError):
-            continue
-    if not values:
-        return None
-    return round(sum(values) / len(values), 4)
 
 
 class ClovaSpeechClient:
@@ -165,13 +155,8 @@ class ClovaSpeechClient:
 
         stt_data: Dict[str, Any] = {
             "schema_version": 1,
-            "segments": _extract_segments(raw),
+            "segments": _extract_segments(raw, include_confidence=include_confidence),
         }
-
-        if include_confidence:
-            confidence = _average_confidence(raw)
-            if confidence is not None:
-                stt_data["confidence"] = confidence
 
         if include_raw_response:
             stt_data["raw_response"] = raw

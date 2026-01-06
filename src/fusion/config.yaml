@@ -44,9 +44,9 @@ render:
   md_wrap_width: 0
 
 final_summary:
-  generate_formats: ["A", "B", "C"]
+  generate_formats: ["timeline", "tldr_timeline"]
   temperature: 0.2
-  max_chars_per_format: 12000
+  max_chars_per_format: 0
   style:
     include_timestamps: true
     language: "ko"

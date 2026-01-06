@@ -89,9 +89,9 @@ class FinalSummaryStyleConfig(BaseModel):
 class FinalSummaryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    generate_formats: List[Literal["A", "B", "C"]]
+    generate_formats: List[Literal["timeline", "tldr_timeline"]]
     temperature: float = Field(..., ge=0.0, le=1.0)
-    max_chars_per_format: int = Field(..., ge=100)
+    max_chars_per_format: int = Field(..., ge=0)
     style: FinalSummaryStyleConfig
 
 

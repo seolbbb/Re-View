@@ -26,7 +26,9 @@ def _load_genai() -> Any:
     try:
         from google import genai  # type: ignore
     except ImportError as exc:
-        raise ImportError("google-genai 패키지가 필요합니다. requirements.txt를 확인하세요.") from exc
+        raise ImportError(
+            "google-genai 패키지가 필요합니다. requirements.txt를 확인하세요."
+        ) from exc
     return genai
 
 
@@ -40,35 +42,57 @@ def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
             if api_key:
                 break
         if not api_key:
-            raise ValueError("Developer API 키가 없습니다. GOOGLE_API_KEY 또는 GEMINI_API_KEY를 설정하세요.")
+            raise ValueError(
+                "Developer API 키가 없습니다. GOOGLE_API_KEY 또는 GEMINI_API_KEY를 설정하세요."
+            )
         client = genai.Client(api_key=api_key)
-        return GeminiClientBundle(client=client, backend="developer_api", model=llm_cfg.model)
+        return GeminiClientBundle(
+            client=client, backend="developer_api", model=llm_cfg.model
+        )
 
     if llm_cfg.backend == "vertex_ai":
         project = llm_cfg.vertex_ai.project
         location = llm_cfg.vertex_ai.location
         if not project or not location:
-            raise ValueError("Vertex AI는 project/location이 필요합니다. config를 확인하세요.")
+            raise ValueError(
+                "Vertex AI는 project/location이 필요합니다. config를 확인하세요."
+            )
         if llm_cfg.vertex_ai.auth_mode == "adc":
             client = genai.Client(vertexai=True, project=project, location=location)
         else:
             api_key = os.getenv(llm_cfg.vertex_ai.api_key_env)
             if not api_key:
                 raise ValueError("Vertex AI express_api_key 모드용 API 키가 없습니다.")
-            client = genai.Client(vertexai=True, project=project, location=location, api_key=api_key)
-        return GeminiClientBundle(client=client, backend="vertex_ai", model=llm_cfg.model)
+            client = genai.Client(
+                vertexai=True, project=project, location=location, api_key=api_key
+            )
+        return GeminiClientBundle(
+            client=client, backend="vertex_ai", model=llm_cfg.model
+        )
 
     raise ValueError(f"지원하지 않는 backend: {llm_cfg.backend}")
 
 
 def _build_response_schema() -> Dict[str, Any]:
     evidence_schema = {"type": "array", "items": {"type": "string"}}
+    source_type_schema = {
+        "type": "string",
+        "enum": ["direct", "inferred", "background"],
+    }
     bullet_schema = {
         "type": "object",
-        "required": ["bullet_id", "claim", "evidence_refs", "confidence", "notes"],
+        "required": [
+            "bullet_id",
+            "claim",
+            "source_type",
+            "evidence_refs",
+            "confidence",
+            "notes",
+        ],
         "properties": {
             "bullet_id": {"type": "string"},
             "claim": {"type": "string"},
+            "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             "notes": {"type": "string"},
@@ -76,10 +100,18 @@ def _build_response_schema() -> Dict[str, Any]:
     }
     definition_schema = {
         "type": "object",
-        "required": ["term", "definition", "evidence_refs", "confidence", "notes"],
+        "required": [
+            "term",
+            "definition",
+            "source_type",
+            "evidence_refs",
+            "confidence",
+            "notes",
+        ],
         "properties": {
             "term": {"type": "string"},
             "definition": {"type": "string"},
+            "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             "notes": {"type": "string"},
@@ -87,9 +119,10 @@ def _build_response_schema() -> Dict[str, Any]:
     }
     explanation_schema = {
         "type": "object",
-        "required": ["point", "evidence_refs", "confidence", "notes"],
+        "required": ["point", "source_type", "evidence_refs", "confidence", "notes"],
         "properties": {
             "point": {"type": "string"},
+            "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             "notes": {"type": "string"},
@@ -97,9 +130,10 @@ def _build_response_schema() -> Dict[str, Any]:
     }
     question_schema = {
         "type": "object",
-        "required": ["question", "evidence_refs", "confidence", "notes"],
+        "required": ["question", "source_type", "evidence_refs", "confidence", "notes"],
         "properties": {
             "question": {"type": "string"},
+            "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             "notes": {"type": "string"},
@@ -134,7 +168,9 @@ def _build_batch_prompt(
     bullets_min: int,
     bullets_max: int,
 ) -> str:
-    jsonl_text = "\n".join(json.dumps(segment, ensure_ascii=False) for segment in segments)
+    jsonl_text = "\n".join(
+        json.dumps(segment, ensure_ascii=False) for segment in segments
+    )
     claim_rule = (
         f"- claim은 {claim_max_chars}자 이하의 한 문장"
         if claim_max_chars > 0
@@ -148,12 +184,17 @@ def _build_batch_prompt(
         bullets_rule = "- bullets는 필요한 만큼 작성"
 
     prompt = f"""
-당신은 20년 경력의 학원 강사로서, 어려운 개념을 짧고 명확하게 풀어 설명하는 전문가입니다.
-단, 당신이 사용할 수 있는 근거는 아래 JSONL 입력뿐이며, 입력에 없는 새로운 사실(정의/정리/응용/예시)을 단정적으로 추가하면 안 됩니다.
-모든 출력은 한국어로 작성하되, 아래 용어 표기 규칙을 반드시 지키세요.
+당신은 "요약가"가 아니라 "초학자 튜터(강의 노트 작성자)"입니다.
+목표는 입력(STT/VLM)을 그대로 줄이는 것이 아니라, 처음 보는 학생이 이해하도록 '설명'과 '연결'을 만들어 주는 것입니다.
 
-출력은 반드시 "순수 JSON 배열"만 반환하세요. (설명 문장, 코드블록, 마크다운 금지)
-배열의 각 원소는 다음 형식입니다:
+- 모든 출력은 한국어로 작성하되, 아래 용어 표기 규칙을 반드시 지키세요.
+- 출력은 반드시 "순수 JSON 배열"만 반환하세요. (설명 문장/코드블록/마크다운 금지)
+- 각 세그먼트는 오직 해당 세그먼트 입력만 근거로 하되, 일반적인 배경지식은 허용됩니다(아래 source_type 규칙 준수).
+
+========================
+출력 JSON 형식 (필수)
+========================
+배열의 각 원소:
 {{
   "segment_id": int,
   "summary": {{
@@ -164,66 +205,107 @@ def _build_batch_prompt(
   }}
 }}
 
-요약 규칙:
+========================
+가장 중요한 품질 목표 (우선순위)
+========================
+1) "처음 듣는 학생이 이해"가 최우선입니다.
+2) 단순 패러프레이즈(입력 문장 구조를 그대로 바꾼 문장)를 피하세요.
+3) 각 세그먼트마다 최소 1개는 "왜(why)" 또는 "어떻게(how)"를 명시적으로 설명하세요.
+4) 수식/기호가 나오면 반드시 "각 항이 무엇을 의미하는지"를 한국어 문장으로 풀어 쓰세요.
+5) 강의 맥락에서 중요한 연결(앞에서 왜 이걸 말하는지, 다음으로 무엇을 위해 쓰는지)을 최소 1개는 써 주세요.
+
+========================
+요약 규칙
+========================
 {bullets_rule}
 {claim_rule}
 
-근거/정확성 규칙(매우 중요):
-- bullets/definitions/explanations/open_questions의 각 항목에는 반드시 evidence_refs를 포함해야 하며, evidence_refs는 unit_id(t*, v*)만 사용하세요.
-- 각 세그먼트 입력에 visual_units가 1개 이상이면 bullets 또는 explanations 중 최소 1개는 evidence_refs에 v*를 반드시 포함하세요.
-- visual_units가 없다면 v*를 사용하지 마세요.
-- 입력에 LaTeX 수식이 포함되어 있다면 (예: `\\begin{{aligned}}`, `$$...$$`, `\\[...\\]`) bullets 또는 explanations 중 최소 1개에 수식을 원문 그대로 포함하세요.
-- 입력에 없는 내용을 설명하고 싶다면, "추론/외부지식"처럼 보일 수 있으므로 금지합니다.
-  대신, 입력에 있는 수식/문장의 구조가 의미하는 바를 '풀이' 형태로 설명하세요.
-  예: "log p(x) = ELBO + KL"이 보이면, "오른쪽이 두 항의 합으로 표현된다" 정도로만 풀어 말하고,
-      KL이 항상 양수라서 하한이 된다는 '일반적 성질'을 단정하지 마세요. (입력에 없으면)
-- 확신이 없으면 notes에 "확인 불가", confidence는 low로 두세요.
+- bullets는 "강의의 뼈대(학생이 외워야 할 핵심)"입니다.
+  * 첫 번째 bullet(가장 위)은 '가장 중요한 개념 + 왜 중요한지(한 문장 안에서)'가 되도록 작성하세요.
+  * 나머지 bullets는 (정의/전개/비교/결론/주의) 중 누락된 축을 채우세요.
+- definitions는 학생이 '검색 없이' 이해할 수 있도록 1~2문장으로 명확히 쓰되,
+  필요하면 괄호로 쉬운 말 풀이를 1개 덧붙일 수 있습니다. (예: "… (쉽게 말해, …)")
 
-출력 포맷 규칙:
+========================
+source_type / evidence_refs (추적 가능성 유지)
+========================
+각 항목(bullets/definitions/explanations/open_questions)에 source_type을 반드시 포함하세요.
+
+- "direct": 입력 텍스트를 직접 인용/가까운 패러프레이즈. evidence_refs 필수.
+- "inferred": 입력 여러 조각을 종합해 논리적으로 재구성/연결. evidence_refs 필수(근거 unit_id).
+- "background": 널리 알려진 정의/수학적 성질/기본 성질/표준 해석 등 일반 배경지식.
+  evidence_refs는 빈 배열([]) 허용.
+  단, notes에 "어떤 배경지식인지(짧게)"를 반드시 적으세요.
+
+중요: evidence_refs 때문에 설명이 위축되면 안 됩니다.
+- 강의에서 말한 내용은 direct/inferred로 근거를 달고,
+- 이해를 돕기 위한 일반 설명은 background로 분리하세요.
+
+========================
+출력 포맷 규칙 (필수)
+========================
 - bullet_id 형식: "SEGMENT_ID-INDEX" (INDEX는 1부터 시작)
-- bullets 항목 스키마:
-  {{
-    "bullet_id": "1-1",
-    "claim": "한 문장 요약(구체적으로)",
-    "evidence_refs": ["t1","v2"],
-    "confidence": "high|medium|low",
-    "notes": ""
-  }}
-- definitions 항목 스키마:
-  {{
-    "term": "용어(규칙에 따라 영어 우선)",
-    "definition": "입력 근거로부터 정리한 정의(1~2문장)",
-    "evidence_refs": ["v2"],
-    "confidence": "high|medium|low",
-    "notes": ""
-  }}
-- explanations 항목 스키마(강사 해설 전용):
-  {{
-    "point": "학생이 헷갈릴만한 지점을 짚는 설명(2~4문장)",
-    "evidence_refs": ["t3","v2"],
-    "confidence": "high|medium|low",
-    "notes": ""
-  }}
-- open_questions 항목 스키마:
-  {{
-    "question": "입력에 근거해 자연스럽게 생기는 질문(1문장)",
-    "evidence_refs": ["t2"],
-    "confidence": "high|medium|low",
-    "notes": ""
-  }}
 
-품질 가이드(설명 강화):
-- 각 segment마다 explanations를 최소 2개 작성하세요.
-- explanations는 다음 중 최소 1개를 포함해야 합니다:
-  1) 수식이 등장하면: 수식의 각 항이 무엇을 나타내는지 '문장으로 해설'
-  2) 비교가 등장하면: 두 개념의 차이를 입력 문구 기반으로 대비 설명
-  3) 용어가 등장하면: 왜 그 용어가 필요한지(입력 맥락) 한 문장으로 풀기
-- 각 segment bullets는 transcript_units 개수에 따라 최소 개수를 강제합니다:
-  * 1~3개: 최소 3개
-  * 4~6개: 최소 5개
-  * 7개 이상: 최소 7개
+- bullets 항목:
+{{
+  "bullet_id": "1-1",
+  "claim": "학생이 외울 핵심 1~2문장(가능하면 왜/효과 포함)",
+  "source_type": "direct|inferred|background",
+  "evidence_refs": ["t1","v2"],
+  "confidence": "high|medium|low",
+  "notes": "핵심을 이해시키는 보조 힌트 0~1문장 (필요할 때만)"
+}}
 
-용어 표기 규칙(중요, 다른 규칙보다 우선):
+- definitions 항목:
+{{
+  "term": "용어(규칙에 따라 영어 우선)",
+  "definition": "초학자 기준 정의 1~2문장 + (선택) 쉬운 말 풀이 1개",
+  "source_type": "direct|inferred|background",
+  "evidence_refs": ["v2"],
+  "confidence": "high|medium|low",
+  "notes": "오해 포인트가 있으면 1문장"
+}}
+
+- explanations 항목(가장 중요: '가르치기'):
+{{
+  "point": "4~8문장. 아래 구조를 가능한 한 따르세요: (1) 직관/큰그림 → (2) 정확한 의미/정의 → (3) 왜 필요한지(동기) → (4) 입력 속 예시/문맥 연결 → (5) 흔한 오해/주의점.",
+  "source_type": "direct|inferred|background",
+  "evidence_refs": ["t3","v2"],
+  "confidence": "high|medium|low",
+  "notes": "background 사용 시: 어떤 일반 지식인지 1문장으로 명시"
+}}
+
+- open_questions 항목:
+{{
+  "question": "학생이 자연스럽게 가질 질문 1문장 (예: '그럼 언제 ~가 성립하나요?')",
+  "source_type": "direct|inferred|background",
+  "evidence_refs": ["t2"],
+  "confidence": "high|medium|low",
+  "notes": ""
+}}
+
+========================
+필수 '설명' 최소치 (강제)
+========================
+- 각 segment마다 explanations를 최소 3개 작성하세요.
+- explanations 3개는 역할이 겹치면 안 됩니다. 다음 3종류를 최소 1개씩 포함:
+  A) 수식/기호 해설(있으면 최우선): "이 항은 ~을 뜻한다" 형태로 풀어쓰기
+  B) 비교/대조: 두 개념의 차이(언제/왜/어떤 결과가 다른지)
+  C) 동기/용도: "왜 이 용어/수식/가정을 도입하는지"를 학생 관점으로 설명
+
+========================
+패러프레이즈 방지 규칙 (중요)
+========================
+- 입력 문장을 그대로 바꿔 말하는 문장만 나열하지 마세요.
+- 최소 1개 bullet 또는 explanation에는 반드시 다음 중 하나를 포함:
+  * "즉, …"로 요지를 재구성
+  * "왜냐하면 …"로 이유 제시
+  * "예를 들어 …"로 간단 예시(입력 맥락 기반)
+  * "주의: …"로 흔한 오해 교정
+
+========================
+용어 표기 규칙(중요, 다른 규칙보다 우선)
+========================
 - 출력은 기본적으로 한국어로 작성한다.
 - 단, 아래 범주의 전문 용어는 한국어 번역 대신 영어 원어 표기를 우선 사용한다.
   1) 알고리즘/모델/방법론 명칭 (예: Expectation-Maximization (EM), Variational Inference, Mean-field Variational Inference, ELBO)
@@ -236,8 +318,16 @@ def _build_batch_prompt(
     - 한국어 병기는 필요할 때만. 예: log marginal likelihood (로그 마지널 라이클리후드)
   * 이후에는 영어/약어만 사용한다.
 
-입력(JSONL, 1줄=1세그먼트):
+========================
+입력(JSONL, 1줄=1세그먼트)
+========================
 {jsonl_text}
+
+마지막 점검(출력 전에 스스로 확인):
+- 각 segment에 explanations 3개 이상인가?
+- 최소 1개는 why/how를 명시했는가?
+- background 항목은 notes에 '어떤 배경지식인지'가 적혔는가?
+- JSON이 깨지지 않았는가? (코드블록/마크다운 금지)
 """
 
     return prompt
@@ -308,8 +398,12 @@ def _normalize_evidence_refs(evidence_refs: Any) -> List[str]:
     if isinstance(evidence_refs, list):
         candidates = [str(item) for item in evidence_refs]
     elif isinstance(evidence_refs, dict):
-        candidates.extend([str(item) for item in evidence_refs.get("transcript_unit_ids", [])])
-        candidates.extend([str(item) for item in evidence_refs.get("visual_unit_ids", [])])
+        candidates.extend(
+            [str(item) for item in evidence_refs.get("transcript_unit_ids", [])]
+        )
+        candidates.extend(
+            [str(item) for item in evidence_refs.get("visual_unit_ids", [])]
+        )
     elif isinstance(evidence_refs, str):
         candidates = [evidence_refs]
     else:
@@ -332,6 +426,13 @@ def _normalize_confidence(value: Any) -> str:
     if confidence not in {"low", "medium", "high"}:
         return "low"
     return confidence
+
+
+def _normalize_source_type(value: Any) -> str:
+    source_type = str(value or "direct").lower()
+    if source_type not in {"direct", "inferred", "background"}:
+        return "direct"
+    return source_type
 
 
 def _validate_summary_payload(
@@ -365,6 +466,7 @@ def _validate_summary_payload(
         claim = str(bullet.get("claim", "")).strip()
         if claim_max_chars > 0 and len(claim) > claim_max_chars:
             raise ValueError("claim 길이가 초과되었습니다.")
+        source_type = _normalize_source_type(bullet.get("source_type"))
         evidence_refs = _normalize_evidence_refs(bullet.get("evidence_refs"))
         confidence = _normalize_confidence(bullet.get("confidence"))
         notes = str(bullet.get("notes", "")).strip()
@@ -373,6 +475,7 @@ def _validate_summary_payload(
             {
                 "bullet_id": bullet_id,
                 "claim": claim,
+                "source_type": source_type,
                 "evidence_refs": evidence_refs,
                 "confidence": confidence,
                 "notes": notes,
@@ -387,6 +490,7 @@ def _validate_summary_payload(
         definition = str(item.get("definition", "")).strip()
         if not term or not definition:
             continue
+        source_type = _normalize_source_type(item.get("source_type"))
         evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
         confidence = _normalize_confidence(item.get("confidence"))
         notes = str(item.get("notes", "")).strip()
@@ -394,6 +498,7 @@ def _validate_summary_payload(
             {
                 "term": term,
                 "definition": definition,
+                "source_type": source_type,
                 "evidence_refs": evidence_refs,
                 "confidence": confidence,
                 "notes": notes,
@@ -406,12 +511,14 @@ def _validate_summary_payload(
             point = str(item.get("point", "")).strip()
             if not point:
                 continue
+            source_type = _normalize_source_type(item.get("source_type"))
             evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
             confidence = _normalize_confidence(item.get("confidence"))
             notes = str(item.get("notes", "")).strip()
             normalized_explanations.append(
                 {
                     "point": point,
+                    "source_type": source_type,
                     "evidence_refs": evidence_refs,
                     "confidence": confidence,
                     "notes": notes,
@@ -424,6 +531,7 @@ def _validate_summary_payload(
         normalized_explanations.append(
             {
                 "point": text,
+                "source_type": "direct",
                 "evidence_refs": [],
                 "confidence": "low",
                 "notes": "확인 불가",
@@ -436,12 +544,14 @@ def _validate_summary_payload(
             question = str(item.get("question", "")).strip()
             if not question:
                 continue
+            source_type = _normalize_source_type(item.get("source_type"))
             evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
             confidence = _normalize_confidence(item.get("confidence"))
             notes = str(item.get("notes", "")).strip()
             normalized_questions.append(
                 {
                     "question": question,
+                    "source_type": source_type,
                     "evidence_refs": evidence_refs,
                     "confidence": confidence,
                     "notes": notes,
@@ -454,6 +564,7 @@ def _validate_summary_payload(
         normalized_questions.append(
             {
                 "question": text,
+                "source_type": "direct",
                 "evidence_refs": [],
                 "confidence": "low",
                 "notes": "확인 불가",
@@ -473,7 +584,9 @@ def _parse_json_response(text: str) -> Any:
     return json.loads(cleaned)
 
 
-def _repair_prompt(bad_json: str, bullets_min: int, bullets_max: int, claim_max_chars: int) -> str:
+def _repair_prompt(
+    bad_json: str, bullets_min: int, bullets_max: int, claim_max_chars: int
+) -> str:
     claim_rule = (
         f"- claim은 {claim_max_chars}자 이하"
         if claim_max_chars > 0
@@ -524,12 +637,16 @@ def _run_with_retries(
         except Exception as exc:
             if attempt >= max_retries:
                 raise
-            sleep_for = backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
+            sleep_for = (
+                backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
+            )
             time.sleep(max(sleep_for, 0))
             attempt += 1
 
 
-def run_summarizer(config: ConfigBundle, limit: Optional[int] = None, dry_run: bool = False) -> None:
+def run_summarizer(
+    config: ConfigBundle, limit: Optional[int] = None, dry_run: bool = False
+) -> None:
     paths = config.paths
     ensure_output_root(paths.output_root)
     output_dir = paths.output_root / "fusion"
@@ -605,7 +722,9 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None, dry_run: b
                 if set(summary_map.keys()) != set(expected_ids):
                     missing = sorted(set(expected_ids) - set(summary_map.keys()))
                     extra = sorted(set(summary_map.keys()) - set(expected_ids))
-                    raise ValueError(f"segment_id 불일치 (missing={missing}, extra={extra})")
+                    raise ValueError(
+                        f"segment_id 불일치 (missing={missing}, extra={extra})"
+                    )
 
                 for segment in segments:
                     segment_id = int(segment.get("segment_id"))
@@ -624,7 +743,9 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None, dry_run: b
                             "backend": config.raw.llm_gemini.backend,
                         },
                     }
-                    output_handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+                    output_handle.write(
+                        json.dumps(record, ensure_ascii=False, sort_keys=True)
+                    )
                     output_handle.write("\n")
 
                 last_error = None
