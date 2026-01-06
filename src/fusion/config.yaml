@@ -2,7 +2,6 @@ paths:
   stt_json: "src/data/demo/stt.json"
   vlm_json: "src/data/demo/vlm.json"
   captures_manifest_json: "src/data/demo/manifest.json"
-  qwen3_detect_json: null
   output_root: "src/fusion/outputs"
 
 sync_engine:
