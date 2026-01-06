@@ -51,18 +51,21 @@ def _load_manifest(video_root: Path) -> List[Dict[str, Any]]:
     return payload
 
 
-def _render_final_summaries(video_root: Path) -> None:
+def _render_final_summaries(video_root: Path, *, scroll_height: int = 600) -> None:
     summaries_dir = video_root / "fusion" / "outputs"
     summary_paths = sorted(summaries_dir.glob("final_summary_*.md")) if summaries_dir.exists() else []
     if not summary_paths:
         st.info("No final summaries found.")
         return
-    for path in summary_paths:
-        content = _read_text(path)
-        if not content:
-            continue
-        st.markdown(f"#### {path.name}")
-        st.markdown(content)
+    scroll_container = st.container(height=scroll_height)
+    with scroll_container:
+        for path in summary_paths:
+            content = _read_text(path)
+            if not content:
+                continue
+            st.markdown(f"#### {path.name}")
+            st.markdown(content)
+            st.markdown("---")
 
 
 def _render_segment_summaries(video_root: Path) -> None:
@@ -198,8 +201,6 @@ def main() -> None:
             st.session_state.selected_video = str(video_path)
             st.session_state.video_root = None
             st.session_state.run_meta = None
-        st.video(_load_video_bytes(str(video_path)))
-        st.caption(f"Selected: {video_path}")
 
     with st.sidebar:
         st.header("Pipeline options")
@@ -281,19 +282,43 @@ def main() -> None:
                     st.success("Pipeline finished.")
 
     video_root_value = st.session_state.video_root
+    if video_path or video_root_value:
+        st.markdown("---")
+        video_col, summary_col = st.columns([3, 2], gap="large")
+
+        with video_col:
+            st.markdown("### Video")
+            if video_path:
+                st.video(_load_video_bytes(str(video_path)))
+                st.caption(f"Selected: {video_path}")
+            else:
+                st.info("No video selected.")
+
+        with summary_col:
+            if video_root_value:
+                summary_height = st.slider(
+                    "Summary height",
+                    min_value=320,
+                    max_value=900,
+                    value=600,
+                    step=20,
+                )
+                _render_final_summaries(
+                    Path(video_root_value),
+                    scroll_height=summary_height,
+                )
+            else:
+                st.info("Run pipeline or load outputs to see summaries.")
+
     if video_root_value:
         video_root = Path(video_root_value)
-        st.markdown("---")
         st.markdown(f"Outputs: `{video_root}`")
-        tabs = st.tabs(["Final summaries", "Segment summaries", "Captures", "Run meta"])
-
+        tabs = st.tabs(["Segment summaries", "Captures", "Run meta"])
         with tabs[0]:
-            _render_final_summaries(video_root)
-        with tabs[1]:
             _render_segment_summaries(video_root)
-        with tabs[2]:
+        with tabs[1]:
             _render_captures(video_root)
-        with tabs[3]:
+        with tabs[2]:
             _render_run_meta(video_root, st.session_state.run_meta)
 
 
