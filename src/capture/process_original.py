@@ -166,6 +166,13 @@ def run_full_processing(video_path: str, input_dir: str, output_dir: str) -> lis
         dedupe_threshold=THRESHOLD_DEDUPE,  # 2차: 중복 제거
         verbose=True
     )
+    
+    # manifest.json 저장 (캡처 메타데이터)
+    import json
+    manifest_path = os.path.join(capture_output_dir, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    print(f"[Manifest] Saved: {manifest_path}")
 
     # ---------------------------------------------------------
     # 2단계: JSON Parsing (ClovaSpeech STT 결과)

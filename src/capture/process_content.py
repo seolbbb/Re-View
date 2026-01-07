@@ -204,12 +204,19 @@ def process_single_video_v2(video_path: str, output_root: str) -> None:
     
     elapsed = time.time() - start_time
     
+    # manifest.json 저장 (캡처 메타데이터)
+    import json
+    manifest_path = os.path.join(video_output_dir, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(slides, f, ensure_ascii=False, indent=2)
+    
     # 결과 요약 출력
     metrics = {
         "Total Time": f"{elapsed:.2f}s",
         "Mode": "Hybrid Single-Pass",
         "Total Slides": len(slides),
-        "Output Path": captures_dir
+        "Output Path": captures_dir,
+        "Manifest": manifest_path
     }
     print_summary_table(f"Hybrid Result: {filename}", metrics)
 
