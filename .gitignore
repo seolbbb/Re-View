@@ -50,3 +50,6 @@ src/data/output/grid_search
 
 # Docs
 "장면 변환 프레임 캡처.md"
+
+# capture benchmark
+temp_bench/
