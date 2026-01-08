@@ -68,6 +68,7 @@ def set_pipeline_config(
     video_name: str,
     summarize_prompt: Optional[str] = None,
     max_reruns: int = 2,
+    force_preprocessing: bool = False,
 ) -> Dict[str, Any]:
     """파이프라인 설정을 변경합니다.
 
@@ -75,6 +76,7 @@ def set_pipeline_config(
         video_name: 처리할 비디오 이름 (data/outputs 하위 디렉터리 이름)
         summarize_prompt: 요약 시 사용할 추가 프롬프트 (선택)
         max_reruns: Judge 실패 시 최대 재실행 횟수 (기본: 2)
+        force_preprocessing: True면 기존 파일 삭제 후 Preprocessing 재실행 (기본: False)
 
     Returns:
         success: 설정 성공 여부
@@ -97,12 +99,14 @@ def set_pipeline_config(
     tool_context.state["summarize_prompt"] = summarize_prompt
     tool_context.state["max_reruns"] = max_reruns
     tool_context.state["current_rerun"] = 0
+    tool_context.state["force_preprocessing"] = force_preprocessing
 
     return {
         "success": True,
         "video_name": sanitized,
         "summarize_prompt": summarize_prompt,
         "max_reruns": max_reruns,
+        "force_preprocessing": force_preprocessing,
         "video_root": str(video_root),
         "status": {
             "preprocessing_done": store.segments_units_jsonl().exists(),
