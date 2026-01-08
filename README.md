@@ -25,25 +25,24 @@
 1. **데이터 배치**
 
    ```bash
-   Lecture-Note-AI/
-   ├── src/
-   │   └── data/
-   │       ├── input/          # 강의 영상 (.mp4) 여기에 배치
-   │       └── output/         # ClovaSpeech JSON (.json) 여기에 배치
+   Screentime-MVP/
+   ├── data/
+   │   ├── inputs/   # 입력 강의 영상 (.mp4)
+   │   └── outputs/  # 출력(동영상별 아티팩트)
    ```
 
 2. **의존성 설치**
 
-   ```bash
-   pip install opencv-python numpy
-   ```
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 ### ▶️ 실행 방법
 
 #### Option 0: End-to-End 실행 (영상 1개 → STT/Capture/VLM → Fusion 요약) ⭐ 추천
 
 ```bash
-python src/run_video_pipeline.py --video "src/data/input/screentime-mvp-video.mp4"
+python src/run_video_pipeline.py --video "data/inputs/screentime-mvp-video.mp4"
 ```
 
 **출력 결과**(동영상별로 격리 저장):
@@ -56,6 +55,20 @@ python src/run_video_pipeline.py --video "src/data/input/screentime-mvp-video.mp
 - `data/outputs/{video_name}/pipeline_run.json` (구간별 소요 시간 로그)
 - `data/outputs/{video_name}/fusion/outputs/final_summary_timeline.md`
 - `data/outputs/{video_name}/fusion/outputs/final_summary_tldr_timeline.md`
+
+#### Option 0.5: ADK 파이프라인 실행 (Pre-DB: STT+Capture → ADK: VLM+Sync → Summarize → Judge)
+
+```bash
+python src/run_adk_pipeline.py --video "screentime-mvp-video.mp4"
+```
+
+**입력/출력 규약**
+- 입력(mp4): `data/inputs/` (파일명만 넣으면 `data/inputs`에서 찾음)
+- 출력(DB 대체): `data/outputs/{video_name}/`
+- ADK Preprocessing 산출물: `data/outputs/{video_name}/fusion/segments_units.jsonl`
+- 최종 산출물: `data/outputs/{video_name}/fusion/outputs/final_summary_timeline.md`
+
+자세한 구조: `src/adk_pipeline/README.md`
 
 #### Option 1: 캡처만 실행 (영상 → 슬라이드 이미지) ⭐ 추천
 
