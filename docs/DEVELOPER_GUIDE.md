@@ -8,6 +8,11 @@
 2. [디렉터리 구조](#2-디렉터리-구조)
 3. [파이프라인 흐름](#3-파이프라인-흐름)
 4. [ADK 멀티에이전트 구조](#4-adk-멀티에이전트-구조)
+   - [Agent 정의](#41-agent-정의-agentpy)
+   - [안정성 및 통신 규칙](#42-안정성-및-통신-규칙)
+   - [Agent Transfer 흐름](#43-agent-transfer-흐름)
+   - [Tool 구조](#44-tool-구조)
+   - [State 관리](#45-state-관리)
 5. [개발 영역별 가이드](#5-개발-영역별-가이드)
    - [DB 구현](#51-db-구현)
    - [Judge 연결 및 수정](#52-judge-연결-및-수정)
@@ -147,15 +152,16 @@ python src/pre_adk_pipeline.py --video "my_video.mp4"
 ```
 
 **흐름:**
+
 1. `pre_adk_pipeline.py` → `tools/internal/pre_db.py`
 2. `pre_db.py` → `src/audio/stt_router.py` (STT 실행)
 3. `pre_db.py` → `src/capture/process_content.py` (Capture 실행)
 
 **산출물:**
+
 - `data/outputs/{video_name}/stt.json`
 - `data/outputs/{video_name}/manifest.json`
 - `data/outputs/{video_name}/captures/*.png`
-
 
 ### 3.2 ADK 단계
 
@@ -164,6 +170,7 @@ adk web src/adk_pipeline
 ```
 
 **흐름:**
+
 1. Root Agent가 사용자와 대화
 2. `set_pipeline_config`로 비디오 설정
 3. `preprocessing_agent`로 transfer
@@ -186,25 +193,32 @@ adk web src/adk_pipeline
 # Sub-Agents
 preprocessing_agent = Agent(
     name="preprocessing_agent",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",  # 최신 모델 사용
     instruction="...",
-    tools=[load_data, run_vlm, run_sync],  # 이 agent가 사용할 도구
+    tools=[load_data, run_vlm, run_sync],
+    generate_content_config=types.GenerateContentConfig(temperature=0.1), # 안정성 설정
 )
 
 # Root Agent
 root_agent = Agent(
     name="screentime_pipeline",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     instruction="...",
     tools=[list_available_videos, set_pipeline_config, get_pipeline_status],
-    sub_agents=[preprocessing_agent, summarize_agent, judge_agent],  # transfer 가능한 agent들
+    sub_agents=[preprocessing_agent, summarize_agent, judge_agent],
+    generate_content_config=types.GenerateContentConfig(temperature=0.1),
 )
-
-# Sub-agent가 Root로 돌아갈 수 있도록 설정
-preprocessing_agent._sub_agents = [root_agent]
 ```
 
-### 4.2 Agent Transfer 흐름
+### 4.2 안정성 및 통신 규칙
+
+에이전트 간의 안정적인 전환과 무응답 방지를 위해 다음 규칙을 적용합니다:
+
+1. **절대 빈 응답 금지**: 에이전트는 Transfer를 받으면 반드시 즉시 첫 번째 도구를 호출하거나 요약을 반환해야 합니다.
+2. **낮은 Temperature**: `generate_content_config`를 통해 `temperature=0.1`을 유지하여 응답의 일관성을 확보합니다.
+3. **명시적 보고**: 스킵된 단계가 있더라도 "이미 완료되어 스킵되었습니다"와 같이 명시적으로 사용자에게 보고한 후 transfer합니다.
+
+### 4.3 Agent Transfer 흐름
 
 ```
 Root Agent
@@ -234,7 +248,7 @@ Root Agent
     └── FAIL + can_rerun? → transfer → summarize_agent (재실행)
 ```
 
-### 4.3 Tool 구조
+### 4.4 Tool 구조
 
 **Tool = ADK가 호출하는 함수**
 
@@ -258,7 +272,7 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
     return {"success": True, "vlm_json": str(store.vlm_json())}
 ```
 
-### 4.4 State 관리
+### 4.5 State 관리
 
 ADK는 `tool_context.state`를 통해 세션 상태를 관리합니다:
 
@@ -271,10 +285,12 @@ tool_context.state["current_rerun"] = 1
 ```
 
 **주요 state 키:**
+
 - `video_name`: 현재 처리 중인 비디오 이름
 - `max_reruns`: 최대 재실행 횟수
 - `current_rerun`: 현재 재실행 횟수
 - `summarize_prompt`: 커스텀 요약 프롬프트
+- `force_preprocessing`: (Boolean) True일 경우 기존 전처리 파일을 무시하고 재생성
 
 ---
 
@@ -307,12 +323,12 @@ tool_context.state["current_rerun"] = 1
 
 **수정 가이드:**
 
-| 수정 목표 | 수정할 위치 | 예시 |
-|---|---|---|
-| **핵심 알고리즘 변경** | **Core Modules** (`src/{module}/`) | 캡처 알고리즘 개선, 요약 프롬프트 변경, Sync 로직 수정 |
-| **ADK 연동 방식 변경** | **Internal Bridge** (`tools/internal/`) | Core 모듈 호출 파라미터 변경, 리턴값 포맷 변경 |
-| **Agent 동작/상태 변경** | **ADK Tools** (`tools/*.py`) | 재실행 카운트 로직, 에러 메시지 처리, 선행 조건 검사 |
-| **새로운 Tool 추가** | **ADK Tools** + **Agent** | 새 기능을 Agent에 노출 |
+| 수정 목표                | 수정할 위치                             | 예시                                                   |
+| ------------------------ | --------------------------------------- | ------------------------------------------------------ |
+| **핵심 알고리즘 변경**   | **Core Modules** (`src/{module}/`)      | 캡처 알고리즘 개선, 요약 프롬프트 변경, Sync 로직 수정 |
+| **ADK 연동 방식 변경**   | **Internal Bridge** (`tools/internal/`) | Core 모듈 호출 파라미터 변경, 리턴값 포맷 변경         |
+| **Agent 동작/상태 변경** | **ADK Tools** (`tools/*.py`)            | 재실행 카운트 로직, 에러 메시지 처리, 선행 조건 검사   |
+| **새로운 Tool 추가**     | **ADK Tools** + **Agent**               | 새 기능을 Agent에 노출                                 |
 
 ---
 
@@ -321,6 +337,7 @@ tool_context.state["current_rerun"] = 1
 **목표**: 현재 파일시스템 기반 저장소를 DB로 교체
 
 **현재 구조:**
+
 ```
 data/outputs/{video_name}/
 ├── stt.json
@@ -495,6 +512,7 @@ CREATE TABLE judge_results (
 ```
 
 **테스트:**
+
 ```bash
 # 1. VideoStore 단위 테스트
 pytest tests/test_store.py
@@ -634,7 +652,7 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         # Judge 설정 (optional)
         judge_config = {
             "pass_threshold": 0.7,  # 통과 기준
-            "model": "gemini-2.0-flash",
+            "model": "gemini-2.5-flash",
         }
 
         result = judge_with_gemini(
@@ -673,11 +691,12 @@ judge:
     accuracy: 0.3
     consistency: 0.2
     readability: 0.2
-  model: "gemini-2.0-flash"
+  model: "gemini-2.5-flash"
   temperature: 0.1
 ```
 
 **테스트:**
+
 ```bash
 # 1. Judge 단위 테스트
 python -c "
@@ -854,6 +873,7 @@ parser.add_argument(
 ```
 
 **테스트:**
+
 ```bash
 # 1. Capture 단위 테스트
 python -c "
@@ -991,10 +1011,11 @@ new_agent._sub_agents = [root_agent]  # 복귀용
 def set_pipeline_config(
     tool_context: ToolContext,
     video_name: str,
-    my_new_config: str = None,  # 새 파라미터
+    my_new_config: str = None,
+    force_preprocessing: bool = False, # 추가 가능
 ) -> Dict[str, Any]:
     tool_context.state["video_name"] = video_name
-    tool_context.state["my_new_config"] = my_new_config  # 추가
+    tool_context.state["force_preprocessing"] = force_preprocessing
     ...
 ```
 
@@ -1028,15 +1049,15 @@ threshold = config.get("pass_threshold", 0.7)
 
 ## 부록: 주요 파일 요약
 
-| 파일 | 역할 | 수정 시점 |
-|------|------|----------|
-| `agent.py` | Agent 정의 | 새 Agent/Tool 추가 시 |
-| `store.py` | 저장소 추상화 | DB 구현 시 |
-| `tools/*_tools.py` | ADK Tool 인터페이스 | 새 기능 추가 시 |
-| `tools/internal/*.py` | 실제 구현 | 로직 변경 시 |
-| `fusion/*.py` | 코어 처리 모듈 | 알고리즘 변경 시 |
-| `capture/process_content.py` | 캡처 로직 | 캡처 방식 변경 시 |
-| `audio/stt_router.py` | STT 로직 | STT 백엔드 추가 시 |
+| 파일                         | 역할                | 수정 시점             |
+| ---------------------------- | ------------------- | --------------------- |
+| `agent.py`                   | Agent 정의          | 새 Agent/Tool 추가 시 |
+| `store.py`                   | 저장소 추상화       | DB 구현 시            |
+| `tools/*_tools.py`           | ADK Tool 인터페이스 | 새 기능 추가 시       |
+| `tools/internal/*.py`        | 실제 구현           | 로직 변경 시          |
+| `fusion/*.py`                | 코어 처리 모듈      | 알고리즘 변경 시      |
+| `capture/process_content.py` | 캡처 로직           | 캡처 방식 변경 시     |
+| `audio/stt_router.py`        | STT 로직            | STT 백엔드 추가 시    |
 
 ---
 
