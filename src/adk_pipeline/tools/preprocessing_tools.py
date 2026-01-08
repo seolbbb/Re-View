@@ -79,9 +79,16 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
     if not video_name:
         return {"success": False, "error": "video_name 미설정"}
 
+    force_rerun = tool_context.state.get("force_preprocessing", False)
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
 
-    # 이미 존재하면 스킵
+    # 강제 재실행 시 기존 파일 삭제
+    if force_rerun and store.vlm_json().exists():
+        store.vlm_json().unlink()
+        if store.vlm_raw_json().exists():
+            store.vlm_raw_json().unlink()
+
+    # 이미 존재하면 스킵 (force_rerun이 아닌 경우)
     if store.vlm_json().exists():
         return {
             "success": True,
@@ -122,6 +129,7 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
     if not video_name:
         return {"success": False, "error": "video_name 미설정"}
 
+    force_rerun = tool_context.state.get("force_preprocessing", False)
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
     video_root = store.video_root()
 
@@ -129,7 +137,13 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
     if not store.vlm_json().exists():
         return {"success": False, "error": "vlm.json이 없습니다. run_vlm을 먼저 실행하세요."}
 
-    # 이미 존재하면 스킵
+    # 강제 재실행 시 기존 파일 삭제
+    if force_rerun and store.segments_units_jsonl().exists():
+        store.segments_units_jsonl().unlink()
+        if store.segments_jsonl().exists():
+            store.segments_jsonl().unlink()
+
+    # 이미 존재하면 스킵 (force_rerun이 아닌 경우)
     if store.segments_units_jsonl().exists():
         return {
             "success": True,
