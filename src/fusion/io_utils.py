@@ -77,3 +77,56 @@ def compute_run_id(config_path: Path, stt_path: Path, vlm_path: Path, manifest_p
     if manifest_path and manifest_path.exists():
         hasher.update(manifest_path.read_bytes())
     return f"run_{hasher.hexdigest()[:12]}"
+
+
+def update_token_usage(
+    output_dir: Path,
+    component: str,
+    input_tokens: int,
+    model: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Update token_usage.json with token counts for a component.
+
+    Records are appended to a history array for each component.
+
+    Args:
+        output_dir: Directory to save token_usage.json (e.g., fusion/)
+        component: Component name (e.g., "summarizer", "judge")
+        input_tokens: Number of input tokens counted
+        model: Model name used for counting
+        extra: Optional extra fields to include
+    """
+    from datetime import datetime, timezone
+
+    token_usage_path = output_dir / "token_usage.json"
+
+    # Load existing data or create new
+    if token_usage_path.exists():
+        try:
+            existing = read_json(token_usage_path, "token_usage.json")
+        except (FileNotFoundError, ValueError):
+            existing = {}
+    else:
+        existing = {}
+
+    # Build new entry
+    entry = {
+        "input_tokens": input_tokens,
+        "model": model,
+        "measured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if extra:
+        entry.update(extra)
+
+    # Append to history array
+    if component not in existing:
+        existing[component] = []
+    elif not isinstance(existing[component], list):
+        # Migrate old format (single object) to array
+        existing[component] = [existing[component]]
+
+    existing[component].append(entry)
+
+    # Save
+    write_json(token_usage_path, existing)
