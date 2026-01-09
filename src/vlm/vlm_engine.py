@@ -35,7 +35,7 @@ FULL_IMAGE_BBOX = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 DEFAULT_REQUEST_PARAMS = {
     "temperature": 0.4,
     "top_p": 0.9,
-    "max_tokens": 1024,
+    "max_tokens": None,
     "presence_penalty": 0.0,
     "frequency_penalty": 0.1,
     "seed": None,
