@@ -33,14 +33,14 @@ USER_PROMPT = (
 FULL_IMAGE_BBOX = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
 DEFAULT_REQUEST_PARAMS = {
-    "temperature": 1.0,
-    "top_p": 1.0,
+    "temperature": 0.4,
+    "top_p": 0.9,
     "max_tokens": None,
     "presence_penalty": 0.0,
-    "frequency_penalty": 0.0,
+    "frequency_penalty": 0.1,
     "seed": None,
     "stream": False,
-    "stop": None,
+    "stop": ["</s>", "<|endoftext|>"],
 }
 
 BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
@@ -63,11 +63,7 @@ class OpenRouterVlmExtractor:
             raise ValueError("OPENROUTER_API_KEY is not set in the environment.")
 
         self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        self.model_name = (
-            os.getenv("OPENROUTER_VLM_MODEL")
-            or os.getenv("OPENROUTER_OCR_MODEL")
-            or "qwen/qwen3-vl-32b-instruct"
-        )
+        self.model_name = "qwen/qwen3-vl-32b-instruct"
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         self.request_params = dict(DEFAULT_REQUEST_PARAMS)
 
@@ -148,7 +144,12 @@ class OpenRouterVlmExtractor:
 
         return results
 
-    def extract_features(self, image_paths: List[str], batch_size: Optional[int] = None) -> List[OcrResult]:
+    def extract_features(
+        self,
+        image_paths: List[str],
+        batch_size: Optional[int] = None,
+        show_progress: bool = False,
+    ) -> List[OcrResult]:
         """이미지 리스트에 대해 VLM 호출을 수행하고, 결과를 이미지 단위로 반환한다."""
         if not image_paths:
             return []
@@ -158,14 +159,35 @@ class OpenRouterVlmExtractor:
             raise ValueError("batch_size must be >= 1")
         results: List[OcrResult] = []
         request_params = {k: v for k, v in self.request_params.items() if v is not None}
+        total_images = len(image_paths)
+
+        if show_progress:
+            print(
+                f"[VLM] start: images={total_images}, batch_size={batch_size}, model={self.model_name}",
+                flush=True,
+            )
+            print(f"[VLM] base_url: {self.base_url}", flush=True)
 
         if batch_size > 1:
+            total_batches = (total_images + batch_size - 1) // batch_size
             for start in range(0, len(image_paths), batch_size):
                 batch_paths = image_paths[start : start + batch_size]
+                if show_progress:
+                    batch_index = (start // batch_size) + 1
+                    print(
+                        f"[VLM] request batch {batch_index}/{total_batches} "
+                        f"({len(batch_paths)} images)",
+                        flush=True,
+                    )
                 results.extend(self._extract_batch(batch_paths, request_params))
+                if show_progress:
+                    print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
             return results
 
-        for image_path in image_paths:
+        for idx, image_path in enumerate(image_paths, start=1):
+            if show_progress:
+                image_name = Path(image_path).name
+                print(f"[VLM] request {idx}/{total_images}: {image_name}", flush=True)
             messages = [
                 {"role": "system", "content": self.system_prompt},
                 {
@@ -183,6 +205,8 @@ class OpenRouterVlmExtractor:
                 **request_params,
             )
             content = completion.choices[0].message.content or ""
+            if show_progress:
+                print(f"[VLM] done {idx}/{total_images}", flush=True)
             if content.strip():
                 detections = [OcrBox(text=content, bbox=FULL_IMAGE_BBOX)]
             else:
@@ -228,7 +252,7 @@ if __name__ == "__main__":
     if args.model:
         extractor.model_name = args.model
 
-    results = extractor.extract_features(args.image)
+    results = extractor.extract_features(args.image, show_progress=True)
     output_path = extractor.get_output_path()
     write_vlm_raw_json(results, output_path)
     print(f"[OK] saved to {output_path}")
