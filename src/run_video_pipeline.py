@@ -186,6 +186,9 @@ class BenchmarkTimer:
         Returns:
             (결과, 소요시간_초)
         """
+        # 시작 로그
+        print(f"  ⏳ {stage_name}: 시작...", flush=True)
+        
         start = time.perf_counter()
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
@@ -196,7 +199,7 @@ class BenchmarkTimer:
             "end_time": start + elapsed
         }
         
-        # 실시간 출력
+        # 완료 로그
         print(f"  ✓ {stage_name}: {_format_duration(elapsed)}")
         
         return result, elapsed
@@ -439,7 +442,7 @@ def _run_fusion_pipeline(
     # Segment 수 카운트
     segments_file = output_dir / "segment_summaries.jsonl"
     if segments_file.exists():
-        fusion_info["segment_count"] = sum(1 for _ in segments_file.open())
+        fusion_info["segment_count"] = sum(1 for _ in segments_file.open(encoding="utf-8"))
     
     return fusion_info
 
