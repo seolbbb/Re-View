@@ -16,6 +16,8 @@
 # --output-report PATH
 # --output-segments PATH
 # --batch-size N
+# --workers N
+# --verbose
 # --limit N
 # --json-repair-attempts N
 # --return-reasons (or env JUDGE_RETURN_REASONS=1)
@@ -33,7 +35,9 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +54,7 @@ from src.fusion.io_utils import read_jsonl, write_json, write_jsonl
 PROMPT_VERSION = "judge_v3"
 JUDGE_TEMPERATURE = 0.2
 MAX_SCORE = 10
+_THREAD_LOCAL = threading.local()
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,14 @@ def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
         return GeminiClientBundle(client=client, backend="vertex_ai", model=llm_cfg.model)
 
     raise ValueError(f"Unsupported backend: {llm_cfg.backend}")
+
+
+def _get_thread_client_bundle(config: ConfigBundle) -> GeminiClientBundle:
+    bundle = getattr(_THREAD_LOCAL, "client_bundle", None)
+    if bundle is None:
+        bundle = _init_gemini_client(config)
+        _THREAD_LOCAL.client_bundle = bundle
+    return bundle
 
 
 def _extract_text_from_response(response: Any) -> str:
@@ -230,6 +243,67 @@ def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+def _evaluate_batch(
+    *,
+    config: ConfigBundle,
+    response_schema: Dict[str, Any],
+    batch: List[Dict[str, Any]],
+    batch_index: int,
+    batch_total: int,
+    return_reasons: bool,
+    json_repair_attempts: int,
+    verbose: bool,
+) -> Dict[int, Dict[str, Any]]:
+    seg_ids = [int(item.get("segment_id", -1)) for item in batch]
+    if verbose:
+        print(f"[JUDGE] batch {batch_index}/{batch_total} start (segments={seg_ids})")
+    started = time.perf_counter()
+    client_bundle = _get_thread_client_bundle(config)
+    prompt = _build_prompt(batch, return_reasons)
+    llm_text = _run_with_retries(
+        client_bundle,
+        prompt,
+        response_schema,
+        temperature=JUDGE_TEMPERATURE,
+        response_mime_type=config.raw.llm_gemini.response_mime_type,
+        timeout_sec=config.raw.llm_gemini.timeout_sec,
+        max_retries=config.raw.llm_gemini.max_retries,
+        backoff_sec=config.raw.llm_gemini.backoff_sec,
+    )
+    last_error: Optional[Exception] = None
+    results: Dict[int, Dict[str, Any]] = {}
+    for _ in range(json_repair_attempts + 1):
+        try:
+            payload = _parse_json_response(llm_text)
+            if not isinstance(payload, list):
+                raise ValueError("LLM response is not a JSON array.")
+            for item in payload:
+                if not isinstance(item, dict):
+                    raise ValueError("LLM response item is not an object.")
+                seg_id = int(item.get("segment_id"))
+                results[seg_id] = item
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            llm_text = _run_with_retries(
+                client_bundle,
+                _repair_prompt(llm_text),
+                response_schema,
+                temperature=JUDGE_TEMPERATURE,
+                response_mime_type=config.raw.llm_gemini.response_mime_type,
+                timeout_sec=config.raw.llm_gemini.timeout_sec,
+                max_retries=config.raw.llm_gemini.max_retries,
+                backoff_sec=config.raw.llm_gemini.backoff_sec,
+            )
+    if last_error:
+        raise RuntimeError(f"LLM JSON parse failed: {last_error}")
+    if verbose:
+        elapsed = time.perf_counter() - started
+        print(f"[JUDGE] batch {batch_index}/{batch_total} done in {elapsed:.2f}s")
+    return results
+
+
 def _load_segments_units(path: Path) -> Dict[int, Dict[str, Any]]:
     """Load segments_units.jsonl into a dict keyed by segment_id."""
     segments: Dict[int, Dict[str, Any]] = {}
@@ -348,6 +422,13 @@ def _build_prompt(segments_payload: List[Dict[str, Any]], include_reasons: bool)
         lines.append("  3) 노트: note_quality 판단 이유")
         lines.append("  4) 시각: multimodal_use 판단 이유")
         lines.append("- Each item should be 1 sentence and start with the label (근거/규칙/노트/시각).")
+        lines.append(
+            "- Make reasons_ko concrete: mention 1-2 specific signals (e.g., banned word, missing"
+            " definitions, missing role A/B/C, unsupported claim)."
+        )
+        lines.append(
+            "- For 규칙: if banned words are the only issue, say so; if no issues, say '그 외 위반 없음'."
+        )
     else:
         lines.append("- Do NOT include reasons_ko.")
 
@@ -438,9 +519,11 @@ def run_judge(
     output_report_path: Path,
     output_segments_path: Path,
     batch_size: int,
+    workers: int,
     json_repair_attempts: int,
     limit: Optional[int],
     return_reasons: bool,
+    verbose: bool,
 ) -> Dict[str, Any]:
     """Run the judge and write JSON outputs."""
     segments_units = _load_segments_units(segments_units_path)
@@ -454,6 +537,8 @@ def run_judge(
 
     if not matched_ids:
         raise ValueError("No matched segments between segments_units and segment_summaries.")
+    if workers < 1:
+        raise ValueError("workers must be >= 1.")
 
     payloads: List[Dict[str, Any]] = []
     for seg_id in matched_ids:
@@ -465,49 +550,47 @@ def run_judge(
             }
         )
 
-    client_bundle = _init_gemini_client(config)
     response_schema = _build_response_schema(return_reasons)
 
     llm_results: Dict[int, Dict[str, Any]] = {}
-    for batch in _chunked(payloads, batch_size):
-        prompt = _build_prompt(batch, return_reasons)
-        llm_text = _run_with_retries(
-            client_bundle,
-            prompt,
-            response_schema,
-            temperature=JUDGE_TEMPERATURE,
-            response_mime_type=config.raw.llm_gemini.response_mime_type,
-            timeout_sec=config.raw.llm_gemini.timeout_sec,
-            max_retries=config.raw.llm_gemini.max_retries,
-            backoff_sec=config.raw.llm_gemini.backoff_sec,
+    batches = _chunked(payloads, batch_size)
+    if verbose:
+        print(
+            f"[JUDGE] batches={len(batches)} batch_size={batch_size} workers={workers}"
         )
-        last_error: Optional[Exception] = None
-        for _ in range(json_repair_attempts + 1):
-            try:
-                payload = _parse_json_response(llm_text)
-                if not isinstance(payload, list):
-                    raise ValueError("LLM response is not a JSON array.")
-                for item in payload:
-                    if not isinstance(item, dict):
-                        raise ValueError("LLM response item is not an object.")
-                    seg_id = int(item.get("segment_id"))
-                    llm_results[seg_id] = item
-                last_error = None
-                break
-            except Exception as exc:
-                last_error = exc
-                llm_text = _run_with_retries(
-                    client_bundle,
-                    _repair_prompt(llm_text),
-                    response_schema,
-                    temperature=JUDGE_TEMPERATURE,
-                    response_mime_type=config.raw.llm_gemini.response_mime_type,
-                    timeout_sec=config.raw.llm_gemini.timeout_sec,
-                    max_retries=config.raw.llm_gemini.max_retries,
-                    backoff_sec=config.raw.llm_gemini.backoff_sec,
+    if workers == 1 or len(batches) == 1:
+        for idx, batch in enumerate(batches, start=1):
+            llm_results.update(
+                _evaluate_batch(
+                    config=config,
+                    response_schema=response_schema,
+                    batch=batch,
+                    batch_index=idx,
+                    batch_total=len(batches),
+                    return_reasons=return_reasons,
+                    json_repair_attempts=json_repair_attempts,
+                    verbose=verbose,
                 )
-        if last_error:
-            raise RuntimeError(f"LLM JSON parse failed: {last_error}")
+            )
+    else:
+        max_workers = min(workers, len(batches))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    _evaluate_batch,
+                    config=config,
+                    response_schema=response_schema,
+                    batch=batch,
+                    batch_index=idx,
+                    batch_total=len(batches),
+                    return_reasons=return_reasons,
+                    json_repair_attempts=json_repair_attempts,
+                    verbose=verbose,
+                )
+                for idx, batch in enumerate(batches, start=1)
+            ]
+            for future in as_completed(futures):
+                llm_results.update(future.result())
 
     segment_reports: List[Dict[str, Any]] = []
     groundedness_scores: List[int] = []
@@ -614,8 +697,14 @@ def main() -> None:
     parser.add_argument("--output-report", default=None, help="output report path")
     parser.add_argument("--output-segments", default=None, help="output segment reports JSONL path")
     parser.add_argument("--batch-size", type=int, default=3, help="LLM batch size")
+    parser.add_argument("--workers", type=int, default=1, help="parallel LLM requests")
     parser.add_argument("--limit", type=int, default=None, help="limit segment count")
     parser.add_argument("--json-repair-attempts", type=int, default=1)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print batch-level progress logs",
+    )
     parser.add_argument(
         "--return-reasons",
         action="store_true",
@@ -645,9 +734,11 @@ def main() -> None:
         output_report_path=output_report_path,
         output_segments_path=output_segments_path,
         batch_size=args.batch_size,
+        workers=args.workers,
         json_repair_attempts=args.json_repair_attempts,
         limit=args.limit,
         return_reasons=return_reasons,
+        verbose=args.verbose,
     )
     elapsed_sec = time.perf_counter() - start_time
     print(f"[OK] judge report: {output_report_path}")

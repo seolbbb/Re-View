@@ -23,11 +23,30 @@ from ..store import VideoStore
 _OUTPUT_BASE = _PROJECT_ROOT / DEFAULT_OUTPUT_BASE
 
 
+def _read_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _read_int(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    return int(value)
+
+
+def _read_float(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    return float(value)
+
+
 def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
     """요약 품질을 평가하고 PASS/FAIL을 반환합니다.
-
-    현재는 stub으로 항상 PASS를 반환합니다.
-    향후 실제 품질 평가 로직이 추가될 예정입니다.
 
     Returns:
         success: 실행 성공 여부
@@ -45,10 +64,39 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
     # Summarize가 먼저 완료되어야 함
     if not store.segment_summaries_jsonl().exists():
         return {"success": False, "error": "segment_summaries.jsonl이 없습니다. Summarize를 먼저 실행하세요."}
+    if not store.segments_units_jsonl().exists():
+        return {"success": False, "error": "segments_units.jsonl이 없습니다. Preprocessing을 먼저 실행하세요."}
+    if not store.fusion_config_yaml().exists():
+        return {"success": False, "error": "config.yaml이 없습니다. Preprocessing을 먼저 실행하세요."}
 
     try:
-        from .internal.judge_gemini import judge_stub_gemini
-        result = judge_stub_gemini(fusion_dir=store.fusion_dir())
+        batch_size = _read_int(tool_context.state.get("judge_batch_size"), 3)
+        workers = _read_int(tool_context.state.get("judge_workers"), 1)
+        json_repair_attempts = _read_int(
+            tool_context.state.get("judge_json_repair_attempts"), 1
+        )
+        limit_raw = tool_context.state.get("judge_limit")
+        limit = _read_int(limit_raw, 0) if limit_raw is not None else None
+        min_score = _read_float(tool_context.state.get("judge_min_score"), 7.0)
+        return_reasons = _read_bool(
+            tool_context.state.get("judge_return_reasons"), False
+        )
+        verbose = _read_bool(tool_context.state.get("judge_verbose"), False)
+
+        from .internal.judge_gemini import run_judge_gemini
+        result = run_judge_gemini(
+            fusion_config_path=store.fusion_config_yaml(),
+            fusion_dir=store.fusion_dir(),
+            segments_units_path=store.segments_units_jsonl(),
+            segment_summaries_path=store.segment_summaries_jsonl(),
+            batch_size=batch_size,
+            workers=workers,
+            json_repair_attempts=json_repair_attempts,
+            limit=limit,
+            return_reasons=return_reasons,
+            verbose=verbose,
+            min_score=min_score,
+        )
 
         # 재실행 가능 여부 확인
         current_rerun = tool_context.state.get("current_rerun", 1)
@@ -60,11 +108,13 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
             "success": True,
             "result": "PASS" if passed else "FAIL",
             "score": result.get("score", 1.0),
-            "reason": result.get("reason", "stub judge - 항상 통과"),
+            "reason": result.get("reason", "judge 결과 없음"),
             "can_rerun": can_rerun,
             "attempt": current_rerun,
             "max_reruns": max_reruns,
             "judge_json": str(store.fusion_dir() / "judge.json"),
         }
+    except (TypeError, ValueError) as e:
+        return {"success": False, "error": f"judge 옵션 형식이 올바르지 않습니다: {e}"}
     except Exception as e:
         return {"success": False, "error": f"Judge 실행 실패: {e}"}
