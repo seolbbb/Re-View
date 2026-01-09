@@ -5,8 +5,11 @@ python-dotenv
 requests
 tqdm
 google-genai
+google-adk
 pyyaml
+
 mediapipe>=0.10.0
 openai-whisper
 openai>=1.0.0
 torch
+supabase>=2.0.0
