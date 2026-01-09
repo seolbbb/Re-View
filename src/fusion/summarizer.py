@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .config import ConfigBundle
-from .io_utils import ensure_output_root, print_jsonl_head, read_jsonl
+from .io_utils import ensure_output_root, print_jsonl_head, read_jsonl, update_token_usage
 
 
 PROMPT_VERSION = "sum_v1.5"
@@ -754,6 +754,24 @@ def run_summarizer(
 
     response_schema = _build_response_schema()
     client_bundle = _init_gemini_client(config)
+
+    # Count input tokens and save to token_usage.json
+    try:
+        token_result = client_bundle.client.models.count_tokens(
+            model=client_bundle.model,
+            contents=prompt
+        )
+        input_tokens = token_result.total_tokens
+        update_token_usage(
+            output_dir=output_dir,
+            component="summarizer",
+            input_tokens=input_tokens,
+            model=client_bundle.model,
+            extra={"segments_count": len(segments)}
+        )
+        print(f"[TOKEN] summarizer input_tokens={input_tokens}")
+    except Exception as exc:
+        print(f"[TOKEN] count_tokens failed: {exc}")
 
     output_jsonl = output_dir / "segment_summaries.jsonl"
     output_handle = None
