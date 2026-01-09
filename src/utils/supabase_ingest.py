@@ -19,38 +19,8 @@ TABLES = (STT_TABLE, MANIFEST_TABLE)
 BATCH_SIZE = 200
 
 
-def _load_env() -> None:
-    if ENV_PATH.exists():
-        load_dotenv(ENV_PATH)
-    else:
-        load_dotenv()
-
-
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _resolve_param(cli_value: Optional[str], env_key: str, fallback: Optional[str]) -> Optional[str]:
-    return cli_value or os.getenv(env_key) or fallback
-
-
-def _resolve_supabase_key(cli_value: Optional[str]) -> Optional[str]:
-    return (
-        cli_value
-        or os.getenv("SUPABASE_KEY")
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_ANON_KEY")
-    )
-
-
-def _create_supabase_client(url: Optional[str], key: Optional[str]) -> Client:
-    if not url:
-        raise ValueError("SUPABASE_URL is not set.")
-    if not key:
-        raise ValueError(
-            "SUPABASE_KEY is not set. Set SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_ANON_KEY."
-        )
-    return create_client(url, key)
 
 
 def _raise_on_error(response: Any, context: str) -> None:
@@ -62,7 +32,9 @@ def _raise_on_error(response: Any, context: str) -> None:
 def _ensure_tables(client: Client) -> None:
     for table in TABLES:
         response = client.table(table).select("id").limit(1).execute()
-        _raise_on_error(response, f"Table check failed for {table}")
+        error = getattr(response, "error", None)
+        if error:
+            raise RuntimeError(f"Table check failed for {table}: {error}")
 
 
 def _chunked(records: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
@@ -120,8 +92,6 @@ def _normalize_manifest_items(payload: Any) -> List[Dict[str, Any]]:
         timestamp_human = str(item.get("timestamp_human", "")).strip()
         if timestamp_human:
             normalized_item["timestamp_human"] = timestamp_human
-        if "diff_score" in item and item["diff_score"] is not None:
-            normalized_item["diff_score"] = float(item["diff_score"])
         normalized.append(normalized_item)
     if not normalized:
         raise ValueError("No valid manifest items found.")
@@ -162,11 +132,19 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    _load_env()
+    if ENV_PATH.exists():
+        load_dotenv(ENV_PATH)
+    else:
+        load_dotenv()
+        
     args = _parse_args()
 
-    url = _resolve_param(args.url, "SUPABASE_URL", None)
-    key = _resolve_supabase_key(args.key)
+    url = args.url or os.getenv("SUPABASE_URL")
+    if not url:
+        raise RuntimeError("supabase_url is required")
+    key = args.key or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not key:
+        raise RuntimeError("supabase_key is required")
 
     stt_path = Path(args.stt).expanduser()
     manifest_path = Path(args.manifest).expanduser()
@@ -180,7 +158,7 @@ def main() -> None:
     stt_segments = _normalize_stt_segments(stt_payload)
     manifest_items = _normalize_manifest_items(manifest_payload)
 
-    client = _create_supabase_client(url, key)
+    client = create_client(url, key)
     if not args.no_create:
         _ensure_tables(client)
     _insert_rows(
