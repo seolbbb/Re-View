@@ -230,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capture-dedupe-threshold", type=float, default=3.0, help="중복 제거 임계값 (2차 정제)")
     parser.add_argument("--capture-min-interval", type=float, default=0.5, help="캡처 최소 간격(초)")
     parser.add_argument("--capture-verbose", action="store_true", help="캡처 상세 로그 출력")
-    parser.add_argument("--vlm-batch-size", type=int, default=None, help="VLM 배치 크기(미지정 시 전부 한 번에)")
+    parser.add_argument("--vlm-batch-size", type=int, default=4, help="VLM 배치 크기(미지정 시 전부 한 번에)")
     parser.add_argument("--limit", type=int, default=None, help="fusion 단계에서 처리할 segment 수 제한")
     parser.add_argument("--dry-run", action="store_true", help="summarizer LLM 미호출(출력 미생성)")
     return parser.parse_args()
