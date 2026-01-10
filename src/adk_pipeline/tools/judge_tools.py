@@ -52,7 +52,6 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         success: 실행 성공 여부
         result: PASS 또는 FAIL
         score: 평가 점수 (0.0 ~ 1.0)
-        reason: 평가 이유
         can_rerun: 재실행 가능 여부
     """
     video_name = tool_context.state.get("video_name")
@@ -78,10 +77,10 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         limit_raw = tool_context.state.get("judge_limit")
         limit = _read_int(limit_raw, 0) if limit_raw is not None else None
         min_score = _read_float(tool_context.state.get("judge_min_score"), 7.0)
-        return_reasons = _read_bool(
-            tool_context.state.get("judge_return_reasons"), False
-        )
         verbose = _read_bool(tool_context.state.get("judge_verbose"), False)
+        include_segments = _read_bool(
+            tool_context.state.get("judge_include_segments"), False
+        )
 
         from .internal.judge_gemini import run_judge_gemini
         result = run_judge_gemini(
@@ -93,10 +92,13 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
             workers=workers,
             json_repair_attempts=json_repair_attempts,
             limit=limit,
-            return_reasons=return_reasons,
             verbose=verbose,
             min_score=min_score,
+            include_segments=include_segments,
         )
+
+        final_score = float(result.get("final_score", 0.0))
+        score = round(final_score / 10.0, 4)
 
         # 재실행 가능 여부 확인
         current_rerun = tool_context.state.get("current_rerun", 1)
@@ -107,8 +109,7 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         return {
             "success": True,
             "result": "PASS" if passed else "FAIL",
-            "score": result.get("score", 1.0),
-            "reason": result.get("reason", "judge 결과 없음"),
+            "score": score,
             "can_rerun": can_rerun,
             "attempt": current_rerun,
             "max_reruns": max_reruns,
