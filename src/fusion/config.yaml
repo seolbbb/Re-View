@@ -24,9 +24,9 @@ summarizer:
 llm_gemini:
   backend: "developer_api"
   model: "gemini-3-flash-preview"
-  timeout_sec: 60
-  max_retries: 3
-  backoff_sec: [1, 2, 4]
+  timeout_sec: 120
+  max_retries: 5
+  backoff_sec: [2, 5, 15, 30, 60]
   response_mime_type: "application/json"
 
   developer_api:
