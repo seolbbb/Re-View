@@ -1,250 +1,227 @@
-# 📚 Lecture Note AI - 강의 영상 자동 처리 시스템
+# 📚 Re:View - 강의 영상 자동 요약 시스템
 
-강의 영상에서 슬라이드를 자동으로 추출하고, 음성을 텍스트로 변환하여 체계적인 강의 노트를 생성하는 시스템입니다.
+강의 영상에서 슬라이드를 자동으로 추출하고, 음성을 텍스트로 변환하여 체계적인 강의 노트를 생성하는 AI 파이프라인입니다.
 
 ## ✨ 주요 기능
 
-### 1. 🎬 스마트 비디오 캡처
-
-- **장면 전환 감지**: 프레임 간 픽셀 차이 분석으로 슬라이드 전환 자동 감지
-- **마우스 포인터 제거**: Temporal Median 기법으로 깨끗한 슬라이드 이미지 추출
-- **중복 제거**: dHash 알고리즘으로 유사한 프레임 자동 필터링
-- **디버그 모드**: 원본 프레임과 처리된 프레임 비교 가능
-
-### 2. 📝 JSON 파싱
-
-- ClovaSpeech STT 결과를 `[MM:SS] 텍스트` 형식으로 변환
-- 타임스탬프 기반 정렬 및 가독성 향상
+- **🎬 스마트 슬라이드 캡처**: dHash + ORB + RANSAC 기반 장면 전환 감지 및 중복 제거
+- **🎤 음성 텍스트 변환**: Clova Speech / Whisper STT 지원
+- **👁️ 시각 정보 추출**: VLM(Qwen3-VL)으로 슬라이드 내용 분석
+- **📝 AI 요약 생성**: Gemini 기반 독립형 강의 노트 생성 (프롬프트 v1.5)
+- **✅ 품질 검증**: Judge Agent를 통한 자동 품질 평가 (Groundedness, Note Quality, Spec Compliance)
 
 ---
 
 ## 🚀 Quick Start
 
-### 📋 사전 준비
-
-1. **데이터 배치**
-
-   ```bash
-   Screentime-MVP/
-   ├── data/
-   │   ├── inputs/   # 입력 강의 영상 (.mp4)
-   │   └── outputs/  # 출력(동영상별 아티팩트)
-   ```
-
-2. **의존성 설치**
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-### ▶️ 실행 방법
-
-#### Option 0: End-to-End 실행 (영상 1개 → STT/Capture/VLM → Fusion 요약) ⭐ 추천
+### 1. 설치
 
 ```bash
-python src/run_video_pipeline.py --video "data/inputs/screentime-mvp-video.mp4"
+pip install -r requirements.txt
 ```
 
-**출력 결과**(동영상별로 격리 저장):
-
-- `data/outputs/{video_name}/stt.json`
-- `data/outputs/{video_name}/captures/*.jpg`
-- `data/outputs/{video_name}/manifest.json`
-- `data/outputs/{video_name}/vlm_raw.json`
-- `data/outputs/{video_name}/vlm.json`
-- `data/outputs/{video_name}/pipeline_run.json` (구간별 소요 시간 로그)
-- `data/outputs/{video_name}/fusion/outputs/final_summary_timeline.md`
-- `data/outputs/{video_name}/fusion/outputs/final_summary_tldr_timeline.md`
-
-#### Option 0.5: ADK 파이프라인 실행 (Pre-DB: STT+Capture → ADK: VLM+Sync → Summarize → Judge)
+### 2. 환경 변수 설정
 
 ```bash
-python src/run_adk_pipeline.py --video "screentime-mvp-video.mp4"
+# .env 파일 생성
+GOOGLE_API_KEY=...          # Gemini (ADK, Summarize, Judge)
+OPENROUTER_API_KEY=...      # VLM (Qwen)
+CLOVA_SPEECH_URL=...        # STT (Clova)
+CLOVA_SPEECH_API_KEY=...
 ```
 
-**입력/출력 규약**
-- 입력(mp4): `data/inputs/` (파일명만 넣으면 `data/inputs`에서 찾음)
-- 출력(DB 대체): `data/outputs/{video_name}/`
-- ADK Preprocessing 산출물: `data/outputs/{video_name}/fusion/segments_units.jsonl`
-- 최종 산출물: `data/outputs/{video_name}/fusion/outputs/final_summary_timeline.md`
+### 3. 실행
 
-자세한 구조: `src/adk_pipeline/README.md`
-
-#### Option 1: 캡처만 실행 (영상 → 슬라이드 이미지) ⭐ 추천
+#### Option A: End-to-End 파이프라인 (벤치마크 포함) ⭐ 추천
 
 ```bash
-cd Lecture-Note-AI
-python src/process_content.py
+python src/run_video_pipeline.py --video "data/inputs/lecture.mp4"
 ```
 
-**출력 결과**:
+**출력물:**
 
-- `src/data/output/{영상명}_frames/` - 추출된 슬라이드 이미지
-- `src/data/output/{영상명}_frames/debug_scene_changes/` - 원본 프레임 (디버깅용)
-- `src/data/output/*_readable.txt` - 변환된 텍스트
+- `data/outputs/{video_name}/stt.json` - STT 결과
+- `data/outputs/{video_name}/captures/*.jpg` - 캡처 이미지
+- `data/outputs/{video_name}/manifest.json` - 캡처 메타데이터
+- `data/outputs/{video_name}/vlm.json` - VLM 결과
+- `data/outputs/{video_name}/fusion/segment_summaries.jsonl` - 구간별 요약
+- `data/outputs/{video_name}/fusion/outputs/final_summary_*.md` - 최종 요약
+- `data/outputs/{video_name}/benchmark_report.md` - 벤치마크 리포트
 
-#### Option 2: 전체 파이프라인 실행 (개발 중)
+#### Option B: ADK 파이프라인 (대화형)
 
 ```bash
-python main.py  # OCR, LLM 통합 버전 (현재 개발 중)
+# Step 1: Pre-ADK (STT + Capture)
+python src/pre_adk_pipeline.py --video "lecture.mp4"
+
+# Step 2: ADK Web UI
+adk web src/adk_pipeline
+# 브라우저에서 http://localhost:8000 접속
 ```
-
----
-
-## 🔧 설정 파라미터
-
-`src/process_content.py` 파일에서 다음 파라미터를 조정할 수 있습니다:
-
-```python
-video_processor.extract_keyframes(
-    video_path,
-    output_dir=capture_output_dir,
-    threshold=8,        # 장면 전환 민감도 (낮을수록 민감)
-    min_interval=0.5,   # 최소 캡처 간격 (초)
-    verbose=True        # 디버그 로그 출력
-)
-```
-
-### 파라미터 가이드
-
-| 파라미터 | 기본값 | 설명 | 조정 팁 |
-|---------|--------|------|---------|
-| `threshold` | 8 | 장면 전환 감지 임계값 | 슬라이드가 많이 누락되면 **낮추기** (5~10)<br>너무 많이 캡처되면 **높이기** (15~20) |
-| `min_interval` | 0.5 | 캡처 간 최소 간격 (초) | 빠른 전환이 많으면 **0.3**<br>느린 전환이면 **1.0** |
-| `verbose` | True | 상세 로그 출력 | 디버깅 시 **True**<br>운영 시 **False** |
-
----
-
-## 🧠 핵심 알고리즘
-
-### 1. Temporal Median (시간적 중앙값)
-
-**원리**:
-
-- 여러 시점의 프레임에서 각 픽셀의 중간값을 계산
-- 움직이는 물체(마우스)는 이상치로 제거되고, 고정된 배경(슬라이드)만 추출
-
-**예시**:
-
-```
-픽셀 (100, 200)에서 50개 프레임의 값:
-[10, 15, 200, 12, 14, 13, 11, 16, ...]
-       ↑ 마우스 포인터 (이상치)
-
-Median = 13 → 마우스 제거됨!
-```
-
-### 2. Multi-Point Sampling (다중 시점 샘플링)
-
-**전략**:
-
-- 슬라이드 전체 구간(예: 120초)에서 무작위로 50개 프레임 수집
-- 마우스가 다양한 위치에 있는 순간들을 확보
-- Temporal Median 계산 시 각 픽셀에서 마우스가 없는 프레임이 과반수
-
-**효과**:
-
-- ✅ 정적 마우스도 제거 가능
-- ✅ 슬라이드 순수성 100% 보장
-- ✅ 슬라이드 혼합 방지
 
 ---
 
 ## 📂 프로젝트 구조
 
 ```
-Lecture-Note-AI/
-├── main.py                          # 전체 파이프라인 (개발 중)
+Re:View/
+├── data/
+│   ├── inputs/                     # 입력 비디오 (.mp4)
+│   └── outputs/                    # 출력 (비디오별 폴더)
+│       └── {video_name}/
+│           ├── stt.json            # STT 결과
+│           ├── manifest.json       # 캡처 메타데이터
+│           ├── captures/           # 캡처 이미지
+│           ├── vlm_raw.json        # VLM 원시 결과
+│           ├── vlm.json            # VLM 정제 결과
+│           ├── config.yaml         # Fusion 설정
+│           └── fusion/
+│               ├── segments.jsonl
+│               ├── segments_units.jsonl
+│               ├── segment_summaries.jsonl
+│               ├── segment_summaries.md
+│               ├── judge.json
+│               └── outputs/
+│                   ├── final_summary_timeline.md
+│                   └── final_summary_tldr_timeline.md
+│
 ├── src/
-│   ├── process_content.py           # ⭐ 메인 실행 파일 (캡처 + JSON 파싱)
-│   ├── capture/
-│   │   └── video_processor.py       # 비디오 처리 (장면 감지, 마우스 제거)
-│   ├── data/
-│   │   ├── json_parser.py           # JSON 파싱
-│   │   ├── input/                   # 입력 영상 (.mp4)
-│   │   └── output/                  # 출력 (JSON, 이미지, 텍스트)
-│   ├── audio/                       # 음성 처리 (개발 중)
-│   ├── vlm/                         # VLM(OpenRouter) 이미지 텍스트 추출
-│   └── fusion/                      # STT+VLM 퓨전 및 요약 파이프라인
-└── tests/
-    └── test_video_processor_simple.py  # 단위 테스트
+│   ├── run_video_pipeline.py       # End-to-End CLI (벤치마크 포함)
+│   ├── pre_adk_pipeline.py         # Pre-ADK CLI
+│   │
+│   ├── adk_pipeline/               # ADK 멀티에이전트
+│   │   ├── agent.py                # Agent 정의 (Root + Sub-agents)
+│   │   ├── store.py                # VideoStore (파일시스템 추상화)
+│   │   ├── paths.py                # 경로 유틸리티
+│   │   └── tools/
+│   │       ├── root_tools.py       # list_available_videos, set_pipeline_config
+│   │       ├── preprocessing_tools.py  # load_data, run_vlm, run_sync
+│   │       ├── summarize_tools.py  # run_summarizer, render_md, write_final_summary
+│   │       ├── judge_tools.py      # evaluate_summary
+│   │       └── internal/           # 내부 구현 모듈
+│   │
+│   ├── audio/                      # STT 모듈
+│   │   ├── stt_router.py           # STT 라우터 (Clova/Whisper)
+│   │   ├── clova_stt.py            # Clova Speech 클라이언트
+│   │   ├── whisper_stt.py          # Whisper 클라이언트
+│   │   └── extract_audio.py        # ffmpeg 오디오 추출
+│   │
+│   ├── capture/                    # 슬라이드 캡처 모듈
+│   │   ├── process_content.py      # 캡처 진입점
+│   │   └── tools/
+│   │       ├── hybrid_extractor.py # HybridSlideExtractor (메인 엔진)
+│   │       ├── video_processor.py  # VideoProcessor (레거시)
+│   │       └── scene_visualizer.py # 디버깅용 시각화
+│   │
+│   ├── vlm/                        # Vision-Language Model
+│   │   ├── vlm_engine.py           # VLM 엔진 (OpenRouter)
+│   │   ├── vlm_fusion.py           # VLM 결과 변환
+│   │   └── qwen3_detect.py         # Qwen3 객체 탐지
+│   │
+│   ├── fusion/                     # 동기화, 요약, 렌더링
+│   │   ├── sync_engine.py          # STT + VLM 동기화
+│   │   ├── summarizer.py           # Gemini 요약 (프롬프트 v1.5)
+│   │   ├── renderer.py             # Markdown 렌더링
+│   │   ├── final_summary_composer.py  # 최종 요약 생성
+│   │   ├── config.py               # 설정 로드
+│   │   └── io_utils.py             # I/O 유틸리티
+│   │
+│   ├── judge/                      # 품질 평가
+│   │   └── judge.py                # LLM Judge (Gemini 기반)
+│   │
+│   ├── common/                     # 공통 스키마
+│   │   └── schemas.py              # Pydantic 모델
+│   │
+│   └── utils/                      # 유틸리티
+│       ├── token_counter.py        # 토큰 카운터
+│       └── postgres_ingest.py      # DB 인제스트
+│
+└── docs/
+    ├── DEVELOPER_GUIDE.md          # 상세 개발 가이드
+    ├── PRD.md                      # 제품 요구사항
+    └── PROJECT_DIRECTION.md        # 프로젝트 방향성
 ```
 
 ---
 
-## 🐛 트러블슈팅
+## 🏗️ 아키텍처
 
-### 문제 1: 슬라이드가 너무 많이 캡처됨
+```
+[Video Input]
+      │
+      ├─── STT (Clova/Whisper) ──→ stt.json
+      │
+      └─── Capture (HybridSlideExtractor) ──→ manifest.json + captures/
+             │
+             │  [dHash 장면 감지 → 2.5초 안정화 → ORB+RANSAC 중복 제거]
+             │
+             ▼
+      ┌─────────────────────────────────────────────────┐
+      │              ADK Multi-Agent Pipeline           │
+      │                                                 │
+      │   ┌─────────────────────────────────────────┐   │
+      │   │          Root Agent                     │   │
+      │   │  (screentime_pipeline)                  │   │
+      │   └─────────────────────────────────────────┘   │
+      │          │           │            │             │
+      │          ▼           ▼            ▼             │
+      │   Preprocessing  Summarize     Judge            │
+      │   (VLM+Sync)    (Gemini)    (Quality)           │
+      │          │           │            │             │
+      │          │           │◀── FAIL ───┘             │
+      └─────────────────────────────────────────────────┘
+                    │
+                    ▼
+          [final_summary_*.md]
+```
 
-**원인**: `threshold`가 너무 낮음  
-**해결**: `threshold=15` 또는 `20`으로 증가
+---
 
-### 문제 2: 슬라이드가 누락됨
+## 🔧 CLI 옵션
 
-**원인**: `threshold`가 너무 높음  
-**해결**: `threshold=5` 또는 `8`로 감소
+### run_video_pipeline.py (End-to-End)
 
-### 문제 3: 마우스 포인터가 남아있음
+| 옵션                         | 기본값  | 설명                       |
+| ---------------------------- | ------- | -------------------------- |
+| `--video`                    | (필수)  | 입력 비디오 경로           |
+| `--stt-backend`              | `clova` | STT 백엔드 (clova/whisper) |
+| `--capture-threshold`        | `3.0`   | 장면 전환 감지 임계값      |
+| `--capture-dedupe-threshold` | `3.0`   | 중복 제거 임계값           |
+| `--vlm-batch-size`           | `1`     | VLM 배치 크기              |
+| `--vlm-concurrency`          | `4`     | VLM 동시 요청 수           |
+| `--parallel`                 | `True`  | STT+Capture 병렬 실행      |
 
-**원인**: 슬라이드 구간이 짧거나 마우스가 고정됨  
-**해결**:
+### pre_adk_pipeline.py (Pre-ADK)
 
-1. `debug_scene_changes` 폴더에서 원본 확인
-2. 슬라이드 구간이 3초 미만이면 자동으로 양방향 수집 사용
-3. 필요 시 `num_samples` 증가 (50 → 100)
+| 옵션            | 기본값  | 설명                       |
+| --------------- | ------- | -------------------------- |
+| `--video`       | (필수)  | 입력 비디오 경로           |
+| `--stt-backend` | `clova` | STT 백엔드 (clova/whisper) |
+| `--parallel`    | `True`  | STT+Capture 병렬 실행      |
 
-### 문제 4: 중복 이미지가 많이 저장됨
+---
 
-**원인**: `hash_threshold`가 너무 높음  
-**해결**: `video_processor.py`에서 `hash_threshold=5` → `3`으로 감소
+## 📖 문서
+
+| 문서                                                     | 설명                                    |
+| -------------------------------------------------------- | --------------------------------------- |
+| [AGENTS.md](./AGENTS.md)                                 | 코딩 에이전트 가이드라인, 코드 스타일   |
+| [docs/DEVELOPER_GUIDE.md](./docs/DEVELOPER_GUIDE.md)     | 상세 개발 가이드, ADK 구조, 확장 포인트 |
+| [docs/PRD.md](./docs/PRD.md)                             | 제품 요구사항 문서                      |
+| [docs/PROJECT_DIRECTION.md](./docs/PROJECT_DIRECTION.md) | 프로젝트 방향성, 최적화 계획            |
 
 ---
 
 ## 📊 성능 지표
 
-- **처리 속도**: 6분 영상 기준 약 30초 (30fps, threshold=8)
-- **마우스 제거율**: 약 95% (다중 시점 샘플링 사용 시)
-- **슬라이드 감지 정확도**: 약 90% (threshold 조정 시)
+- **처리 속도**: 6분 영상 기준 약 3분 (End-to-End, 병렬 처리 시)
+- **슬라이드 감지 정확도**: 약 95% (HybridSlideExtractor)
+- **마우스/노이즈 제거율**: 약 95% (Temporal Median + 2.5초 안정화)
 
 ---
 
-## 🤝 협업 가이드
+## 🤝 기여
 
-### 코드 수정 시 주의사항
-
-1. `video_processor.py`의 주석을 참고하여 로직 이해
-2. 파라미터 변경 시 테스트 영상으로 검증
-3. `debug_scene_changes` 폴더로 결과 확인
-
-### 테스트 방법
-
-```bash
-# 단위 테스트 실행
-python tests/test_video_processor_simple.py
-
-# 실제 영상으로 테스트
-python src/process_content.py
-```
-
----
-
-## 📝 변경 이력
-
-### 2025-12-01
-
-- ✅ 다중 시점 샘플링 구현
-- ✅ 슬라이드 경계 추적 기능 추가
-- ✅ 마우스 제거 알고리즘 개선
-- ✅ 상세 주석 추가
-
-### 이전 버전
-
-- 기본 장면 전환 감지
-- Temporal Median 구현
-- dHash 중복 제거
-
----
-
-## 📧 문의
-
-프로젝트 관련 문의사항은 팀 채널로 연락 주세요.
+- 코드 스타일: `ruff format`, `ruff check`, `mypy --strict`
+- 커밋 메시지: 한글 작성, `type(scope): 제목` 형식
+- PR: 한글 작성, 하나의 목적당 하나의 PR
