@@ -23,18 +23,16 @@ def run_judge_gemini(
     workers: int,
     json_repair_attempts: int,
     limit: Optional[int],
-    return_reasons: bool,
     verbose: bool,
     min_score: float,
+    include_segments: bool,
 ) -> Dict[str, Any]:
     """Gemini로 요약 품질을 평가하고 judge.json을 반환한다."""
     config = load_config(str(fusion_config_path))
-    judge_dir = fusion_dir / "judge"
-    judge_dir.mkdir(parents=True, exist_ok=True)
-    report_path = judge_dir / "judge_report.json"
-    segments_path = judge_dir / "judge_segment_reports.jsonl"
+    report_path = fusion_dir / "judge" / "judge_report.json"
+    segments_path = fusion_dir / "judge" / "judge_segment_reports.jsonl"
 
-    report = run_judge(
+    judge_result = run_judge(
         config=config,
         segments_units_path=segments_units_path,
         segment_summaries_path=segment_summaries_path,
@@ -44,22 +42,38 @@ def run_judge_gemini(
         workers=workers,
         json_repair_attempts=json_repair_attempts,
         limit=limit,
-        return_reasons=return_reasons,
         verbose=verbose,
+        write_outputs=False,
     )
+
+    report = judge_result.get("report", {})
+    segment_reports = judge_result.get("segment_reports", []) or []
 
     final_score = float(report.get("scores", {}).get("final", 0.0))
     passed = final_score >= min_score
-    result: Dict[str, Any] = {
-        "schema_version": 1,
+    feedback = [
+        {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+        for item in segment_reports
+        if item.get("segment_id") is not None
+    ]
+    payload: Dict[str, Any] = {
+        "schema_version": 2,
         "model": str(report.get("meta", {}).get("model", "")),
         "pass": passed,
-        "score": round(final_score / 10.0, 4),
         "final_score": final_score,
         "min_score": min_score,
-        "reason": f"최종 점수 {final_score:.2f} / 기준 {min_score:.2f}",
-        "report_path": str(report_path),
-        "segment_reports_path": str(segments_path),
+        "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
+        "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
+        "feedback": feedback,
     }
-    write_json(fusion_dir / "judge.json", result)
-    return result
+    if include_segments:
+        payload["segments"] = [
+            {
+                "segment_id": int(item.get("segment_id")),
+                "scores": item.get("scores", {}),
+            }
+            for item in segment_reports
+            if item.get("segment_id") is not None
+        ]
+    write_json(fusion_dir / "judge.json", payload)
+    return payload
