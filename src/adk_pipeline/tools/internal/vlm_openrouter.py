@@ -49,5 +49,6 @@ def run_vlm_openrouter(
         vlm_raw_json=raw_path,
         output_vlm_json=vlm_json,
     )
+    raw_path.unlink(missing_ok=True)
 
     return {"vlm_raw_json": str(raw_path), "vlm_json": str(vlm_json)}
