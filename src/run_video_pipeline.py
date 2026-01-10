@@ -49,6 +49,7 @@ from src.fusion.summarizer import run_summarizer
 from src.fusion.sync_engine import run_sync_engine
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+from src.judge.judge import run_judge
 
 
 # ============================================================
@@ -443,6 +444,26 @@ def _run_fusion_pipeline(
                 outputs_dir.joinpath(f"final_summary_{fmt}.md").write_text(
                     summaries[fmt], encoding="utf-8"
                 )
+        
+        # Judge 실행
+        judge_output_dir = output_dir / "judge"
+        judge_output_dir.mkdir(parents=True, exist_ok=True)
+        _, judge_elapsed = timer.time_stage(
+            "fusion.judge",
+            run_judge,
+            config=config,
+            segments_units_path=output_dir / "segments_units.jsonl",
+            segment_summaries_path=output_dir / "segment_summaries.jsonl",
+            output_report_path=judge_output_dir / "judge_report.json",
+            output_segments_path=judge_output_dir / "judge_segment_reports.jsonl",
+            batch_size=3,
+            workers=1,
+            json_repair_attempts=1,
+            limit=limit,
+            return_reasons=True,
+            verbose=True,
+        )
+        fusion_info["timings"]["judge_sec"] = judge_elapsed
     
     # Segment 수 카운트
     segments_file = output_dir / "segment_summaries.jsonl"
@@ -496,7 +517,7 @@ def _print_benchmark_report(
     
     # 주요 스테이지 정렬 출력
     stage_order = ["stt", "capture", "vlm", "fusion.sync_engine", "fusion.llm_summarizer", 
-                   "fusion.renderer", "fusion.final_summary"]
+                   "fusion.renderer", "fusion.final_summary", "fusion.judge"]
     
     for stage in stage_order:
         if stage in report["stages"]:

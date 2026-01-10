@@ -398,8 +398,6 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
                             "end_ms": segment.end_ms,
                             "transcript_units": transcript_units,
                             "visual_units": visual_units,
-                            "transcript_text": transcript_text,
-                            "visual_text": visual_text,
                         },
                         ensure_ascii=False,
                         sort_keys=True,
