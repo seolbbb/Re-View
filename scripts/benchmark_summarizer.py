@@ -141,7 +141,7 @@ def process_batch(
     try:
          token_result_out = client.models.count_tokens(
             model=client_bundle.model,
-            contents=str(valid_payload)
+            contents=current_text
         )
          output_tokens = token_result_out.total_tokens
     except:
@@ -202,6 +202,10 @@ def main():
         # Split into chunks
         chunks = list(chunk_list(segments, bs))
         logger.info(f"Split into {len(chunks)} chunks")
+
+        if not chunks:
+            logger.warning(f"No chunks to process for batch size {bs} (segments list might be empty or filtered out). Skipping.")
+            continue
 
         start_time = time.perf_counter()
         
