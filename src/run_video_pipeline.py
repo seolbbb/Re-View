@@ -326,6 +326,7 @@ def _run_vlm_openrouter(
     video_name: str,
     output_base: Path,
     batch_size: Optional[int],
+    concurrency: int,
 ) -> int:
     """VLM(Vision Language Model) 실행. 처리된 이미지 수 반환."""
     extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_base)
@@ -349,7 +350,11 @@ def _run_vlm_openrouter(
     if not image_paths:
         raise ValueError("VLM 입력 이미지가 없습니다(manifest.json을 확인하세요).")
 
-    results = extractor.extract_features(image_paths, batch_size=batch_size)
+    results = extractor.extract_features(
+        image_paths,
+        batch_size=batch_size,
+        concurrency=concurrency,
+    )
     raw_path = extractor.get_output_path()
     write_vlm_raw_json(results, raw_path)
 
@@ -582,20 +587,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stt-backend", choices=["clova"], default="clova", help="STT 백엔드")
     parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True, 
                         help="STT+Capture 병렬 실행")
-    parser.add_argument("--capture-threshold", type=float, default=3.0, 
-                        help="장면 전환 감지 임계값")
-    parser.add_argument("--capture-dedupe-threshold", type=float, default=3.0, 
-                        help="중복 제거 임계값")
-    parser.add_argument("--capture-min-interval", type=float, default=0.5, 
-                        help="캡처 최소 간격(초)")
-    parser.add_argument("--capture-verbose", action="store_true", 
-                        help="캡처 상세 로그 출력")
-    parser.add_argument("--vlm-batch-size", type=int, default=None, 
-                        help="VLM 배치 크기(미지정 시 전부 한 번에)")
-    parser.add_argument("--limit", type=int, default=None, 
-                        help="fusion 단계에서 처리할 segment 수 제한")
-    parser.add_argument("--dry-run", action="store_true", 
-                        help="summarizer LLM 미호출(출력 미생성)")
+    parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True, help="STT+Capture 병렬 실행")
+    parser.add_argument("--capture-threshold", type=float, default=3.0, help="장면 전환 감지 임계값")
+    parser.add_argument("--capture-dedupe-threshold", type=float, default=3.0, help="중복 제거 임계값 (2차 정제)")
+    parser.add_argument("--capture-min-interval", type=float, default=0.5, help="캡처 최소 간격(초)")
+    parser.add_argument("--capture-verbose", action="store_true", help="캡처 상세 로그 출력")
+    parser.add_argument("--vlm-batch-size", type=int, default=2, help="VLM 배치 크기(미지정 시 전부 한 번에)")
+    parser.add_argument("--vlm-concurrency", type=int, default=3, help="VLM 병렬 요청 수 (기본: 3)")
+    parser.add_argument("--limit", type=int, default=None, help="fusion 단계에서 처리할 segment 수 제한")
+    parser.add_argument("--dry-run", action="store_true", help="summarizer LLM 미호출(출력 미생성)")
     return parser.parse_args()
 
 
@@ -711,6 +711,7 @@ def main() -> None:
             video_name=video_name,
             output_base=output_base,
             batch_size=args.vlm_batch_size,
+            concurrency=args.vlm_concurrency,
         )
 
         # Fusion config 생성
