@@ -585,8 +585,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video", required=True, help="입력 비디오 파일 경로")
     parser.add_argument("--output-base", default="data/outputs", help="출력 베이스 디렉토리")
     parser.add_argument("--stt-backend", choices=["clova"], default="clova", help="STT 백엔드")
-    parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True, 
-                        help="STT+Capture 병렬 실행")
     parser.add_argument("--parallel", action=argparse.BooleanOptionalAction, default=True, help="STT+Capture 병렬 실행")
     parser.add_argument("--capture-threshold", type=float, default=3.0, help="장면 전환 감지 임계값")
     parser.add_argument("--capture-dedupe-threshold", type=float, default=3.0, help="중복 제거 임계값 (2차 정제)")
