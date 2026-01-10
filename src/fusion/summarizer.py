@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from .io_utils import ensure_output_root, print_jsonl_head, read_jsonl, update_t
 
 
 PROMPT_VERSION = "sum_v1.5"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -714,9 +716,14 @@ def _run_with_retries(
             )
         except Exception as exc:
             if attempt >= max_retries:
+                logger.error(f"GenerateContent failed after {max_retries} retries: {exc}")
                 raise
             sleep_for = (
                 backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
+            )
+            logger.warning(
+                f"GenerateContent failed (attempt {attempt+1}/{max_retries}). "
+                f"Retrying in {sleep_for}s. Error: {exc}"
             )
             time.sleep(max(sleep_for, 0))
             attempt += 1
