@@ -363,6 +363,7 @@ def _run_vlm_openrouter(
         vlm_raw_json=raw_path,
         output_vlm_json=raw_path.with_name("vlm.json"),
     )
+    raw_path.unlink(missing_ok=True)
     
     return len(image_paths)
 
