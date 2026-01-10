@@ -48,7 +48,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from src.fusion.config import ConfigBundle
-from src.fusion.io_utils import read_jsonl, write_json, write_jsonl
+from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_token_usage
 
 
 PROMPT_VERSION = "judge_v3"
@@ -551,6 +551,27 @@ def run_judge(
         )
 
     response_schema = _build_response_schema(return_reasons)
+
+    # Count input tokens for all payloads and save to token_usage.json
+    try:
+        full_prompt = _build_prompt(payloads, return_reasons)
+        client_bundle = _init_gemini_client(config)
+        token_result = client_bundle.client.models.count_tokens(
+            model=client_bundle.model,
+            contents=full_prompt
+        )
+        input_tokens = token_result.total_tokens
+        output_dir = segments_units_path.parent
+        update_token_usage(
+            output_dir=output_dir,
+            component="judge",
+            input_tokens=input_tokens,
+            model=client_bundle.model,
+            extra={"segments_count": len(payloads)}
+        )
+        print(f"[TOKEN] judge input_tokens={input_tokens}")
+    except Exception as exc:
+        print(f"[TOKEN] count_tokens failed: {exc}")
 
     llm_results: Dict[int, Dict[str, Any]] = {}
     batches = _chunked(payloads, batch_size)
