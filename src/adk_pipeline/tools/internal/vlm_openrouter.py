@@ -17,6 +17,8 @@ def run_vlm_openrouter(
     video_name: str,
     output_base: Path,
     batch_size: Optional[int],
+    concurrency: int = 1,
+    show_progress: bool = False,
 ) -> Dict[str, str]:
     extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_base)
     if batch_size is not None and batch_size < 1:
@@ -39,7 +41,12 @@ def run_vlm_openrouter(
     if not image_paths:
         raise ValueError("VLM 입력 이미지가 없습니다(manifest.json을 확인하세요).")
 
-    results = extractor.extract_features(image_paths, batch_size=batch_size)
+    results = extractor.extract_features(
+        image_paths,
+        batch_size=batch_size,
+        show_progress=show_progress,
+        concurrency=concurrency,
+    )
     raw_path = extractor.get_output_path()
     write_vlm_raw_json(results, raw_path)
 
