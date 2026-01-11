@@ -27,16 +27,16 @@ def _normalize_manifest_entries(manifest: Any) -> List[Dict[str, Any]]:
     for item in manifest:
         if not isinstance(item, dict):
             continue
-        if "timestamp_ms" not in item or "file_name" not in item:
+        if "start_ms" not in item or "file_name" not in item:
             continue
         try:
-            timestamp_ms = int(item["timestamp_ms"])
+            start_ms = int(item["start_ms"])
         except (TypeError, ValueError):
             continue
         file_name = str(item["file_name"]).strip()
         if not file_name:
             continue
-        normalized.append({"timestamp_ms": timestamp_ms, "file_name": file_name})
+        normalized.append({"timestamp_ms": start_ms, "file_name": file_name})
 
     if not normalized:
         raise ValueError("manifest.json에서 유효한 항목을 찾을 수 없습니다.")

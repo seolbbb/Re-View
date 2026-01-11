@@ -60,7 +60,7 @@ HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진
     ┌─────────────────────────────────────┐
     │  5. 중복 제거 (Deduplication)       │
     │     - Pixel + ORB + RANSAC 검사     │
-    │     - 중복이면 duplicates 폴더로    │
+    │     - 중복이면 Dropped (DEBUG 모드 시 debug 폴더 저장) │
     └─────────────────────────────────────┘
          │
          ▼
@@ -96,7 +96,7 @@ HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진
     ├── video_001_00h00m05s000ms_hybrid.jpg   # 캡처된 슬라이드
     ├── video_002_00h01m30s000ms_hybrid.jpg
     ├── ...
-    ├── duplicates/                            # 중복으로 판단된 프레임
+    ├── debug/                                 # [옵션] 중복 프레임 (코드에서 활성화 필요)
     │   └── video_003_..._dup.jpg
     └── process_log_hybrid.txt                # 처리 로그
 
@@ -168,8 +168,8 @@ class HybridSlideExtractor:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
             
-        # 파일 로깅 설정 (process_log_hybrid.txt)
-        log_file = os.path.join(self.output_dir, "..", "process_log_hybrid.txt")
+        # 파일 로깅 설정 (capture_log.txt)
+        log_file = os.path.join(self.output_dir, "..", "capture_log.txt")
         log_file = os.path.abspath(log_file)
         
         file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
@@ -453,17 +453,18 @@ class HybridSlideExtractor:
             if is_duplicate:
                 should_save = False
                 
-                # [추적용] 중복을 'duplicates' 폴더에 저장
-                time_str = self._format_time(current_time)
-                # 파일명에 RANSAC 정보 포함
-                dup_filename = f"{video_name}_{len(extracted_slides)+1:03d}_{time_str}_diff{dedupe_score:.1f}_sim{sim_score:.2f}_inliers{ransac_inliers}_dup.jpg"
-                dup_dir = os.path.join(self.output_dir, "duplicates")
-                os.makedirs(dup_dir, exist_ok=True)
-                dup_path = os.path.join(dup_dir, dup_filename)
+                # [추적용] 중복을 'debug' 폴더에 저장 (필요 시 주석 해제)
+                # time_str = self._format_time(current_time)
+                # # 파일명에 RANSAC 정보 포함
+                # dup_filename = f"{video_name}_{len(extracted_slides)+1:03d}_{time_str}_diff{dedupe_score:.1f}_sim{sim_score:.2f}_inliers{ransac_inliers}_dup.jpg"
+                # dup_dir = os.path.join(self.output_dir, "debug")
+                # os.makedirs(dup_dir, exist_ok=True)
+                # dup_path = os.path.join(dup_dir, dup_filename)
                 
-                cv2.imwrite(dup_path, selected_frame)
+                # cv2.imwrite(dup_path, selected_frame)
                 
-                self.logger.info(f"저장됨 (중복): {dup_filename}")
+                # self.logger.info(f"저장됨 (중복): {dup_filename}")
+                self.logger.info(f"중복 감지됨 (Drop): Diff={dedupe_score:.1f}, Sim={sim_score:.2f}")
             else:
                 self.last_saved_des = curr_des  # 다음 비교를 위해 캐시
                 self.last_saved_kp = curr_kp    # 키포인트도 캐시
