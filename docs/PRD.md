@@ -1,376 +1,554 @@
-PRD v1.0: 강의/발표 영상 자동 요약 파이프라인 (Google ADK Orchestration)
+# Re:View PRD v2.0: 강의/발표 영상 자동 요약 파이프라인 (Google ADK Orchestration)
 
-작성일: 2025-12-30 (Asia/Seoul)
-대상: Boostcamp CV-02 팀 내부 개발/운영 기준 문서
-입력: 로컬 영상 파일
+> ⚠️ **문서 상태**: v1.0(2025-12-30) 초기 요구사항을 2026-01-11 현재 구현에 맞게 업데이트함.
+
+작성일: 2025-12-30 (Asia/Seoul) → 업데이트: 2026-01-11  
+대상: Boostcamp CV-02 팀 내부 개발/운영 기준 문서  
+입력: 로컬 영상 파일  
 출력: 구간별 요약 + 최종 요약 노트(Markdown), 중간 산출물(JSON/JSONL), 실행 로그/메타데이터
 
-1. 문제 정의 및 목표
+---
 
-1.1 문제
+## 1. 문제 정의 및 목표
+
+### 1.1 문제
 
 - 영상에는 음성(설명) + 시각(슬라이드/데모/화이트보드/코드/그래프) 정보가 함께 존재한다.
 - STT만으로는 시각 근거가 누락되고, 프레임 기반 추출만으로는 설명 맥락이 누락된다.
 - 긴 영상 처리 시 비용/시간이 커 재시도, 재개(resume), 중간 산출물 저장이 필수다.
 
-  1.2 목표
+### 1.2 목표
 
-- 영상에서 “구간(segment)” 단위로 STT(한국어)와 VLM(프레임 요약)을 타임라인으로 동기화해, 근거 기반 구간 요약과 전체 요약 노트를 생성한다.
+- 영상에서 "구간(segment)" 단위로 STT(한국어)와 VLM(프레임 요약)을 타임라인으로 동기화해, 근거 기반 구간 요약과 전체 요약 노트를 생성한다.
 - 단계별 산출물과 실행 상태를 표준화된 포맷으로 저장해 부분 재실행이 가능하게 한다.
 - LLM Judge를 통해 환각/비약을 탐지하고, 해당 구간만 재생성하는 검증 루프를 제공한다.
 
-  1.3 비목표
+### 1.3 비목표
 
 - 실시간(라이브) 처리
 - 완전한 UI(웹 편집기) 제공
 - 그래프/도표 수치의 완전 추출(초기에는 요약 중심)
 
-2. 사용자/이해관계자 및 성공 기준
+---
 
-2.1 주요 사용자
+## 2. 사용자/이해관계자 및 성공 기준
+
+### 2.1 주요 사용자
 
 - 수강생/학습자: 강의 내용을 빠르게 복습
 - 팀/조직: 세미나·회의 녹화 요약, 액션아이템 정리
 - 제작자: 노트 자동 생성 후 배포
 
-  2.2 성공 기준(정량/정성)
+### 2.2 성공 기준(정량/정성)
 
-- 커버리지: 주요 슬라이드 변화 지점이 요약에 반영(“제목/핵심 bullet” 수준)
-- 정합성: 구간 요약이 해당 구간 STT/VLM 근거에서 벗어나지 않음
-- 재현성/운영성: 실패 시 전체 재실행 없이 실패 단계부터 재개 가능
-- 비용 통제: 캡처/LLM 호출량이 설정으로 제어 가능(1분당 10장 기준선)
+| 지표      | 목표                                                 | 현재 상태               |
+| --------- | ---------------------------------------------------- | ----------------------- |
+| 커버리지  | 주요 슬라이드 변화 지점이 요약에 반영                | ✅ 달성                 |
+| 정합성    | 구간 요약이 해당 구간 STT/VLM 근거에서 벗어나지 않음 | ✅ Judge 평가 기준 포함 |
+| 재현성    | 실패 시 전체 재실행 없이 실패 단계부터 재개 가능     | ✅ 단계별 산출물 저장   |
+| 비용 통제 | 캡처/LLM 호출량이 설정으로 제어 가능                 | ✅ config.yaml          |
 
-3. 시스템 개요(End-to-End)
+---
 
-3.1 파이프라인 단계
+## 3. 시스템 개요(End-to-End)
 
-1. ADK 오케스트레이션
-2. 영상 확보/전처리(로컬 파일, 오디오 추출, 필요 시 “자르기”)
-3. 변화 감지 + 캡처(Pixel diff, 1분 10장)
-4. STT(네이버 STT, 한국어)
-5. VLM(캡처 이미지→요약 텍스트, 출력: timestamp/extracted_text)
-6. 정렬/병합(싱크: 시간축 세그먼트 생성, image_refs 제외)
-7. 중간 포맷(JSONL: 세그먼트 원라인 저장)
-8. LLM 요약(구간별 + 전체 Markdown)
-9. 검증 루프(Judge → 문제 구간만 재생성)
+### 3.1 파이프라인 단계
 
-3.2 아티팩트 저장(권장)
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              User (mp4 upload)                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Pre-ADK Pipeline (CLI)                               │
+│            python src/pre_adk_pipeline.py --video "xxx.mp4"                 │
+│                       또는                                                   │
+│            python src/run_video_pipeline.py --video "xxx.mp4"               │
+│                                                                             │
+│   ┌─────────────────┐              ┌─────────────────┐                      │
+│   │   STT (Clova)   │   Parallel   │     Capture     │                      │
+│   │   -> stt.json   │   Execution  │ -> manifest.json│                      │
+│   │                 │              │ -> captures/*.jpg│                     │
+│   └─────────────────┘              └─────────────────┘                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    data/outputs/{video_name}/                               │
+│   Pre-ADK Outputs: stt.json, manifest.json, captures/                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       ADK Pipeline (Interactive)                            │
+│                       adk web src/adk_pipeline                              │
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                    Root Agent (screentime_pipeline)                 │   │
+│   │                                                                     │   │
+│   │   Tools: list_available_videos, set_pipeline_config, get_status     │   │
+│   │   Sub-Agents: preprocessing, summarize, judge                       │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│          │                         │                         │              │
+│          ▼                         ▼                         ▼              │
+│   ┌─────────────┐           ┌─────────────┐           ┌─────────────┐       │
+│   │Preprocessing│  ──────▶  │  Summarize  │  ──────▶  │    Judge    │       │
+│   │   Agent     │           │   Agent     │           │   Agent     │       │
+│   │             │           │             │           │             │       │
+│   │ VLM + Sync  │           │ Sum + Render│           │ Quality Eval│       │
+│   └─────────────┘           └─────────────┘           └─────────────┘       │
+│                                    │                         │              │
+│                                    │◀── FAIL + can_rerun ────┘              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    data/outputs/{video_name}/fusion/                        │
+│   ADK Outputs: segment_summaries.jsonl, final_summary_*.md, judge.json      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-- runs/{run_id}/ 하위에 단계별 디렉터리(멱등성 확보)
-- 모든 단계는 “입력/출력 계약”을 가진다.
+### 3.2 아티팩트 저장
 
-4. 오케스트레이션 설계(Google ADK)
+- `data/outputs/{video_name}/` 하위에 단계별 디렉터리(멱등성 확보)
+- 모든 단계는 "입력/출력 계약"을 가진다.
 
-4.1 ADK 사용 방식(권장)
+---
 
-- 워크플로는 예측 가능한 순차 파이프라인이므로 기본은 Sequential workflow로 구성한다. ADK는 워크플로 에이전트(Sequential/Parallel/Loop)로 파이프라인을 정의할 수 있다. Google GitHub
-- 단계별 실패 처리, 재시도, 체크포인트는 “커스텀 에이전트(BaseAgent 상속)” 또는 단계 래퍼에서 구현한다. ADK는 BaseAgent 상속으로 임의 제어흐름/상태/이벤트 처리가 가능하다. Google GitHub
-- 참고로 ADK 커뮤니티에서는 툴/LLM 호출에 대한 retry/checkpoint 메커니즘 요구가 별도로 논의될 정도로, 프로젝트 레이어에서 정책을 갖추는 것이 안전하다. GitHub
+## 4. 오케스트레이션 설계(Google ADK)
 
-  4.2 상태 모델(State Machine)
+### 4.1 ADK 사용 방식(현재 구현)
+
+- 워크플로는 예측 가능한 순차 파이프라인이므로 기본은 **Sequential workflow**로 구성.
+- ADK는 워크플로 에이전트(Sequential/Parallel/Loop)로 파이프라인을 정의할 수 있다.
+- 단계별 실패 처리, 재시도, 체크포인트는 **Agent Transfer** 및 **도구 내부 로직**에서 구현.
+
+### 4.2 상태 모델(State Machine)
 
 각 Step은 아래 상태를 가진다.
 
-- PENDING → RUNNING → SUCCEEDED
-- RUNNING → FAILED → (RETRYING → RUNNING …) → FAILED(terminal)
-- SKIPPED(조건부 스킵: 예, 오디오 없음)
+- `PENDING` → `RUNNING` → `SUCCEEDED`
+- `RUNNING` → `FAILED` → (`RETRYING` → `RUNNING` …) → `FAILED`(terminal)
+- `SKIPPED` (조건부 스킵: 예, 오디오 없음)
 
-  4.3 재시도 정책(초안)
+### 4.3 재시도 정책
 
-- 대상: 외부 API 호출(STT/VLM/LLM), 일시적 I/O 오류
-- 최대 재시도: 기본 3회(설정 가능)
-- 백오프: 2^k 초(상한 설정)
-- 비재시도 오류: 입력 포맷 오류, 인증키 오류 등 “영구 오류”
+| 항목          | 설정                                        |
+| ------------- | ------------------------------------------- |
+| 대상          | 외부 API 호출(STT/VLM/LLM), 일시적 I/O 오류 |
+| 최대 재시도   | 기본 3회 (설정 가능)                        |
+| 백오프        | 2^k 초 (상한 설정)                          |
+| 비재시도 오류 | 입력 포맷 오류, 인증키 오류 등 "영구 오류"  |
 
-  4.4 실행 메타데이터(run.json)
+### 4.4 실행 메타데이터 (`pipeline_run.json`, `benchmark_report.md`)
 
-- run_id, started_at, config_hash
-- input_video_path, duration, resolution
-- steps: {name, status, started_at, ended_at, artifacts, error_summary}
-- versions: stt_provider_version, vlm_model_id, llm_model_id, prompt_version
+```json
+{
+  "started_at": "2026-01-10T15:30:00Z",
+  "ended_at": "2026-01-10T15:33:00Z",
+  "input_video_path": "data/inputs/lecture.mp4",
+  "video_info": {
+    "duration_sec": 360,
+    "resolution": "1920x1080",
+    "fps": 30
+  },
+  "stages": {
+    "stt": { "elapsed_sec": 45.2, "status": "success" },
+    "capture": { "elapsed_sec": 12.3, "status": "success", "count": 24 },
+    "vlm": { "elapsed_sec": 89.5, "status": "success" },
+    "sync": { "elapsed_sec": 1.2, "status": "success" },
+    "summarize": { "elapsed_sec": 67.8, "status": "success" },
+    "judge": { "elapsed_sec": 23.4, "status": "success", "score": 8.5 }
+  },
+  "total_elapsed_sec": 180.5
+}
+```
 
-5. 단계별 상세 요구사항
+---
 
-5.1 영상 확보/전처리
+## 5. 단계별 상세 요구사항
 
-입력
+### 5.1 영상 확보/전처리
 
-- local_video_path
+**입력**: `local_video_path`
 
-기능
+**기능**:
 
 - 파일 검증: 존재/확장자/코덱 정보 추출
-- 오디오 추출: STT 입력용 오디오 생성
-- 입력 크기 제한 대응(“자르기”): 기준 미정(결정 필요)
+- 오디오 추출: STT 입력용 오디오 생성 (ffmpeg: 16kHz, mono WAV)
 
-출력(아티팩트)
+**출력 (아티팩트)**:
 
-- audio/{run_id}.wav (또는 provider 요구 포맷)
-- preprocess/manifest.json (원본 메타 + 추출 결과 + (선택) 분할 목록)
+- `{video_name}.wav` (오디오)
+- 비디오 메타데이터 (duration, resolution, fps)
 
-에러/예외
+**에러/예외**:
 
 - 오디오 트랙 없음: STT step SKIPPED, 이후 sync에서 transcript_text 비어있을 수 있음
 
-결정 필요: “자르기” 기준
+---
 
-- 후보 1: 영상 길이 기준(예: 30분/60분 단위)
-- 후보 2: STT/VLM/LLM 제공자의 요청 크기 제한 기반(용량/길이)
-- 후보 3: 캡처 변화 구간 기준 분할(슬라이드 덩어리 단위)
+### 5.2 변화 감지 + 캡처 (HybridSlideExtractor)
 
-  5.2 변화 감지 + 캡처 (Pixel diff, 1분 10장)
+**입력**: video (원본)
 
-입력
+**엔진**: `src/capture/tools/hybrid_extractor.py`
 
-- video (원본 또는 분할 chunk)
+**알고리즘 (Single-Pass)**:
 
-핵심 파라미터
+```
+입력 비디오
+     │
+     ▼
+┌─────────────────────────────────────┐
+│  1. 프레임 읽기 + 스킵 최적화            │
+│     - IDLE 상태에서 빠른 스킵       │
+│     - 변화 감지 중에는 상세 분석    │
+└─────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────┐
+│  2. dHash 장면 전환 감지            │
+│     - sensitivity_diff (기본 3.0)   │
+│     - 픽셀 차이 기반                │
+└─────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────┐
+│  3. 2.5초 스마트 버퍼링             │
+│     - SAFE_DURATION 동안 대기       │
+│     - Temporal Median 노이즈 제거   │
+│     - 마우스/트랜지션 안정화        │
+└─────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────┐
+│  4. ORB + RANSAC 중복 제거          │
+│     - sensitivity_sim (기본 0.8)    │
+│     - 기하학적 일관성 검사          │
+└─────────────────────────────────────┘
+     │
+     ▼
+출력: captures/*.jpg + manifest.json
+```
 
-- diff_threshold: Pixel diff 임계값(정규화 방식 포함)
-- fps_sample: 분석용 샘플링 fps(예: 1~3 fps 권장; 결정 필요)
-- cap_per_minute: 기본 10(= 6초 최소 간격에 준함)
-- min_interval_sec: 기본 6초(= 60/10)
-- hard*max_caps: 전체 캡처 상한(예: duration_min * cap*per_minute * 1.2) (결정 필요)
+**핵심 파라미터**:
 
-처리 규칙(권장 초안)
+| 파라미터           | 기본값 | 설명                                        |
+| ------------------ | ------ | ------------------------------------------- |
+| `sensitivity_diff` | 3.0    | dHash 픽셀 차이 민감도 (낮을수록 민감)      |
+| `sensitivity_sim`  | 0.8    | ORB 구조 유사도 (높을수록 엄격한 중복 제거) |
+| `SAFE_DURATION`    | 2.5초  | 장면 전환 후 안정화 대기 시간               |
+| `min_interval`     | 1.0초  | 연속 캡처 최소 간격                         |
 
-- 프레임을 일정 샘플링(fps_sample)으로 읽고, 이전 선택 프레임 대비 pixel diff가 threshold 이상이면 “변화 후보”로 기록
-- 변화 후보 중에서도 min_interval_sec를 만족하는 것만 캡처 저장
-- 1분 창(sliding 또는 tumbling window) 내 후보가 10장 초과 시:
-  - 우선순위: diff score가 큰 상위 10장만 유지(권장) 또는 시간 균등 샘플(대안)
+**출력**:
 
-출력
+- `captures/*.jpg` (또는 .png)
+- `manifest.json`:
+  ```json
+  [
+    {
+      "timestamp_ms": 1000,
+      "frame_index": 30,
+      "file_name": "capture_0001.jpg",
+      "diff_score": 5.2
+    }
+  ]
+  ```
 
-- captures/\*.png (또는 jpg)
-- captures/manifest.json
-  - [{timestamp_ms, frame_index, file_name, diff_score}]
+---
 
-비고
+### 5.3 STT (NAVER Clova Speech / Whisper)
 
-- 이후 sync 결과에는 image_refs를 넣지 않지만, 디버깅/근거 추적을 위해 captures/manifest는 유지한다.
+**입력**: 영상 또는 오디오 파일
 
-  5.3 STT (NAVER STT, 한국어)
+**STT 제공자**:
 
-입력
+- **Clova Speech** (기본): HTTP Post 요청 (Sync Mode)
+- **Whisper** (대체): 로컬 모델 또는 API
 
-- 영상
-- audio file (전처리 산출물)
+**구현**: `src/audio/stt_router.py`
 
-STT 제공자 확정(현 기준)
-
-- NAVER Cloud Platform의 CLOVA Speech Recognition STT API를 1차 타겟으로 한다. 이 계열 문서에서는 언어와 오디오 데이터(여러 포맷)를 입력으로 받아 텍스트로 변환한다고 명시되어 있다. Ncloud Docs+1
-- 서비스는 Classic/VPC 환경에서 제공된다고 안내되어 있다.
-- 오디오 포맷은 MP3, AAC, AC3, OGG, FLAC, WAV 등을 지원한다고 안내되어 있다.
-
-요구사항
+**요구사항**:
 
 - 언어: 한국어 고정
-- 타임스탬프 포함 세그먼트 단위 반환(최소: start_ms, end_ms, text)
-  - 제공자 API가 “단어 단위/문장 단위 타임스탬프”를 얼마나 지원하는지에 따라 어댑터에서 표준화
+- 타임스탬프 포함 세그먼트 단위 반환: `start_ms`, `end_ms`, `text`
+- `confidence` 포함 가능
 
-출력(stt.json)
+**출력 (`stt.json`)**:
 
-- schema_version: 1
-- segments: [{start_ms, end_ms, text}]
-- (옵션) confidence, raw_response 저장
-
-추후 전환(로컬 STT)
-
-- provider adapter 인터페이스를 고정하여, “NAVER → Local(예: Whisper)” 교체가 파이프라인 전체에 영향이 없도록 한다.
-
-결정 필요(정확한 표준화 수준)
-
-- STT가 “단어 단위 타임스탬프”를 주는 경우, 그대로 저장할지 / 문장 단위로 다시 묶을지
-
-  5.4 VLM (단독 요약, 출력 최소화)
-
-입력
-
-- captures/manifest.json + 이미지 파일
-
-요구사항
-
-- VLM 호출 단위: 이미지 1장 = 1회(기본)
-- 출력 필드 고정: timestamp_ms, extracted_text만 생성
-- extracted_text의 성격
-  - 화면에 보이는 핵심 텍스트/요점 요약(슬라이드 제목, 주요 bullet)
-  - 그래프/도표는 “무엇을 말하는지”를 과장 없이 설명(모르면 모른다고 표기하도록 프롬프트 설계)
-
-출력(vlm.json)
-
-- schema_version: 1
-- items: [{timestamp_ms, extracted_text}]
-
-결정 필요(토큰/비용 최적화)
-
-- 1장당 1회 호출이 부담이면:
-  _ 후보 1: 1분당 대표 5장만 VLM
-  _ 후보 2: OCR/간이 필터로 텍스트가 많은 프레임만 VLM \* 후보 3: 특정 구간(변화량 큰 프레임)만 VLM
-
-  5.5 정렬/병합(싱크) – image_refs 제외
-
-입력
-
-- stt.json (segments)
-- vlm.json (items)
-
-출력(sync.json)
-
-- schema_version: 1
-- segments: [
-  {segment_id, start_ms, end_ms, transcript_text, visual_text}
+```json
+{
+  "schema_version": 1,
+  "segments": [
+    { "start_ms": 0, "end_ms": 5000, "text": "안녕하세요", "confidence": 0.95 }
   ]
+}
+```
 
-중요: image_refs 제외(요구 반영)
+---
 
-- visual_text는 “해당 구간에 매칭된 VLM extracted_text를 병합한 결과 문자열”로만 제공
-- 이미지 파일/프레임 참조는 sync 산출물에서 제거한다(다만 captures/manifest는 run 아티팩트로 유지)
+### 5.4 VLM (Visual Language Model)
 
-결정 필요 1: 구간화(segmentation) 기준
+**입력**: `captures/manifest.json` + 이미지 파일
 
-- 후보 A: 캡처 변화 시점 기반(슬라이드 단위)
-  - 장점: 시각 정보와 결합이 자연스럽다
-  - 단점: 설명이 길게 이어지면 구간이 너무 커질 수 있다
-- 후보 B: STT 침묵/문장 경계 기반
-  - 장점: 말 흐름 중심 요약
-  - 단점: 시각 변화와 어긋날 수 있다
-- 후보 C: 고정 윈도우(예: 30초/60초)
-  - 장점: 구현 단순, 안정적
-  - 단점: 의미 단위가 깨질 수 있다
-- 후보 D: 하이브리드(캡처 경계 우선 + STT로 세분화)
-  - 장점: 두 신호를 함께 사용
-  - 단점: 규칙 복잡
+**엔진**: OpenRouter API (`qwen/qwen3-vl-32b-instruct`)
 
-결정 필요 2: 충돌 규칙(다대다 매칭)
-VLM item(시각)과 STT segment(음성)의 매칭은 시간축 기준으로 수행하되, 아래 중 선택 필요.
+**구현**: `src/vlm/vlm_engine.py`
 
-- 규칙 1: 구간 내 VLM을 “모두 병합”(길이 제한 필요)
-- 규칙 2: 구간 내 VLM을 “가장 가까운 1개만 채택”
-- 규칙 3: 구간 내 VLM을 “상위 N개(예: 2~3개)만 채택”(diff_score 큰 것 우선)
-- 규칙 4: “슬라이드가 바뀐 직후 1장”만 채택(대표성 우선)
+**요구사항**:
 
-결정 필요 3: visual_text 병합 방식
+- VLM 호출 단위: 이미지 1장 = 1회 (배치 지원)
+- 출력 필드: `timestamp_ms`, `extracted_text`
+- 출력 형식: Markdown (테이블, LaTeX 수식 지원)
 
-- 단순 이어붙이기
-- 중복 제거(유사 문장 제거)
-- 길이 제한(예: 800~1200자) 초과 시 요약 압축(간단 규칙 or 소형 LLM)
+**프롬프트**:
 
-  5.6 중간 포맷(JSONL)
+- System: "Output only Markdown. Use Markdown tables... Use LaTeX for equations..."
+- User: "이미지 내 텍스트/수식을 마크다운으로 추출하라..."
 
-목적
+**출력 (`vlm.json`)**:
 
-- LLM 입력 토큰 절감
-- 재요약/재검증을 위한 표준화
+```json
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "timestamp_ms": 1000,
+      "extracted_text": "## Diffusion Model\n- Forward process: q(x_t|x_{t-1})\n- Reverse process: p_θ(x_{t-1}|x_t)"
+    }
+  ]
+}
+```
 
-입력
+---
 
-- sync.json segments
+### 5.5 정렬/병합 (Sync Engine)
 
-출력(segments.jsonl)
+**입력**:
 
-- 1 line = 1 segment
+- `stt.json` (segments)
+- `vlm.json` (items)
 
-JSONL 스키마(초안, v1)
+**엔진**: `src/fusion/sync_engine.py`
 
-- run_id: string
-- segment_id: int
-- start_ms: int
-- end_ms: int
-- transcript_text: string
-- visual_text: string
+**처리 규칙**:
 
-주의
+- 캡처 변화 시점 기반 세그먼트화 (슬라이드 단위)
+- 최소/최대 세그먼트 길이 제한 (`min_segment_sec`, `max_segment_sec`)
+- 너무 긴 구간은 재귀적으로 분할 (`_split_segment_recursive`)
 
-- image_refs 없음(요구 반영)
-- 필요 시 traceability는 “segment_id ↔ 캡처 시점”을 별도 매핑 파일로 유지(결정 필요: 필요/불필요)
+**출력**:
 
-  5.7 LLM 요약
+- `segments.jsonl`: 기본 세그먼트
+- `segments_units.jsonl`: 상세 유닛 정보 포함
 
-입력
+**JSONL 스키마 (`segments_units.jsonl`)**:
 
-- segments.jsonl
+```json
+{
+  "segment_id": 1,
+  "start_ms": 0,
+  "end_ms": 60000,
+  "transcript_text": "...",
+  "transcript_units": [
+    { "unit_id": "t1", "text": "...", "start_ms": 0, "end_ms": 3000 }
+  ],
+  "visual_text": "...",
+  "visual_units": [{ "unit_id": "v1", "text": "...", "timestamp_ms": 1000 }]
+}
+```
 
-출력
+---
 
-- outputs/segment_summaries.md
-- outputs/final_summary.md
+### 5.6 LLM 요약 (Gemini Summarizer)
 
-구간 요약 요구사항
+**입력**: `segments_units.jsonl`
 
-- 각 segment에 대해:
-  - 핵심 요점 3~5개(가능하면)
-  - 용어/개념 정의(등장 시)
-  - 과장/추정 금지(근거 부족 시 “확인 불가”)
+**엔진**: `src/fusion/summarizer.py`
 
-전체 요약 문서 구조(실험)
+**프롬프트 버전**: `sum_v1.5`
 
-- 포맷 A: 시간 순(타임라인 노트)
-- 포맷 B: 주제별 재구성(섹션 추정)
-- 포맷 C: TL;DR + 시간 순(하이브리드)
+**요약 철학**: "요약가"가 아니라 "초학자 튜터(독립형 강의 노트 작성자)"
 
-사용자 결정: “3개 다 해보고 결정”
+- 사용자가 영상/슬라이드를 보지 않아도 이해할 수 있는 "독립형 노트" 생성
+- 금지 표현: "슬라이드", "화면", "그림을 보면", "위/아래", "여기" 등
 
-- 구현 요구사항:
-  _ 동일 run에서 3개 포맷을 모두 생성할 수 있게 옵션화
-  _ 비교를 위한 평가 템플릿(아래 7장) 포함
+**출력 구조** (`segment_summaries.jsonl`):
 
-  5.8 검증 루프(Judge)
+```json
+{
+  "segment_id": 1,
+  "summary": {
+    "bullets": [
+      {
+        "bullet_id": "1-1",
+        "claim": "ELBO는 log p(x)의 하한으로, 직접 계산 불가능한 marginal likelihood를 간접 최적화할 수 있게 한다.",
+        "source_type": "inferred",
+        "evidence_refs": ["t1", "v1"],
+        "confidence": "high",
+        "notes": ""
+      }
+    ],
+    "definitions": [
+      {
+        "term": "ELBO (Evidence Lower Bound)",
+        "definition": "log p(x)의 하한(lower bound). 직접 계산 불가능한 marginal likelihood를 최적화하기 위한 대리 목표.",
+        "source_type": "direct",
+        "evidence_refs": ["v1"],
+        "confidence": "high",
+        "notes": ""
+      }
+    ],
+    "explanations": [...],
+    "open_questions": [...]
+  }
+}
+```
 
-입력
+**최종 요약 포맷** (`src/fusion/final_summary_composer.py`):
 
-- 구간 요약(세그먼트 단위)
+- `final_summary_timeline.md`: 시간 순 타임라인 노트
+- `final_summary_tldr_timeline.md`: TL;DR + 시간 순 하이브리드
 
-검증 목표
+---
 
-- 환각/비약/근거 없는 일반화 탐지
-- 문제 구간만 재생성(확정: 10A)
+### 5.7 검증 루프 (LLM Judge)
 
-동작
+**입력**:
 
-- Judge는 각 segment_summary에 대해:
-  - “근거로부터 도출 가능한가?”
-  - “원문(STT/VLM)에 없는 구체 수치/고유명사/결론이 생성됐는가?”
-  - “서로 모순되는 주장 존재 여부”
-- 실패 판정 시:
-  - 해당 segment만 재요약(입력은 해당 segment의 transcript_text + visual_text만)
-  - 재생성 횟수 상한(예: 2회) 설정(결정 필요)
+- `segments_units.jsonl` (원본 데이터)
+- `segment_summaries.jsonl` (생성된 요약)
 
-출력
+**엔진**: `src/judge/judge.py`
 
-- judge/report.json
-  - [{segment_id, verdict(PASS/FAIL), reasons, flagged_sentences, regen_count}]
-- 수정된 segment_summaries.md(최종본)
+**프롬프트 버전**: `judge_v4`
 
-6. 인터페이스/모듈 경계(팀 병렬 개발용)
+**평가 기준** (0-10점 척도):
 
-권장 모듈
+| 항목                | 가중치 | 설명                                                             |
+| ------------------- | ------ | ---------------------------------------------------------------- |
+| **Groundedness**    | 45%    | 근거 없는 내용(Hallucination) 여부, 증거(evidence_refs)의 정확성 |
+| **Note Quality**    | 35%    | 노트 자체의 완성도 (강의 영상 없이도 이해 가능한지, 명확한 흐름) |
+| **Spec Compliance** | 20%    | JSON 형식, 금지어(지시 대명사 등) 사용 여부, 필수 필드 준수      |
 
-- orchestrator (ADK)
-- preprocess
-- capture
-- stt_provider_adapter (NAVER → Local 교체 가능)
-- vlm_provider_adapter
-- sync_engine
-- jsonl_writer
-- summarizer
-- judge
+**동작**:
 
-모듈 간 계약은 “파일 기반”을 1차로 권장
+1. 세그먼트별 병렬 평가 (batch_size, workers 설정 가능)
+2. 최종 평균 점수 계산
+3. 기준 미달 시 `FAIL` 판정 (기본 threshold: 7.0)
+4. `FAIL + can_rerun=True`: Summarize Agent부터 재실행
+
+**출력 (`judge.json`)**:
+
+```json
+{
+  "schema_version": 1,
+  "pass": true,
+  "final_score": 8.5,
+  "threshold": 7.0,
+  "scores": {
+    "groundedness": 8.2,
+    "note_quality": 8.8,
+    "spec_compliance": 9.0
+  },
+  "segment_reports": [...]
+}
+```
+
+---
+
+## 6. 인터페이스/모듈 경계
+
+### 6.1 모듈 구조
+
+```
+src/
+├── run_video_pipeline.py       # End-to-End CLI (벤치마크 포함)
+├── pre_adk_pipeline.py         # Pre-ADK CLI
+│
+├── adk_pipeline/               # ADK 멀티에이전트
+│   ├── agent.py                # Agent 정의 (Root + Sub-agents)
+│   ├── store.py                # VideoStore (파일시스템 추상화)
+│   ├── paths.py                # 경로 유틸리티
+│   └── tools/
+│       ├── root_tools.py
+│       ├── preprocessing_tools.py
+│       ├── summarize_tools.py
+│       ├── judge_tools.py
+│       └── internal/           # (9개 내부 모듈)
+│
+├── audio/                      # STT (4개 파일)
+├── capture/                    # Capture (tools/ 포함)
+├── vlm/                        # VLM (3개 파일)
+├── fusion/                     # Fusion (7개 파일)
+├── judge/                      # Judge (1개 파일)
+├── common/                     # 공통 스키마
+└── utils/                      # 유틸리티
+```
+
+### 6.2 모듈 간 계약
+
+모듈 간 계약은 **파일 기반**:
 
 - 이유: 장애/재시도/재개가 단순해지고, 팀이 서로의 런타임 환경 차이를 흡수하기 쉬움
+- 향후: DB 도입 시 `VideoStore` 클래스를 통해 추상화 (`src/adk_pipeline/store.py`)
 
-7. 실험 설계(문서 구조 2안 비교)
+---
 
-평가 항목(권장)
+## 7. 산출물 구조
 
-- 이해 용이성(빠른 복습): 1~5
-- 검색 용이성(특정 주제 찾기): 1~5
-- 근거성(타임라인 대비 정합): 1~5
-- 생성 비용/시간: 상대 비교
+```
+data/outputs/{video_name}/
+├── stt.json                    # STT 결과 (schema v1)
+├── {video_name}.wav            # 추출된 오디오
+├── manifest.json               # 캡처 메타데이터
+├── captures/                   # 캡처 이미지
+│   └── capture_XXXX.jpg
+├── vlm_raw.json                # VLM 원시 결과
+├── vlm.json                    # VLM 정제 결과
+├── config.yaml                 # Fusion 설정
+├── pipeline_run.json           # 실행 메타데이터
+├── benchmark_report.md         # 벤치마크 리포트
+└── fusion/
+    ├── segments.jsonl
+    ├── segments_units.jsonl
+    ├── sync.json
+    ├── trace_map.json
+    ├── segment_summaries.jsonl
+    ├── segment_summaries.md
+    ├── judge.json
+    ├── judge_segments.json     # 세그먼트별 평가
+    ├── attempts/               # 재실행 아카이브
+    │   └── attempt_01/
+    └── outputs/
+        ├── final_summary_timeline.md
+        └── final_summary_tldr_timeline.md
+```
 
-실험 절차(권장)
+---
 
-- 동일 영상 2개(슬라이드형 1, 데모형 1) 선정
-- timeline/tldr_timeline 포맷 생성
-- 팀 내 3명 이상이 평가표 작성
-- 평균 + 코멘트 기반으로 1개 포맷을 기본값으로 확정
+## 8. 향후 개선 과제
+
+자세한 내용은 `docs/PROJECT_DIRECTION.md` 및 `TODO.md` 참조.
+
+### 8.1 성능 최적화 (우선순위 높음)
+
+| 항목       | 현재 상태                                          | 개선 방향                      |
+| ---------- | -------------------------------------------------- | ------------------------------ |
+| VLM 호출   | Sequential/Batch                                   | AsyncIO 병렬화 (`AsyncOpenAI`) |
+| Summarizer | Single Call (모든 세그먼트 한 번에)                | Map-Reduce (세그먼트별 병렬)   |
+| Judge      | 세그먼트별 배치                                    | 더 세분화된 병렬 처리          |
+| 입력 토큰  | 중복 포함 (`transcript_text` + `transcript_units`) | 경량화                         |
+
+### 8.2 UX 개선 (중간 우선순위)
+
+- **스트리밍 파이프라인**: 세그먼트 2~3개 단위로 점진적 표시
+- **Fast Summary**: STT 결과만으로 빠른 초안 생성
+- **Chatbot Mode**: 특정 구간 심층 분석 요청
+
+### 8.3 인프라 (낮은 우선순위)
+
+- **DB 도입**: 로컬 파일시스템 → Database (`VideoStore` 추상화 활용)
+- **Video RAG 피벗**: Latency 한계 시 On-demand 검색 방식 전환 (`colqwen3`)

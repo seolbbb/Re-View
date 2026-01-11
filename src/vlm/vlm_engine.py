@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
 
@@ -33,14 +34,14 @@ USER_PROMPT = (
 FULL_IMAGE_BBOX = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
 DEFAULT_REQUEST_PARAMS = {
-    "temperature": 1.0,
-    "top_p": 1.0,
+    "temperature": 0.4,
+    "top_p": 0.9,
     "max_tokens": None,
     "presence_penalty": 0.0,
-    "frequency_penalty": 0.0,
+    "frequency_penalty": 0.1,
     "seed": None,
     "stream": False,
-    "stop": None,
+    "stop": ["</s>", "<|endoftext|>"],
 }
 
 BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
@@ -63,11 +64,7 @@ class OpenRouterVlmExtractor:
             raise ValueError("OPENROUTER_API_KEY is not set in the environment.")
 
         self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        self.model_name = (
-            os.getenv("OPENROUTER_VLM_MODEL")
-            or os.getenv("OPENROUTER_OCR_MODEL")
-            or "qwen/qwen3-vl-32b-instruct"
-        )
+        self.model_name = "qwen/qwen3-vl-32b-instruct"
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         self.request_params = dict(DEFAULT_REQUEST_PARAMS)
 
@@ -148,7 +145,13 @@ class OpenRouterVlmExtractor:
 
         return results
 
-    def extract_features(self, image_paths: List[str], batch_size: Optional[int] = None) -> List[OcrResult]:
+    def extract_features(
+        self,
+        image_paths: List[str],
+        batch_size: Optional[int] = None,
+        show_progress: bool = False,
+        concurrency: int = 1,
+    ) -> List[OcrResult]:
         """이미지 리스트에 대해 VLM 호출을 수행하고, 결과를 이미지 단위로 반환한다."""
         if not image_paths:
             return []
@@ -156,16 +159,62 @@ class OpenRouterVlmExtractor:
             batch_size = len(image_paths) if len(image_paths) > 1 else 1
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
         results: List[OcrResult] = []
         request_params = {k: v for k, v in self.request_params.items() if v is not None}
+        total_images = len(image_paths)
+
+        if show_progress:
+            print(
+                f"[VLM] start: images={total_images}, batch_size={batch_size}, model={self.model_name}",
+                flush=True,
+            )
+            print(f"[VLM] base_url: {self.base_url}", flush=True)
+            print(f"[VLM] concurrency: {concurrency}", flush=True)
 
         if batch_size > 1:
-            for start in range(0, len(image_paths), batch_size):
-                batch_paths = image_paths[start : start + batch_size]
-                results.extend(self._extract_batch(batch_paths, request_params))
+            batches = [
+                image_paths[start : start + batch_size]
+                for start in range(0, len(image_paths), batch_size)
+            ]
+            total_batches = len(batches)
+            if concurrency == 1 or total_batches == 1:
+                for batch_index, batch_paths in enumerate(batches, start=1):
+                    if show_progress:
+                        print(
+                            f"[VLM] request batch {batch_index}/{total_batches} "
+                            f"({len(batch_paths)} images)",
+                            flush=True,
+                        )
+                    results.extend(self._extract_batch(batch_paths, request_params))
+                    if show_progress:
+                        print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
+                return results
+
+            results_by_index: dict[int, List[OcrResult]] = {}
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                future_map = {}
+                for batch_index, batch_paths in enumerate(batches, start=1):
+                    if show_progress:
+                        print(
+                            f"[VLM] request batch {batch_index}/{total_batches} "
+                            f"({len(batch_paths)} images)",
+                            flush=True,
+                        )
+                    future = executor.submit(self._extract_batch, batch_paths, request_params)
+                    future_map[future] = batch_index
+                for future in as_completed(future_map):
+                    batch_index = future_map[future]
+                    results_by_index[batch_index] = future.result()
+                    if show_progress:
+                        print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
+
+            for batch_index in range(1, total_batches + 1):
+                results.extend(results_by_index[batch_index])
             return results
 
-        for image_path in image_paths:
+        def _extract_single(image_path: str) -> OcrResult:
             messages = [
                 {"role": "system", "content": self.system_prompt},
                 {
@@ -187,8 +236,36 @@ class OpenRouterVlmExtractor:
                 detections = [OcrBox(text=content, bbox=FULL_IMAGE_BBOX)]
             else:
                 detections = []
+            return OcrResult(image_path=image_path, raw_results=detections)
 
-            results.append(OcrResult(image_path=image_path, raw_results=detections))
+        if concurrency == 1 or total_images == 1:
+            for idx, image_path in enumerate(image_paths, start=1):
+                if show_progress:
+                    image_name = Path(image_path).name
+                    print(f"[VLM] request {idx}/{total_images}: {image_name}", flush=True)
+                result = _extract_single(image_path)
+                if show_progress:
+                    print(f"[VLM] done {idx}/{total_images}", flush=True)
+                results.append(result)
+            return results
+
+        results_by_index = {}
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            future_map = {}
+            for idx, image_path in enumerate(image_paths, start=1):
+                if show_progress:
+                    image_name = Path(image_path).name
+                    print(f"[VLM] request {idx}/{total_images}: {image_name}", flush=True)
+                future = executor.submit(_extract_single, image_path)
+                future_map[future] = idx
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                results_by_index[idx] = future.result()
+                if show_progress:
+                    print(f"[VLM] done {idx}/{total_images}", flush=True)
+
+        for idx in range(1, total_images + 1):
+            results.append(results_by_index[idx])
 
         return results
 
@@ -213,6 +290,12 @@ if __name__ == "__main__":
         help="Override the OpenRouter model name.",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Parallel batch requests (default: 1).",
+    )
+    parser.add_argument(
         "--video-name",
         required=True,
         help="data/outputs/{video_name}/vlm_raw.json 경로를 만들 때 사용할 이름",
@@ -228,7 +311,11 @@ if __name__ == "__main__":
     if args.model:
         extractor.model_name = args.model
 
-    results = extractor.extract_features(args.image)
+    results = extractor.extract_features(
+        args.image,
+        show_progress=True,
+        concurrency=args.concurrency,
+    )
     output_path = extractor.get_output_path()
     write_vlm_raw_json(results, output_path)
     print(f"[OK] saved to {output_path}")
