@@ -1,11 +1,17 @@
 """
 ================================================================================
-HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진
+HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진 (V2 Delayed Save)
 ================================================================================
 
 [목적]
     강의 영상에서 슬라이드 전환을 감지하고, 마우스/사람 등의 노이즈가 제거된
     깨끗한 슬라이드 이미지를 추출합니다.
+
+[V2 최적화 - Delayed Save 패턴]
+    - 슬라이드를 즉시 저장하지 않고, 다음 슬라이드 감지 시까지 버퍼링
+    - 다음 슬라이드의 start_ms = 이전 슬라이드의 end_ms로 확정
+    - 확정된 시점에 최종 파일명으로 한 번만 저장
+    - 후처리 rename 루프 제거 → I/O 오버헤드 감소
 
 [핵심 알고리즘]
     1. 픽셀 차이 분석 (Pixel Difference)
@@ -58,13 +64,20 @@ HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진
          │
          ▼
     ┌─────────────────────────────────────┐
-    │  5. 중복 제거 (Deduplication)       │
-    │     - Pixel + ORB + RANSAC 검사     │
-    │     - 중복이면 Dropped (DEBUG 모드 시 debug 폴더 저장) │
+    │  5. [V2] Delayed Save               │
+    │     - 다음 슬라이드 감지 시 저장    │
+    │     - end_ms 확정 후 최종 파일명으로 저장 │
     └─────────────────────────────────────┘
          │
          ▼
-    출력: captures/*.jpg + manifest.json
+    ┌─────────────────────────────────────┐
+    │  6. 중복 제거 (Deduplication)       │
+    │     - Pixel + ORB + RANSAC 검사     │
+    │     - 중복이면 Dropped              │
+    └─────────────────────────────────────┘
+         │
+         ▼
+    출력: captures/{video}_{idx}_{start_ms}_{end_ms}.jpg
 
 [임계값 설명]
     - sensitivity_diff (기본 3.0)
@@ -89,36 +102,36 @@ HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진
         min_interval=0.5
     )
     slides = extractor.process(video_name="lecture")
-    # slides = [{"file_name": "...", "timestamp_ms": ..., "timestamp_human": "..."}]
+    # slides = [{"file_name": "lecture_001_1000_5000.jpg", "start_ms": 1000, "end_ms": 5000}, ...]
 
 [출력 구조]
     output_dir/
-    ├── video_001_00h00m05s000ms_hybrid.jpg   # 캡처된 슬라이드
-    ├── video_002_00h01m30s000ms_hybrid.jpg
+    ├── video_001_1000_5000.jpg           # 캡처된 슬라이드 (V2 파일명)
+    ├── video_002_5000_30000.jpg
     ├── ...
-    ├── debug/                                 # [옵션] 중복 프레임 (코드에서 활성화 필요)
-    │   └── video_003_..._dup.jpg
-    └── process_log_hybrid.txt                # 처리 로그
+    └── capture_log.txt                   # 처리 로그
 
 [성능]
     - 단일 패스 처리 (1-Pass)
     - IDLE 상태에서 프레임 스킵으로 속도 최적화
+    - V2 Delayed Save로 I/O 오버헤드 제거
     - 5분 영상 기준 약 15~25초 처리 (CPU 의존)
 """
 
 import cv2
 import numpy as np
 import os
-import time
 import logging
 
 
 class HybridSlideExtractor:
     """
-    Hybrid 방식 슬라이드 추출기.
+    Hybrid 방식 슬라이드 추출기 (V2 Delayed Save).
     
     픽셀 차이(Pixel Difference)와 ORB 특징점 매칭을 결합하여
     강의 영상에서 슬라이드 전환을 감지하고 깨끗한 이미지를 추출합니다.
+    
+    V2에서는 Delayed Save 패턴을 사용하여 파일을 한 번만 저장합니다.
     
     Attributes:
         video_path (str): 입력 비디오 파일 경로
@@ -131,7 +144,7 @@ class HybridSlideExtractor:
         logger: 로깅 객체
     """
     
-    def __init__(self, video_path, output_dir, sensitivity_diff=2.0, sensitivity_sim=0.8, min_interval=1.0):
+    def __init__(self, video_path, output_dir, sensitivity_diff=3.0, sensitivity_sim=0.8, min_interval=0.5):
         """
         HybridSlideExtractor 초기화.
         
@@ -162,12 +175,11 @@ class HybridSlideExtractor:
         # 로거 설정
         self.logger = logging.getLogger("HybridExtractor")
         if not self.logger.handlers:
-            self.logger.addHandler(logging.NullHandler()) 
+            self.logger.addHandler(logging.NullHandler())
             
         # 출력 디렉토리 생성
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-            
+        os.makedirs(self.output_dir, exist_ok=True)
+        
         # 파일 로깅 설정 (capture_log.txt)
         log_file = os.path.join(self.output_dir, "..", "capture_log.txt")
         log_file = os.path.abspath(log_file)
@@ -180,97 +192,85 @@ class HybridSlideExtractor:
         self.file_handler = file_handler
         
         # 상태 변수 초기화
-        self.last_saved_frame = None  # 마지막으로 저장된 프레임 (중복 비교용)
-        self.current_pending_capture = None  # 버퍼링 중인 캡처 데이터
-
-    def _get_frame_signature(self, frame):
-        """프레임 시그니처 계산: 그레이스케일 + ORB 디스크립터"""
-        small = cv2.resize(frame, (640, 360))
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        _, des = self.orb.detectAndCompute(gray, None)
-        return gray, des
-
-    def _calculate_metrics(self, prev_gray, curr_gray, prev_des, curr_des):
-        """픽셀 차이와 ORB 유사도 계산"""
-        diff = cv2.absdiff(prev_gray, curr_gray)
-        _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-        kernel = np.ones((5,5), np.uint8)
-        clean_diff = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-        diff_score = np.mean(clean_diff)
+        self.last_saved_frame = None
+        self.last_saved_kp = None
+        self.last_saved_des = None
         
-        sim_score = 0.0
-        if prev_des is not None and curr_des is not None and len(prev_des) > 0 and len(curr_des) > 0:
-            matches = self.bf.match(prev_des, curr_des)
-            if len(matches) > 0:
-                good_matches = [m for m in matches if m.distance < 50]
-                sim_score = len(good_matches) / max(len(prev_des), len(curr_des))
-        
-        return diff_score, sim_score
-
-    def _format_time(self, seconds):
-        ms = int((seconds % 1) * 1000)
-        total_seconds = int(seconds)
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        secs = total_seconds % 60
-        return f"{hours:02d}h{minutes:02d}m{secs:02d}s{ms:03d}ms"
+        # [V2] Delayed Save를 위한 버퍼
+        self.pending_slide = None  # {"frame": ..., "start_ms": ...}
 
     def process(self, video_name="video"):
+        """
+        비디오를 처리하여 슬라이드를 추출합니다.
+        
+        V2에서는 Delayed Save 패턴을 사용:
+        - 슬라이드를 즉시 저장하지 않고 pending_slide에 보관
+        - 다음 슬라이드 감지 시 이전 슬라이드의 end_ms를 확정하여 저장
+        - 마지막 슬라이드는 비디오 종료 시 저장
+        
+        Args:
+            video_name (str): 출력 파일명 접두사
+            
+        Returns:
+            list: 추출된 슬라이드 메타데이터 리스트
+                  [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
+        """
         cap = cv2.VideoCapture(self.video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration_ms = int((total_frames / fps) * 1000) if fps > 0 else 0
         
         # 상태 변수 초기화
         prev_gray = None
         prev_des = None
-        last_capture_time = -self.min_interval 
+        last_capture_time = -self.min_interval
         self.last_saved_frame = None
+        self.pending_slide = None
         
-        is_in_transition = False  # 전환 중 상태
-        transition_start_time = 0.0  # 전환 시작 시간
+        is_in_transition = False
+        transition_start_time = 0.0
         
         frame_idx = 0
-        extracted_slides = []  # 추출된 슬라이드 목록
+        extracted_slides = []
+        slide_idx = 0  # 슬라이드 인덱스 (1-based)
         
         # 체크 간격 (0.5초 단위 샘플링)
-        check_step = int(fps * 0.5) 
-        if check_step < 1: check_step = 1
-        
-        # 버퍼링 상태
+        check_step = int(fps * 0.5)
+        if check_step < 1:
+            check_step = 1
+            
         current_pending_capture = None
         
         while cap.isOpened():
             # 1. 프레임 읽기
             ret, frame = cap.read()
-            if not ret: break
-            
-            frame_idx += 1
-            current_time = frame_idx / fps  # 현재 시간 (초)
-
-            # 2. 스킵 로직 (IDLE 모드에서 프레임 건너뛰기)
-            target_skip = 1
-            if self.current_pending_capture is None and not is_in_transition:
-                if frame_idx % check_step != 0 and frame_idx != 0:
-                     target_skip = check_step - (frame_idx % check_step)
-            
-            if target_skip > 1:
-                for _ in range(target_skip - 1):
-                    if not cap.grab(): break
-                    frame_idx += 1
-                continue
+            if not ret:
+                break
                 
-            # 3. 프레임 시그니처 계산 (640x360으로 축소하여 민감도 향상)
+            frame_idx += 1
+            current_time = frame_idx / fps
+            current_ms = int(current_time * 1000)
+            
+            # 2. 스킵 로직 (IDLE 모드에서 프레임 건너뛰기)
+            if current_pending_capture is None and not is_in_transition:
+                if frame_idx % check_step != 0 and frame_idx != 1:
+                    continue
+            
+            # 3. 프레임 시그니처 계산
             try:
                 small = cv2.resize(frame, (640, 360))
             except cv2.error:
                 break
             curr_gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-            _, curr_des = self.orb.detectAndCompute(curr_gray, None)
+            curr_kp, curr_des = self.orb.detectAndCompute(curr_gray, None)
+            
+            should_finalize_buffer = False
             
             if prev_gray is not None:
-                # 4. 메트릭 계산 (640x360 해상도에 맞는 5x5 커널 사용)
+                # 4. 메트릭 계산
                 diff = cv2.absdiff(prev_gray, curr_gray)
                 _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-                kernel = np.ones((5,5), np.uint8)
+                kernel = np.ones((5, 5), np.uint8)
                 clean_diff = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
                 diff_val = np.mean(clean_diff)
                 
@@ -284,85 +284,126 @@ class HybridSlideExtractor:
                 is_significant_change = (diff_val > self.sensitivity_diff or sim_val < self.sensitivity_sim)
                 
                 if not is_in_transition:
-                    # [인터럽트 로직]
-                    # 버퍼링 중에 새로운 장면 전환이 감지되면 이전 캡처를 즉시 완료
-                    if self.current_pending_capture is not None and is_significant_change:
-                         self.logger.info(f"새 전환으로 버퍼 인터럽트 at {current_time:.2f}s. 이전 캡처 완료.")
-                         self._finalize_capture(self.current_pending_capture, extracted_slides, video_name)
-                         self.current_pending_capture = None
-
+                    # [인터럽트 로직] 버퍼링 중 새 전환 감지
+                    if current_pending_capture is not None and is_significant_change:
+                        self.logger.info(f"새 전환으로 버퍼 인터럽트 at {current_time:.2f}s")
+                        should_finalize_buffer = True
+                        
                     if is_significant_change and (current_time - last_capture_time) >= self.min_interval:
-                        # 전환 시작
                         is_in_transition = True
                         transition_start_time = current_time
                         self.logger.info(f"전환 시작 at {current_time:.2f}s (Diff:{diff_val:.1f}, Sim:{sim_val:.2f})")
-                        
                 else:
-                    is_stable = (diff_val < (self.sensitivity_diff / 4.0))  # 더 엄격한 안정성 기준
+                    # 안정성 확인
+                    is_stable = (diff_val < (self.sensitivity_diff / 4.0))
                     time_in_transition = current_time - transition_start_time
                     
                     if is_stable or time_in_transition > 2.5:
                         is_in_transition = False
-                        # 캡처 트리거 (아직 완료하지 않고 버퍼링 시작)
-                        if self.current_pending_capture is None:
-                            self.current_pending_capture = {
+                        if current_pending_capture is None:
+                            current_pending_capture = {
                                 'trigger_time': current_time,
-                                'buffer': [frame.copy()], 
+                                'buffer': [frame.copy()],
                                 'buffer_start': current_time
                             }
-                            self.logger.info(f"안정 상태 감지 at {current_time:.2f}s. 마우스 제거를 위한 버퍼링 시작...")
-
-            # 5. 스마트 버퍼링 로직 (캡처 후 처리)
-            if self.current_pending_capture is not None:
-                # 현재 프레임을 버퍼에 추가
-                self.current_pending_capture['buffer'].append(frame.copy())
-                
-                # 버퍼 지속 시간 확인 (2.5초)
-                buffer_duration = current_time - self.current_pending_capture['buffer_start']
-                if buffer_duration >= 2.5:
-                     self._finalize_capture(self.current_pending_capture, extracted_slides, video_name)
-                     last_capture_time = self.current_pending_capture['trigger_time']
-                     self.current_pending_capture = None
+                            self.logger.info(f"안정 상태 감지 at {current_time:.2f}s. 버퍼링 시작...")
             
-            if not is_in_transition:
-                prev_gray = curr_gray
-                prev_des = curr_des
-            else:
-                pass
-
+            # 5. 스마트 버퍼링 로직
+            if current_pending_capture is not None:
+                if not should_finalize_buffer:
+                    current_pending_capture['buffer'].append(frame.copy())
+                    
+                buffer_duration = current_time - current_pending_capture['buffer_start']
+                if buffer_duration >= 2.5 or should_finalize_buffer:
+                    # 버퍼에서 최적 프레임 선택 및 중복 검사
+                    best_frame, should_save = self._select_best_frame_and_check_duplicate(
+                        current_pending_capture, curr_kp, curr_des
+                    )
+                    
+                    if should_save:
+                        new_start_ms = int(current_pending_capture['trigger_time'] * 1000)
+                        
+                        # [V2 핵심] Delayed Save: 이전 pending_slide를 저장
+                        if self.pending_slide is not None:
+                            slide_idx += 1
+                            end_ms = new_start_ms
+                            self._save_slide(video_name, slide_idx, self.pending_slide, end_ms, extracted_slides)
+                        
+                        # 현재 슬라이드를 pending으로 저장
+                        self.pending_slide = {
+                            'frame': best_frame,
+                            'start_ms': new_start_ms
+                        }
+                        self.last_saved_frame = best_frame
+                        
+                    last_capture_time = current_pending_capture['trigger_time']
+                    current_pending_capture = None
+            
+            # 다음 프레임 비교를 위해 업데이트
+            prev_gray = curr_gray
+            prev_des = curr_des
+            
             # 첫 프레임 특수 처리
-            if frame_idx == 1:  # frame_idx는 이미 증가됨
-                self.current_pending_capture = {
+            if frame_idx == 1:
+                current_pending_capture = {
                     'trigger_time': current_time,
                     'buffer': [frame.copy()],
                     'buffer_start': current_time
                 }
-            
-            # NOTE: frame_idx는 Line 254에서 이미 증가됨
-            # 여기서 다시 증가시키면 안 됨 (2배 타임스탬프 버그 원인이었음)
-            
-        if self.current_pending_capture:
-            self._finalize_capture(self.current_pending_capture, extracted_slides, video_name)
-            
+        
+        # 마지막 버퍼 처리
+        if current_pending_capture:
+            best_frame, should_save = self._select_best_frame_and_check_duplicate(
+                current_pending_capture, None, None
+            )
+            if should_save:
+                new_start_ms = int(current_pending_capture['trigger_time'] * 1000)
+                
+                if self.pending_slide is not None:
+                    slide_idx += 1
+                    self._save_slide(video_name, slide_idx, self.pending_slide, new_start_ms, extracted_slides)
+                
+                self.pending_slide = {
+                    'frame': best_frame,
+                    'start_ms': new_start_ms
+                }
+        
+        # [V2] 마지막 pending_slide 저장 (end_ms = duration)
+        if self.pending_slide is not None:
+            slide_idx += 1
+            self._save_slide(video_name, slide_idx, self.pending_slide, duration_ms, extracted_slides)
+        
         cap.release()
         if hasattr(self, 'file_handler'):
             self.logger.removeHandler(self.file_handler)
             self.file_handler.close()
             
         return extracted_slides
+
+    def _select_best_frame_and_check_duplicate(self, pending, curr_kp, curr_des):
+        """
+        버퍼에서 최적 프레임을 선택하고 중복 여부를 확인합니다.
         
-    def _finalize_capture(self, pending, extracted_slides, video_name):
-        if not pending['buffer']: return
+        2.5초 동안 수집된 프레임 중에서 Median에 가장 가까운 프레임을 선택하여
+        마우스 포인터나 사람 등의 노이즈가 가장 적은 프레임을 반환합니다.
         
-        current_time = pending['trigger_time']
+        Args:
+            pending (dict): 버퍼링 데이터 {"buffer": [...], ...}
+            curr_kp: 현재 프레임의 키포인트 (미사용)
+            curr_des: 현재 프레임의 디스크립터 (미사용)
+            
+        Returns:
+            tuple: (best_frame, should_save)
+                - best_frame: 선택된 최적 프레임
+                - should_save: 저장 여부 (중복이면 False)
+        """
+        if not pending['buffer']:
+            return None, False
+            
         stack = np.array(pending['buffer'])
-        
-        # [V2] 2.5초 버퍼에서 최적 프레임 선택
-        # 1. Median을 기준으로 계산 (노이즈 식별용)
         median_frame = np.median(stack, axis=0).astype(np.uint8)
         median_gray = cv2.cvtColor(cv2.resize(median_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
         
-        # 2. Median에 가장 가까운 실제 프레임 찾기 (가장 깨끗한 프레임)
         best_frame = pending['buffer'][0]
         best_diff = float('inf')
         
@@ -373,116 +414,91 @@ class HybridSlideExtractor:
                 best_diff = diff
                 best_frame = frame
         
-        self.logger.info(f"최적 프레임 선택됨: Median과의 차이 = {best_diff:.2f}")
+        self.logger.info(f"최적 프레임 선택: Median과의 차이 = {best_diff:.2f}")
         
-        # Median(합성) 대신 best_frame(실제)을 사용
-        selected_frame = best_frame
-
-        
+        # 중복 검사
         should_save = True
         if self.last_saved_frame is not None:
             last_gray = cv2.cvtColor(cv2.resize(self.last_saved_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
-            curr_gray_med = cv2.cvtColor(cv2.resize(selected_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
+            curr_gray_med = cv2.cvtColor(cv2.resize(best_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
             
-            # 1. 픽셀 차이 분석
             ddiff = cv2.absdiff(last_gray, curr_gray_med)
             dedupe_score = np.mean(ddiff)
-
             
-            # 2. ORB 유사도 분석 (구조 검사)
-            # 캐시된 디스크립터가 있으면 사용, 없으면 계산
-            if hasattr(self, 'last_saved_des') and self.last_saved_des is not None and hasattr(self, 'last_saved_kp') and self.last_saved_kp is not None:
+            # ORB 유사도
+            if self.last_saved_des is not None and self.last_saved_kp is not None:
                 last_des = self.last_saved_des
                 last_kp = self.last_saved_kp
             else:
                 last_kp, last_des = self.orb.detectAndCompute(last_gray, None)
-                
-            curr_kp, curr_des = self.orb.detectAndCompute(curr_gray_med, None)
+            
+            new_kp, new_des = self.orb.detectAndCompute(curr_gray_med, None)
             
             sim_score = 0.0
-            matches = []
             good_matches = []
             
-            if last_des is not None and curr_des is not None and len(last_des) > 0 and len(curr_des) > 0:
-                matches = self.bf.match(last_des, curr_des)
+            if last_des is not None and new_des is not None and len(last_des) > 0 and len(new_des) > 0:
+                matches = self.bf.match(last_des, new_des)
                 if len(matches) > 0:
                     good_matches = [m for m in matches if m.distance < 50]
-                    sim_score = len(good_matches) / max(len(last_des), len(curr_des))
-            
-            # 중복 제거 로직:
-            # 1. 픽셀 Diff: 매우 낮으면 (< sensitivity) 중복
-            # 2. 구조 (Sim): 매우 높으면 (> sensitivity) 중복  
-            # 3. [NEW] 기하학적 일관성 (RANSAC):
-            #    Sim이 낮아도 (예: 사람이 가림) 남은 매치가 고정된 슬라이드를 형성하는지 확인
-            #    충분한 Inlier가 이전 슬라이드와 일치하면 동일 슬라이드 (전경 노이즈)
+                    sim_score = len(good_matches) / max(len(last_des), len(new_des))
             
             is_duplicate = False
-            ransac_inliers = 0
             
-            # 기본 검사
-            # Sim이 최소 0.5 이상일 때만 중복으로 판정
-            # Sim < 0.5이면 다른 슬라이드 - 팝업/메뉴, 항상 캡처
+            # 기본 검사: Sim >= 0.5이고 (Diff < threshold OR Sim > threshold)
             if sim_score >= 0.5 and (dedupe_score < self.sensitivity_diff or sim_score > self.sensitivity_sim):
                 is_duplicate = True
             
-            # 고급 검사 (아직 중복이 아니지만 '슬라이드 + 사람'일 수 있음)
-            elif len(good_matches) > 10:
-                # 좋은 매치의 위치 추출 (키포인트 필요!)
+            # RANSAC 검사 (고급)
+            elif len(good_matches) > 10 and last_kp is not None and new_kp is not None:
                 src_pts = np.float32([last_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                dst_pts = np.float32([curr_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                dst_pts = np.float32([new_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                 
-                # RANSAC (고정된 배경 찾기)
                 if len(src_pts) > 4:
                     M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
                     if mask is not None:
                         ransac_inliers = np.sum(mask)
-                        # 원래 구조의 15% 이상이 고정적으로 보존되면 동일 슬라이드일 가능성 높음
-                        # (85%가 사람에 의해 가려져도)
-                        inlier_ratio = ransac_inliers / len(last_des)
+                        inlier_ratio = ransac_inliers / len(last_des) if len(last_des) > 0 else 0
                         
-                        # [정제된 로직]
-                        # 픽셀 Diff가 치명적이지 않을 때만 RANSAC 신뢰
-                        # Diff > 20.0 (대규모 변화)이면 동일 템플릿의 새 슬라이드일 수 있음. 캡처.
-                        # [NEW] Sim Score도 확인. Sim < 0.5 (대규모 구조 변화)면 캡처.
-                        if inlier_ratio > 0.15 and dedupe_score < 20.0 and sim_score >= 0.5: 
+                        if inlier_ratio > 0.15 and dedupe_score < 20.0 and sim_score >= 0.5:
                             is_duplicate = True
-                            self.logger.info(f"Geometric Fix: Low Sim ({sim_score:.2f}) but High Inliers ({ransac_inliers}, {inlier_ratio:.2f}) -> Duplicate")
-                        elif inlier_ratio > 0.15 and (dedupe_score >= 20.0 or sim_score < 0.5):
-                             self.logger.info(f"Geometric Bypass: High Inliers ({ransac_inliers}) but Massive Change (Diff {dedupe_score:.1f}, Sim {sim_score:.2f}) -> Capture")
-
+                            self.logger.info(f"RANSAC 중복 감지: Inliers={ransac_inliers}, Ratio={inlier_ratio:.2f}")
+            
             if is_duplicate:
                 should_save = False
-                
-                # [추적용] 중복을 'debug' 폴더에 저장 (필요 시 주석 해제)
-                # time_str = self._format_time(current_time)
-                # # 파일명에 RANSAC 정보 포함
-                # dup_filename = f"{video_name}_{len(extracted_slides)+1:03d}_{time_str}_diff{dedupe_score:.1f}_sim{sim_score:.2f}_inliers{ransac_inliers}_dup.jpg"
-                # dup_dir = os.path.join(self.output_dir, "debug")
-                # os.makedirs(dup_dir, exist_ok=True)
-                # dup_path = os.path.join(dup_dir, dup_filename)
-                
-                # cv2.imwrite(dup_path, selected_frame)
-                
-                # self.logger.info(f"저장됨 (중복): {dup_filename}")
-                self.logger.info(f"중복 감지됨 (Drop): Diff={dedupe_score:.1f}, Sim={sim_score:.2f}")
+                self.logger.info(f"Duplicate/Dropped: Diff={dedupe_score:.1f}, Sim={sim_score:.2f}")
             else:
-                self.last_saved_des = curr_des  # 다음 비교를 위해 캐시
-                self.last_saved_kp = curr_kp    # 키포인트도 캐시
+                self.last_saved_des = new_des
+                self.last_saved_kp = new_kp
         
-        if should_save:
-            time_str = self._format_time(current_time)
-            filename = f"{video_name}_{len(extracted_slides)+1:03d}_{time_str}_hybrid.jpg"
-            save_path = os.path.join(self.output_dir, filename)
-            
-            cv2.imwrite(save_path, selected_frame)
-            extracted_slides.append({
-                "file_name": filename,
-                "timestamp_ms": int(current_time * 1000),
-                "timestamp_human": time_str
-            })
-            
-            self.logger.info(f"Captured/Finalized: {filename} (Samples: {len(pending['buffer'])})")
-            if hasattr(self, 'file_handler'):
-                self.file_handler.flush()
-            
-            self.last_saved_frame = selected_frame
+        return best_frame, should_save
+
+    def _save_slide(self, video_name, idx, slide_data, end_ms, extracted_slides):
+        """
+        슬라이드를 파일로 저장합니다.
+        
+        V2 파일명 형식: {video_name}_{idx:03d}_{start_ms}_{end_ms}.jpg
+        
+        Args:
+            video_name (str): 비디오 이름
+            idx (int): 슬라이드 인덱스 (1-based)
+            slide_data (dict): {"frame": ..., "start_ms": ...}
+            end_ms (int): 슬라이드 종료 시간 (ms)
+            extracted_slides (list): 결과 리스트에 추가
+        """
+        start_ms = slide_data['start_ms']
+        frame = slide_data['frame']
+        
+        filename = f"{video_name}_{idx:03d}_{start_ms}_{end_ms}.jpg"
+        save_path = os.path.join(self.output_dir, filename)
+        
+        cv2.imwrite(save_path, frame)
+        
+        extracted_slides.append({
+            "file_name": filename,
+            "start_ms": start_ms,
+            "end_ms": end_ms
+        })
+        
+        time_str = f"{start_ms//3600000:02d}h{(start_ms//60000)%60:02d}m{(start_ms//1000)%60:02d}s{start_ms%1000:03d}ms"
+        self.logger.info(f"Saved: {filename} ({time_str})")
