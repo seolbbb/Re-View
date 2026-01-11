@@ -44,9 +44,6 @@ process_content.py - Hybrid 슬라이드 캡처 파이프라인 (Production Defa
 [연동]
     - 직접 실행: python src/capture/process_content.py
     - 파이프라인 호출: run_video_pipeline.py -> process_single_video_capture()
-
-[최종 수정] 2026-01-07
-================================================================================
 """
 
 import os
@@ -55,6 +52,9 @@ import glob
 import time
 import logging
 import shutil
+import json
+import cv2
+from pathlib import Path
 
 # ============================================================
 # 프로젝트 경로 구성
@@ -110,9 +110,11 @@ def process_single_video_capture(
     min_interval: float = 0.5
 ) -> list:
     """
-    run_video_pipeline.py와의 호환성을 위한 엔트리포인트.
-    내부적으로 HybridSlideExtractor를 사용하여 슬라이드를 캡처합니다.
-    
+    [역할]
+    run_video_pipeline.py에서 호출되는 메인 캡처 함수입니다.
+    HybridSlideExtractor를 초기화하고 실행하여 슬라이드를 캡처한 후,
+    manifest.json 파일을 생성하고 포맷을 변환(Interval)합니다.
+
     Args:
         video_path: 입력 비디오 파일의 절대 경로
         output_base: 출력 베이스 디렉토리 
@@ -123,15 +125,12 @@ def process_single_video_capture(
     
     Returns:
         list: 캡처된 슬라이드 메타데이터 리스트
-              [{"file_name": "...", "timestamp_ms": ..., "timestamp_human": "..."}, ...]
+              [{"file_name": "...", "start_ms": ..., "end_ms": ...}, ...]
     
     Side Effects:
         - {output_base}/{video_name}/captures/ 폴더에 이미지 저장
         - {output_base}/{video_name}/manifest.json 파일 생성
     """
-    from pathlib import Path
-    import json
-    
     video_name = Path(video_path).stem
     video_output_root = os.path.join(output_base, video_name)
     captures_dir = os.path.join(video_output_root, "captures")
@@ -151,19 +150,61 @@ def process_single_video_capture(
     slides = extractor.process(video_name=video_name)
     
     # manifest.json 저장 (run_video_pipeline.py가 VLM 처리에 사용)
+    # [변경] timestamp_ms -> start_ms, end_ms (Interval) 구조로 변환
+    cap = cv2.VideoCapture(video_path)
+    if cap.isOpened():
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        duration_ms = int((frame_count / fps) * 1000) if fps > 0 else 0
+        cap.release()
+    else:
+        duration_ms = 0 # Fallback
+
+    refined_slides = []
+    for i, slide in enumerate(slides):
+        start_ms = slide.pop("timestamp_ms")
+        
+        # Calculate end_ms
+        if i < len(slides) - 1:
+            end_ms = slides[i+1]["timestamp_ms"]
+        else:
+            end_ms = duration_ms
+            
+        # Ensure valid interval
+        if end_ms < start_ms:
+            end_ms = start_ms # Should not happen usually
+
+        # [NEW] 파일명 변경: sample1_001_{start_ms}_{end_ms}.jpg
+        old_filename = slide["file_name"]
+        new_filename = f"{video_name}_{i+1:03d}_{start_ms}_{end_ms}.jpg"
+        
+        old_path = os.path.join(captures_dir, old_filename)
+        new_path = os.path.join(captures_dir, new_filename)
+        
+        if os.path.exists(old_path):
+            os.rename(old_path, new_path)
+
+        refined_slides.append({
+            "file_name": new_filename,
+            "start_ms": start_ms,
+            "end_ms": end_ms
+        })
+
     manifest_path = os.path.join(video_output_root, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(slides, f, ensure_ascii=False, indent=2)
+        json.dump(refined_slides, f, ensure_ascii=False, indent=2)
     
-    print(f"[Capture] Completed: {len(slides)} slides captured")
+    print(f"[Capture] Completed: {len(refined_slides)} slides captured")
     
-    return slides
+    return refined_slides
 
 
 def process_single_video_v2(video_path: str, output_root: str) -> None:
     """
-    단일 비디오에 대해 Hybrid 캡처를 수행합니다.
-    독립 실행(main)에서 사용되는 함수입니다.
+    [역할]
+    이 스크립트를 독립적으로 실행할 때(python process_content.py) 사용되는 함수입니다.
+    단일 비디오 파일에 대해 캡처를 수행하고, 로그 파일을 정리하며,
+    최종 처리 결과에 대한 요약 테이블을 출력합니다.
     
     Args:
         video_path: 입력 비디오 파일 경로
@@ -181,7 +222,7 @@ def process_single_video_v2(video_path: str, output_root: str) -> None:
     os.makedirs(captures_dir, exist_ok=True)
     
     # 이전 로그 파일 정리
-    for log_name in ["process_log_fast.txt", "process_log_ultimate.txt", "process_log_hybrid.txt"]:
+    for log_name in ["process_log_fast.txt", "process_log_ultimate.txt", "process_log_hybrid.txt", "capture_log.txt"]:
         log_path = os.path.join(video_output_dir, log_name)
         if os.path.exists(log_path):
             os.remove(log_path)
@@ -205,10 +246,46 @@ def process_single_video_v2(video_path: str, output_root: str) -> None:
     elapsed = time.time() - start_time
     
     # manifest.json 저장 (캡처 메타데이터)
-    import json
+    # Duration calculation for standalone run
+    cap = cv2.VideoCapture(video_path)
+    if cap.isOpened():
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        duration_ms = int((frame_count / fps) * 1000) if fps > 0 else 0
+        cap.release()
+    else:
+        duration_ms = 0
+
+    refined_slides = []
+    for i, slide in enumerate(slides):
+        start_ms = slide.pop("timestamp_ms")
+        if i < len(slides) - 1:
+            end_ms = slides[i+1]["timestamp_ms"]
+        else:
+            end_ms = duration_ms
+        
+        if end_ms < start_ms:
+            end_ms = start_ms # Should not happen usually
+
+        # [NEW] 파일명 변경: sample1_001_{start_ms}_{end_ms}.jpg
+        old_filename = slide["file_name"]
+        new_filename = f"{video_name}_{i+1:03d}_{start_ms}_{end_ms}.jpg"
+        
+        old_path = os.path.join(captures_dir, old_filename)
+        new_path = os.path.join(captures_dir, new_filename)
+        
+        if os.path.exists(old_path):
+            os.rename(old_path, new_path)
+
+        refined_slides.append({
+            "file_name": new_filename,
+            "start_ms": start_ms,
+            "end_ms": end_ms
+        })
+
     manifest_path = os.path.join(video_output_dir, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(slides, f, ensure_ascii=False, indent=2)
+        json.dump(refined_slides, f, ensure_ascii=False, indent=2)
     
     # 결과 요약 출력
     metrics = {
@@ -223,30 +300,50 @@ def process_single_video_v2(video_path: str, output_root: str) -> None:
 
 def main() -> None:
     """
-    메인 엔트리포인트: src/data/input/ 폴더의 모든 MP4 파일을 처리합니다.
-    
-    사용법:
-        python src/capture/process_content.py
+    [역할]
+    스크립트의 진입점(Entry Point)입니다.
+    선택적인 오디오 파일 경로 인자를 받아 처리하거나, 
+    인자가 없는 경우 설정된 입력 폴더(src/data/input) 내의 모든 MP4 파일을 검색하여
+    순차적으로 캡처 프로세스를 실행합니다.
     """
+    import argparse
+    parser = argparse.ArgumentParser(description="Hybrid Slide Capture Pipeline")
+    parser.add_argument("--video", help="특정 비디오 파일 하나만 처리할 경우 경로 지정", default=None)
+    
+    args = parser.parse_args()
+
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-        
-    # 입력 폴더에서 MP4 파일 검색
-    video_files = glob.glob(os.path.join(INPUT_DIR, "*.mp4"))
+    
+    video_files = []
+    
+    if args.video:
+        # 특정 비디오 지정 모드
+        target_path = os.path.abspath(args.video)
+        if not os.path.exists(target_path):
+            print(f"Error: Video file not found: {target_path}")
+            return
+        video_files.append(target_path)
+    else:
+        # 배치 처리 모드 (기본 동작)
+        # 입력 폴더에서 MP4 파일 검색
+        video_files = glob.glob(os.path.join(INPUT_DIR, "*.mp4"))
+
     if not video_files:
         print("Warning: No video files to process.")
         return
         
     print(f"============================================================")
-    print(f"Hybrid Pipeline v2: Single-Pass High Efficiency")
+    print(f"Capture Pipeline Started (Target: {len(video_files)} files)")
     print(f"============================================================")
     
     # 각 비디오 파일 처리
     for video_path in video_files:
         process_single_video_v2(video_path, OUTPUT_DIR)
         
-    print("\n[Done] All videos processed successfully.")
-
+    print(f"============================================================")
+    print(f"Capture Pipeline Completed")
+    print(f"============================================================")
 
 if __name__ == "__main__":
     main()
