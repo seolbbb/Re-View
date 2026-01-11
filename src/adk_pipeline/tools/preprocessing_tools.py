@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from google.adk.tools import ToolContext
 
@@ -97,6 +97,25 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
             "message": "vlm.json이 이미 존재합니다. 스킵합니다.",
         }
 
+    raw_batch_size = tool_context.state.get("vlm_batch_size", 2)
+    raw_concurrency = tool_context.state.get("vlm_concurrency", 3)
+    show_progress = bool(tool_context.state.get("vlm_show_progress", True))
+
+    try:
+        batch_size: Optional[int]
+        if raw_batch_size is None:
+            batch_size = None
+        else:
+            batch_size = int(raw_batch_size)
+            if batch_size < 1:
+                return {"success": False, "error": "vlm_batch_size는 1 이상이어야 합니다."}
+
+        concurrency = int(raw_concurrency)
+        if concurrency < 1:
+            return {"success": False, "error": "vlm_concurrency는 1 이상의 정수여야 합니다."}
+    except (TypeError, ValueError):
+        return {"success": False, "error": "VLM 설정 값이 올바르지 않습니다."}
+
     try:
         from .internal.vlm_openrouter import run_vlm_openrouter
         run_vlm_openrouter(
@@ -104,7 +123,9 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
             manifest_json=store.manifest_json(),
             video_name=video_name,
             output_base=_OUTPUT_BASE,
-            batch_size=None,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            show_progress=show_progress,
         )
 
         return {
