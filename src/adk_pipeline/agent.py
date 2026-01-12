@@ -134,7 +134,7 @@ merge_agent = Agent(
 
 
 root_agent = Agent(
-    name="Re-View-Pipeline",
+    name="Re_View_Pipeline",
     model="gemini-2.5-flash",
     description="Re:View 비디오 파이프라인을 조율하는 Root Agent",
     instruction="""당신은 Re-View 파이프라인의 Root Agent입니다.
