@@ -74,6 +74,7 @@ def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
 
             # fusion 폴더에도 append (누적 저장)
             fusion_summaries = store.segment_summaries_jsonl()
+            fusion_summaries.parent.mkdir(parents=True, exist_ok=True)  # fusion 폴더 생성
             if summaries_output.exists():
                 with open(summaries_output, "r", encoding="utf-8") as f:
                     batch_content = f.read()

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from src.fusion.config import load_config
-from src.fusion.summarizer import run_summarizer
+from src.fusion.summarizer import run_summarizer, run_batch_summarizer
 
 
 def run_segment_summarizer(

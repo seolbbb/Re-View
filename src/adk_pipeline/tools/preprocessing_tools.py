@@ -274,13 +274,28 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
             # cumulative segment count로 segment_id offset 관리
             cumulative_segment_count = tool_context.state.get("cumulative_segment_count", 0)
 
+            # sync_config 로드
+            from src.fusion.config import load_config
+            config = load_config(str(store.fusion_config_yaml()))
+            sync_config = {
+                "min_segment_sec": config.raw.sync_engine.min_segment_sec,
+                "max_segment_sec": config.raw.sync_engine.max_segment_sec,
+                "max_transcript_chars": config.raw.sync_engine.max_transcript_chars,
+                "silence_gap_ms": config.raw.sync_engine.silence_gap_ms,
+                "max_visual_items": config.raw.sync_engine.max_visual_items,
+                "max_visual_chars": config.raw.sync_engine.max_visual_chars,
+                "dedup_similarity_threshold": config.raw.sync_engine.dedup_similarity_threshold,
+            }
+
             # Sync 실행 (배치 범위 지정)
             from .internal.sync_data import run_batch_sync_engine
             result = run_batch_sync_engine(
-                fusion_config_path=store.fusion_config_yaml(),
-                vlm_path=vlm_path,
-                output_path=segments_output,
+                stt_json=store.stt_json(),
+                vlm_json=vlm_path,
+                manifest_json=store.manifest_json(),
+                output_dir=batch_dir,
                 time_range=(start_ms, end_ms),
+                sync_config=sync_config,
                 segment_id_offset=cumulative_segment_count,
             )
 

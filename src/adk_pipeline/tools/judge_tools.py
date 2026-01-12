@@ -96,6 +96,11 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
             }
 
         try:
+            min_score = _read_float(tool_context.state.get("judge_min_score"), 7.0)
+            include_segments = _read_bool(
+                tool_context.state.get("judge_include_segments"), False
+            )
+
             from .internal.judge_gemini import run_judge_gemini
             result = run_judge_gemini(
                 fusion_config_path=store.fusion_config_yaml(),
@@ -107,6 +112,8 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
                 json_repair_attempts=1,
                 limit=None,
                 verbose=False,
+                min_score=min_score,
+                include_segments=include_segments,
             )
 
             final_score = float(result.get("final_score", 0.0))
