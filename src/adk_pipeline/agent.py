@@ -134,38 +134,57 @@ merge_agent = Agent(
 
 
 root_agent = Agent(
-    name="Re_View_Pipeline",
+    name="screentime_pipeline",
     model="gemini-2.5-flash",
-    description="Re:View 비디오 파이프라인을 조율하는 Root Agent",
-    instruction="""당신은 Re-View 파이프라인의 Root Agent입니다.
+    description="ReView 비디오 파이프라인을 조율하는 Root Agent",
+    instruction="""당신은 ReView 파이프라인의 Root Agent입니다.
 
 ## 역할
 사용자와 대화하면서 비디오 처리 파이프라인을 조율합니다.
 
-## 기본 동작: 배치 모드
-- 기본 5장씩 분할 처리
-- `batch_size` 옵션으로 사용자가 조절 가능
+## 사용 가능한 도구
 
-## 파이프라인 실행 (step-by-step)
+### 기본 도구
+1. **list_available_videos**: 처리 가능한 비디오 목록 조회
+2. **set_pipeline_config**: 비디오 선택 및 설정
+   - video_name: 비디오 이름 (필수)
+   - batch_size: 배치당 캡처 개수 (기본: 4장)
+   - batch_mode: 배치 모드 여부 (기본: True)
+3. **get_pipeline_status**: 현재 파이프라인 상태 조회
+
+### 배치 관리 도구
+4. **init_batch_mode**: 배치 모드 초기화
+5. **get_batch_info**: 현재 배치 상태 조회 (all_completed 확인용)
+6. **get_current_batch_time_range**: 현재 배치의 시간 범위 조회
+7. **mark_batch_complete**: 배치 완료 표시 후 다음 배치로 이동
+8. **get_previous_context**: 이전 배치 요약 context 조회
+
+## Sub-Agents
+1. **preprocessing_agent**: VLM + Sync 실행
+2. **summarize_agent**: 요약 생성 + 배치 MD 렌더링
+3. **judge_agent**: 품질 평가 (PASS/FAIL)
+4. **merge_agent**: 모든 배치 병합 + 최종 요약
+
+## 파이프라인 실행 순서
 
 사용자가 "test3 요약해줘" 같이 요청하면:
 
-**STEP 1**: set_pipeline_config(video_name="test3" 포함하는 이름) 호출
+**STEP 1**: set_pipeline_config(video_name="test3_xxx") 호출
 **STEP 2**: preprocessing_agent로 transfer
-**STEP 3**: (preprocessing 완료 후) summarize_agent로 transfer
-**STEP 4**: (summarize 완료 후) judge_agent로 transfer
-**STEP 5**: (judge 완료 후) "배치 X 완료" 사용자에게 알리고 summarizer 요약 결과 표시
+**STEP 3**: summarize_agent로 transfer
+**STEP 4**: judge_agent로 transfer
+**STEP 5**: "배치 X 완료" 사용자에게 알림
 **STEP 6**: get_batch_info 호출하여 all_completed 확인
 
 **STEP 7** (조건 분기):
-- all_completed=False → mark_batch_complete 후 **STEP 2로 돌아가세요**
-- all_completed=True → merge_agent로 transfer
+- all_completed=False: mark_batch_complete 후 STEP 2로 돌아감
+- all_completed=True: merge_agent로 transfer
 
-**STEP 8**: (merge 완료 후) "최종 요약 완료!" 사용자에게 알림
+**STEP 8**: "최종 요약 완료!" 사용자에게 알림
 
 ## 에러 처리
-- Sub-agent가 에러를 반환하면: 해당 agent를 다시 transfer (최대 2회)
-- 사용자가 중단을 요청하지 않는 한 파이프라인을 끝까지 진행하세요
+- Sub-agent 에러 시 해당 agent 재실행 (최대 2회)
+- 사용자가 중단 요청하지 않는 한 파이프라인 끝까지 진행
 """,
     tools=[
         list_available_videos,
@@ -184,7 +203,7 @@ root_agent = Agent(
         merge_agent,
     ],
     generate_content_config=types.GenerateContentConfig(
-        temperature=0.1,
+        temperature=0.2,
     ),
 )
 

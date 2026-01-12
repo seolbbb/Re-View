@@ -73,7 +73,7 @@ def set_pipeline_config(
     vlm_concurrency: int = 3,
     vlm_show_progress: bool = True,
     batch_mode: bool = True,
-    batch_size: int = 5,
+    batch_size: int = 4,
     context_max_chars: int = 500,
 ) -> Dict[str, Any]:
     """파이프라인 설정을 변경합니다.
@@ -88,7 +88,7 @@ def set_pipeline_config(
         vlm_concurrency: VLM 병렬 요청 수 (기본: 3)
         vlm_show_progress: VLM 진행 로그 출력 여부 (기본: True)
         batch_mode: 배치 처리 모드 활성화 (기본: True)
-        batch_size: 배치당 캡처 개수 (기본: 5장)
+        batch_size: 배치당 캡처 개수 (기본: 4장)
         context_max_chars: 이전 배치 context 최대 문자 수 (기본: 500)
 
     Returns:

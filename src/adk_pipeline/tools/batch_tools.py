@@ -80,7 +80,7 @@ def _extract_context_from_summaries(
 
 def init_batch_mode(
     tool_context: ToolContext,
-    batch_size: int = 5,
+    batch_size: int = 4,
     context_max_chars: int = 500,
 ) -> Dict[str, Any]:
     """배치 모드를 초기화합니다.
@@ -89,7 +89,7 @@ def init_batch_mode(
     이미지(캡처) 개수 기반으로 배치를 분할하여 맥락 연결성을 유지합니다.
 
     Args:
-        batch_size: 배치당 캡처 개수 (기본 5장)
+        batch_size: 배치당 캡처 개수 (기본 4장)
         context_max_chars: 이전 배치 context 최대 문자 수 (기본 500)
 
     Returns:
