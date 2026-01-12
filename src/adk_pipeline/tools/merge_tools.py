@@ -79,44 +79,52 @@ def merge_all_batches(tool_context: ToolContext) -> Dict[str, Any]:
 
     for batch_idx in range(total_batches):
         batch_dir = store.batch_dir(batch_idx)
+        batch_has_data = False
 
         # VLM 데이터 병합
         vlm_path = store.batch_vlm_json(batch_idx)
         if vlm_path.exists():
             with open(vlm_path, "r", encoding="utf-8") as f:
                 vlm_data = json.load(f)
-                if isinstance(vlm_data, list):
+                # schema_version/items 형식
+                if isinstance(vlm_data, dict):
+                    items = vlm_data.get("items", [])
+                    all_vlm_data.extend(items)
+                    batch_has_data = True
+                elif isinstance(vlm_data, list):
+                    # 레거시 형식
                     all_vlm_data.extend(vlm_data)
-                elif isinstance(vlm_data, dict):
-                    # captures 형식인 경우
-                    captures = vlm_data.get("captures", [])
-                    all_vlm_data.extend(captures)
+                    batch_has_data = True
 
         # Segments 병합
         segments_path = store.batch_segments_units_jsonl(batch_idx)
         if segments_path.exists():
             batch_segments = _read_jsonl(segments_path)
             all_segments.extend(batch_segments)
+            batch_has_data = True
 
         # Summaries 병합
         summaries_path = store.batch_segment_summaries_jsonl(batch_idx)
         if summaries_path.exists():
             batch_summaries = _read_jsonl(summaries_path)
             all_summaries.extend(batch_summaries)
+            batch_has_data = True
 
-        merged_batch_count += 1
+        # 실제 데이터가 있는 배치만 카운트
+        if batch_has_data:
+            merged_batch_count += 1
 
     if merged_batch_count == 0:
         return {"success": False, "error": "병합할 배치가 없습니다."}
 
     merged_files = []
 
-    # VLM 병합 결과 저장
+    # VLM 병합 결과 저장 (schema_version/items 형식)
     if all_vlm_data:
         vlm_output = store.vlm_json()
         vlm_output.parent.mkdir(parents=True, exist_ok=True)
         with open(vlm_output, "w", encoding="utf-8") as f:
-            json.dump({"captures": all_vlm_data}, f, ensure_ascii=False, indent=2)
+            json.dump({"schema_version": 1, "items": all_vlm_data}, f, ensure_ascii=False, indent=2)
         merged_files.append(str(vlm_output))
 
     # Segments 병합 결과 저장

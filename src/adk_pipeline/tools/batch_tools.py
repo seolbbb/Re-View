@@ -80,22 +80,23 @@ def _extract_context_from_summaries(
 
 def init_batch_mode(
     tool_context: ToolContext,
-    batch_duration_ms: int = 200000,
+    batch_capture_count: int = 10,
     context_max_chars: int = 500,
 ) -> Dict[str, Any]:
     """배치 모드를 초기화합니다.
 
-    manifest.json에서 duration을 계산하고 배치 개수를 결정합니다.
+    manifest.json에서 캡처 개수를 확인하고 배치 개수를 결정합니다.
+    이미지(캡처) 개수 기반으로 배치를 분할하여 맥락 연결성을 유지합니다.
 
     Args:
-        batch_duration_ms: 배치당 시간 길이 (밀리초, 기본 200000ms = 약 3.3분)
+        batch_capture_count: 배치당 캡처 개수 (기본 10장)
         context_max_chars: 이전 배치 context 최대 문자 수 (기본 500)
 
     Returns:
         success: 초기화 성공 여부
-        total_duration_ms: 전체 비디오 길이
+        total_captures: 전체 캡처 개수
         total_batches: 전체 배치 개수
-        batch_duration_ms: 배치당 시간 길이
+        batch_capture_count: 배치당 캡처 개수
     """
     video_name = tool_context.state.get("video_name")
     if not video_name:
@@ -103,7 +104,7 @@ def init_batch_mode(
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
 
-    # manifest.json에서 duration 계산
+    # manifest.json 로드
     manifest = _load_manifest(store.manifest_json())
     if not manifest:
         return {"success": False, "error": "manifest.json이 없거나 비어있습니다."}
@@ -112,47 +113,82 @@ def init_batch_mode(
     stt = _load_stt(store.stt_json())
     stt_duration_ms = stt.get("duration_ms")
 
-    # manifest의 마지막 캡처 타임스탬프
-    max_timestamp_ms = max(
-        item.get("timestamp_ms", item.get("start_ms", 0))
-        for item in manifest
+    # 전체 캡처 개수
+    total_captures = len(manifest)
+
+    # manifest를 타임스탬프 순으로 정렬
+    sorted_manifest = sorted(
+        manifest,
+        key=lambda x: x.get("timestamp_ms", x.get("start_ms", 0))
     )
 
-    # duration 결정: stt_duration_ms가 있으면 사용, 없으면 manifest에서 추정
-    if stt_duration_ms:
-        total_duration_ms = int(stt_duration_ms)
-    else:
-        # manifest의 마지막 타임스탬프 + 여유 시간
-        total_duration_ms = max_timestamp_ms + 10000
+    # 배치 개수 계산 (캡처 개수 기반)
+    total_batches = max(1, math.ceil(total_captures / batch_capture_count))
 
-    # 배치 개수 계산
-    total_batches = max(1, math.ceil(total_duration_ms / batch_duration_ms))
+    # 각 배치의 캡처 인덱스 범위 계산
+    batch_ranges: List[Dict[str, Any]] = []
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_capture_count
+        end_idx = min((batch_idx + 1) * batch_capture_count, total_captures)
 
-    # 캡처 개수
-    total_captures = len(manifest)
+        # 해당 범위의 캡처들
+        batch_captures = sorted_manifest[start_idx:end_idx]
+
+        if batch_captures:
+            # 시간 범위 계산 (해당 캡처들의 시간 범위)
+            start_ms = batch_captures[0].get("timestamp_ms", batch_captures[0].get("start_ms", 0))
+            end_ms = batch_captures[-1].get("timestamp_ms", batch_captures[-1].get("start_ms", 0))
+            # 마지막 캡처 이후 약간의 여유 추가
+            if batch_idx == total_batches - 1 and stt_duration_ms:
+                end_ms = stt_duration_ms
+            else:
+                end_ms = end_ms + 30000  # 30초 여유
+
+            batch_ranges.append({
+                "batch_idx": batch_idx,
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+                "capture_count": end_idx - start_idx,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+            })
 
     # batches 디렉토리 생성
     store.batches_dir().mkdir(parents=True, exist_ok=True)
 
     # state에 배치 정보 저장
     tool_context.state["batch_mode"] = True
-    tool_context.state["batch_duration_ms"] = batch_duration_ms
-    tool_context.state["total_duration_ms"] = total_duration_ms
+    tool_context.state["batch_capture_count"] = batch_capture_count
+    tool_context.state["total_captures"] = total_captures
     tool_context.state["total_batches"] = total_batches
+    tool_context.state["batch_ranges"] = batch_ranges
+    tool_context.state["sorted_manifest"] = sorted_manifest
     tool_context.state["current_batch_index"] = 0
     tool_context.state["completed_batches"] = []
     tool_context.state["context_max_chars"] = context_max_chars
     tool_context.state["previous_context"] = ""
+    tool_context.state["cumulative_segment_count"] = 0  # segment_id 오프셋용
+
+    # duration_ms도 저장 (기존 호환성)
+    if stt_duration_ms:
+        tool_context.state["total_duration_ms"] = stt_duration_ms
+    else:
+        max_timestamp = max(
+            item.get("timestamp_ms", item.get("start_ms", 0))
+            for item in manifest
+        )
+        tool_context.state["total_duration_ms"] = max_timestamp + 10000
 
     return {
         "success": True,
-        "total_duration_ms": total_duration_ms,
-        "total_batches": total_batches,
-        "batch_duration_ms": batch_duration_ms,
         "total_captures": total_captures,
+        "total_batches": total_batches,
+        "batch_capture_count": batch_capture_count,
+        "batch_ranges": batch_ranges,
         "context_max_chars": context_max_chars,
-        "message": f"배치 모드 초기화 완료. 총 {total_batches}개 배치로 처리합니다.",
+        "message": f"배치 모드 초기화 완료. 총 {total_captures}장을 {total_batches}개 배치로 처리합니다. (배치당 {batch_capture_count}장)",
     }
+
 
 
 def get_batch_info(tool_context: ToolContext) -> Dict[str, Any]:
@@ -189,11 +225,13 @@ def get_batch_info(tool_context: ToolContext) -> Dict[str, Any]:
 
 
 def get_current_batch_time_range(tool_context: ToolContext) -> Dict[str, Any]:
-    """현재 배치의 시간 범위를 반환합니다.
+    """현재 배치의 시간 범위와 캡처 인덱스를 반환합니다.
 
     Returns:
         start_ms: 배치 시작 시간 (밀리초)
         end_ms: 배치 종료 시간 (밀리초)
+        start_idx: 캡처 시작 인덱스
+        end_idx: 캡처 종료 인덱스
         batch_index: 현재 배치 인덱스
     """
     batch_mode = tool_context.state.get("batch_mode", False)
@@ -202,18 +240,22 @@ def get_current_batch_time_range(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "배치 모드가 비활성화 상태입니다."}
 
     current_batch_index = tool_context.state.get("current_batch_index", 0)
-    batch_duration_ms = tool_context.state.get("batch_duration_ms", 200000)
-    total_duration_ms = tool_context.state.get("total_duration_ms", 0)
+    batch_ranges = tool_context.state.get("batch_ranges", [])
 
-    start_ms = current_batch_index * batch_duration_ms
-    end_ms = min((current_batch_index + 1) * batch_duration_ms, total_duration_ms)
+    if current_batch_index >= len(batch_ranges):
+        return {"success": False, "error": f"배치 인덱스 {current_batch_index}가 범위를 벗어났습니다."}
+
+    batch_info = batch_ranges[current_batch_index]
 
     return {
         "success": True,
         "batch_index": current_batch_index,
-        "start_ms": start_ms,
-        "end_ms": end_ms,
-        "duration_ms": end_ms - start_ms,
+        "start_idx": batch_info["start_idx"],
+        "end_idx": batch_info["end_idx"],
+        "capture_count": batch_info["capture_count"],
+        "start_ms": batch_info["start_ms"],
+        "end_ms": batch_info["end_ms"],
+        "duration_ms": batch_info["end_ms"] - batch_info["start_ms"],
     }
 
 

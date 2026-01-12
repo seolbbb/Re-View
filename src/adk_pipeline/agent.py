@@ -134,30 +134,32 @@ judge_agent = Agent(
     description="요약 품질을 평가하고 PASS/FAIL을 반환합니다.",
     instruction="""당신은 Judge Agent입니다.
 
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 즉시 evaluate_summary를 호출하세요!
+🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 도구를 호출하세요!
 
 ## 역할
 생성된 요약의 품질을 평가합니다.
 
 ## 사용 가능한 도구
-1. **evaluate_summary**: 요약 품질 평가 → judge.json (PASS/FAIL)
+1. **evaluate_summary**: 일반 모드에서 전체 요약 품질 평가 → judge.json (PASS/FAIL)
+2. **evaluate_batch_summary**: 배치 모드에서 현재 배치 요약 품질 평가
 
 ## 워크플로우 (Transfer 받으면 즉시 시작!)
 **transfer를 받으면 반드시 이 순서대로:**
-1. evaluate_summary를 실행하여 요약 품질 평가
+1. 배치 모드면 evaluate_batch_summary, 아니면 evaluate_summary 실행
 2. 결과(PASS/FAIL, can_rerun 여부)와 함께 **반드시 screentime_pipeline으로 transfer**하세요
 
 ## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 evaluate_summary를 호출하세요!**
+- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 평가 도구를 호출하세요!**
 - 평가 결과를 screentime_pipeline에게 전달해야 합니다
 - PASS/FAIL 결과와 can_rerun 여부를 명확히 전달하세요
 - 침묵하거나 빈 메시지를 보내면 안 됩니다!
 """,
-    tools=[evaluate_summary],
+    tools=[evaluate_summary, evaluate_batch_summary],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
 )
+
 
 
 # === 배치 처리용 Sub-Agents ===

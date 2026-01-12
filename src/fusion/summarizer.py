@@ -1000,7 +1000,7 @@ def run_batch_summarizer(
                     if "segment_id" not in item:
                         raise ValueError("응답에 segment_id가 없습니다.")
                     sid = int(item["segment_id"])
-                    summary_map[sid] = _validate_summary(
+                    summary_map[sid] = _validate_summary_payload(
                         item, bullets_min, bullets_max, claim_max_chars
                     )
 

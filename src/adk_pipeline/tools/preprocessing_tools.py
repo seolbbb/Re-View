@@ -205,9 +205,9 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
 
 
 def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
-    """현재 배치의 시간 범위에 해당하는 캡처만 VLM 처리합니다.
+    """현재 배치의 캡처 인덱스 범위에 해당하는 이미지만 VLM 처리합니다.
 
-    배치 모드에서 사용됩니다. 현재 배치 인덱스의 시간 범위에 해당하는
+    배치 모드에서 사용됩니다. 현재 배치의 캡처 인덱스 범위에 해당하는
     캡처 이미지만 VLM 처리하여 배치별 vlm.json을 생성합니다.
 
     Returns:
@@ -226,13 +226,22 @@ def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
 
-    # 현재 배치 정보 가져오기
+    # 현재 배치 정보 가져오기 (이미지 인덱스 기반)
     current_batch_index = tool_context.state.get("current_batch_index", 0)
-    batch_duration_ms = tool_context.state.get("batch_duration_ms", 200000)
-    total_duration_ms = tool_context.state.get("total_duration_ms", 0)
+    batch_ranges = tool_context.state.get("batch_ranges", [])
+    sorted_manifest = tool_context.state.get("sorted_manifest", [])
 
-    start_ms = current_batch_index * batch_duration_ms
-    end_ms = min((current_batch_index + 1) * batch_duration_ms, total_duration_ms)
+    if current_batch_index >= len(batch_ranges):
+        return {"success": False, "error": f"배치 인덱스 {current_batch_index}가 범위를 벗어났습니다."}
+
+    batch_info = batch_ranges[current_batch_index]
+    start_idx = batch_info["start_idx"]
+    end_idx = batch_info["end_idx"]
+    start_ms = batch_info["start_ms"]
+    end_ms = batch_info["end_ms"]
+
+    # 해당 배치의 캡처 목록 추출
+    batch_manifest = sorted_manifest[start_idx:end_idx]
 
     # 배치 디렉토리 생성
     batch_dir = store.batch_dir(current_batch_index)
@@ -246,6 +255,7 @@ def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
             "skipped": True,
             "batch_index": current_batch_index,
             "vlm_json": str(batch_vlm_json),
+            "image_count": len(batch_manifest),
             "message": f"배치 {current_batch_index}의 vlm.json이 이미 존재합니다. 스킵합니다.",
         }
 
@@ -276,8 +286,9 @@ def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
             manifest_json=store.manifest_json(),
             video_name=video_name,
             output_dir=batch_dir,
-            start_ms=start_ms,
-            end_ms=end_ms,
+            start_idx=start_idx,
+            end_idx=end_idx,
+            batch_manifest=batch_manifest,
             batch_size=batch_size,
             concurrency=concurrency,
             show_progress=show_progress,
@@ -287,6 +298,8 @@ def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
             "success": True,
             "skipped": False,
             "batch_index": current_batch_index,
+            "start_idx": start_idx,
+            "end_idx": end_idx,
             "start_ms": start_ms,
             "end_ms": end_ms,
             "vlm_json": result["vlm_json"],
@@ -317,14 +330,18 @@ def run_batch_sync(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "배치 모드가 비활성화 상태입니다."}
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+    video_root = store.video_root()
 
-    # 현재 배치 정보 가져오기
+    # 현재 배치 정보 가져오기 (이미지 인덱스 기반)
     current_batch_index = tool_context.state.get("current_batch_index", 0)
-    batch_duration_ms = tool_context.state.get("batch_duration_ms", 200000)
-    total_duration_ms = tool_context.state.get("total_duration_ms", 0)
+    batch_ranges = tool_context.state.get("batch_ranges", [])
 
-    start_ms = current_batch_index * batch_duration_ms
-    end_ms = min((current_batch_index + 1) * batch_duration_ms, total_duration_ms)
+    if current_batch_index >= len(batch_ranges):
+        return {"success": False, "error": f"배치 인덱스 {current_batch_index}가 범위를 벗어났습니다."}
+
+    batch_info = batch_ranges[current_batch_index]
+    start_ms = batch_info["start_ms"]
+    end_ms = batch_info["end_ms"]
 
     # 배치 디렉토리
     batch_dir = store.batch_dir(current_batch_index)
@@ -353,6 +370,23 @@ def run_batch_sync(tool_context: ToolContext) -> Dict[str, Any]:
         }
 
     try:
+        # 첫 배치에서만 Fusion config 생성 (공유)
+        if not store.fusion_config_yaml().exists():
+            from .internal.fusion_config import generate_fusion_config
+            fusion_template = _PROJECT_ROOT / "src" / "fusion" / "config.yaml"
+            generate_fusion_config(
+                template_config=fusion_template,
+                output_config=store.fusion_config_yaml(),
+                repo_root=_PROJECT_ROOT,
+                stt_json=store.stt_json(),
+                vlm_json=batch_vlm_json,  # 첫 배치의 vlm.json 사용
+                manifest_json=store.manifest_json(),
+                output_root=video_root,
+            )
+
+        # 누적 segment 수로 offset 계산
+        cumulative_segment_count = tool_context.state.get("cumulative_segment_count", 0)
+
         # Sync 설정 (기본값 사용)
         sync_config = {
             "min_segment_sec": 30,
@@ -372,8 +406,12 @@ def run_batch_sync(tool_context: ToolContext) -> Dict[str, Any]:
             output_dir=batch_dir,
             time_range=(start_ms, end_ms),
             sync_config=sync_config,
-            segment_id_offset=0,  # 배치 내에서는 1부터 시작
+            segment_id_offset=cumulative_segment_count,
         )
+
+        # 생성된 segment 수를 누적
+        new_segments_count = result.get("segments_count", 0)
+        tool_context.state["cumulative_segment_count"] = cumulative_segment_count + new_segments_count
 
         return {
             "success": True,
@@ -382,7 +420,9 @@ def run_batch_sync(tool_context: ToolContext) -> Dict[str, Any]:
             "start_ms": start_ms,
             "end_ms": end_ms,
             "segments_units_jsonl": result["segments_units_jsonl"],
-            "segments_count": result["segments_count"],
+            "segments_count": new_segments_count,
+            "segment_id_offset": cumulative_segment_count,
         }
     except Exception as e:
         return {"success": False, "error": f"배치 Sync 실행 실패: {e}"}
+

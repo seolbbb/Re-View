@@ -85,24 +85,34 @@ def run_vlm_for_batch(
     manifest_json: Path,
     video_name: str,
     output_dir: Path,
-    start_ms: int,
-    end_ms: int,
-    batch_size: Optional[int],
+    start_idx: Optional[int] = None,
+    end_idx: Optional[int] = None,
+    batch_manifest: Optional[List[Dict]] = None,
+    batch_size: Optional[int] = None,
     concurrency: int = 1,
     show_progress: bool = False,
+    # 레거시 호환용 (시간 기반)
+    start_ms: Optional[int] = None,
+    end_ms: Optional[int] = None,
 ) -> Dict[str, str]:
-    """특정 시간 범위의 캡처만 VLM 처리하여 배치별 vlm.json 생성.
+    """캡처 인덱스 범위 또는 시간 범위의 캡처만 VLM 처리하여 배치별 vlm.json 생성.
+
+    인덱스 기반(batch_manifest 또는 start_idx/end_idx) 또는 시간 기반(start_ms/end_ms)을
+    사용할 수 있습니다. 인덱스 기반이 우선됩니다.
 
     Args:
         captures_dir: 캡처 이미지 디렉토리
         manifest_json: manifest.json 경로
         video_name: 비디오 이름
         output_dir: 출력 디렉토리 (배치별 디렉토리)
-        start_ms: 시작 시간 (밀리초)
-        end_ms: 종료 시간 (밀리초)
+        start_idx: 시작 인덱스 (0-based)
+        end_idx: 종료 인덱스 (exclusive)
+        batch_manifest: 배치에 포함된 캡처 목록 (제공되면 start_idx/end_idx 무시)
         batch_size: VLM 요청 배치 크기
         concurrency: 병렬 요청 수
         show_progress: 진행 로그 출력 여부
+        start_ms: 시작 시간 (밀리초, 레거시 호환용)
+        end_ms: 종료 시간 (밀리초, 레거시 호환용)
 
     Returns:
         vlm_raw_json: vlm_raw.json 경로
@@ -120,24 +130,39 @@ def run_vlm_for_batch(
     if not isinstance(manifest_payload, list):
         raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
 
-    # 시간 범위로 필터링
-    filtered_manifest = _filter_manifest_by_time_range(manifest_payload, start_ms, end_ms)
-
-    image_paths: List[str] = []
+    # 배치에 포함될 manifest 항목 결정
     filtered_manifest_items: List[Dict] = []
+
+    if batch_manifest is not None:
+        # batch_manifest가 직접 제공된 경우
+        filtered_manifest_items = batch_manifest
+    elif start_idx is not None and end_idx is not None:
+        # 인덱스 기반 필터링
+        sorted_manifest = sorted(
+            (x for x in manifest_payload if isinstance(x, dict)),
+            key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+        )
+        filtered_manifest_items = sorted_manifest[start_idx:end_idx]
+    elif start_ms is not None and end_ms is not None:
+        # 시간 기반 필터링 (레거시 호환)
+        filtered_manifest_items = _filter_manifest_by_time_range(manifest_payload, start_ms, end_ms)
+    else:
+        raise ValueError("batch_manifest, start_idx/end_idx, 또는 start_ms/end_ms 중 하나를 제공해야 합니다.")
+
+    # 이미지 경로 추출
+    image_paths: List[str] = []
     for item in sorted(
-        (x for x in filtered_manifest if isinstance(x, dict)),
+        (x for x in filtered_manifest_items if isinstance(x, dict)),
         key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
             continue
         image_paths.append(str(captures_dir / file_name))
-        filtered_manifest_items.append(item)
 
     if not image_paths:
-        # 이 시간 범위에 이미지가 없으면 빈 vlm.json 생성
-        empty_vlm = {"schema_version": 1, "items": [], "duration_ms": end_ms}
+        # 이미지가 없으면 빈 vlm.json 생성
+        empty_vlm = {"schema_version": 1, "items": [], "duration_ms": 0}
         vlm_json_path = output_dir / "vlm.json"
         vlm_json_path.write_text(json.dumps(empty_vlm, ensure_ascii=False, indent=2), encoding="utf-8")
         return {
@@ -180,3 +205,4 @@ def run_vlm_for_batch(
         "vlm_json": str(vlm_json_path),
         "image_count": len(image_paths),
     }
+
