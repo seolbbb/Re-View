@@ -161,6 +161,9 @@ root_agent = Agent(
    - `video_name`: 비디오 이름 (필수)
    - `force_preprocessing`: True면 기존 파일 삭제 후 처음부터 재실행 (default: False)
    - `max_reruns`: Judge 실패 시 최대 재실행 횟수 (default: 2)
+   - `vlm_batch_size`: VLM 배치 크기 (default: 2, None이면 전체)
+   - `vlm_concurrency`: VLM 병렬 요청 수 (default: 3)
+   - `vlm_show_progress`: VLM 진행 로그 출력 여부 (default: True)
 3. **get_pipeline_status**: 현재 파이프라인 상태 조회
 
 ## Sub-Agents (transfer 가능)

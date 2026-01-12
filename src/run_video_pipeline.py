@@ -328,6 +328,7 @@ def _run_vlm_openrouter(
     output_base: Path,
     batch_size: Optional[int],
     concurrency: int,
+    show_progress: bool,
 ) -> int:
     """VLM(Vision Language Model) 실행. 처리된 이미지 수 반환."""
     extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_base)
@@ -354,6 +355,7 @@ def _run_vlm_openrouter(
     results = extractor.extract_features(
         image_paths,
         batch_size=batch_size,
+        show_progress=show_progress,
         concurrency=concurrency,
     )
     raw_path = extractor.get_output_path()
@@ -364,6 +366,7 @@ def _run_vlm_openrouter(
         vlm_raw_json=raw_path,
         output_vlm_json=raw_path.with_name("vlm.json"),
     )
+    raw_path.unlink(missing_ok=True)
     
     return len(image_paths)
 
@@ -613,6 +616,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capture-verbose", action="store_true", help="캡처 상세 로그 출력")
     parser.add_argument("--vlm-batch-size", type=int, default=2, help="VLM 배치 크기(미지정 시 전부 한 번에)")
     parser.add_argument("--vlm-concurrency", type=int, default=3, help="VLM 병렬 요청 수 (기본: 3)")
+    parser.add_argument("--vlm-show-progress", action=argparse.BooleanOptionalAction, default=True, help="VLM 진행 로그 출력 여부 (기본: True)")
     parser.add_argument("--limit", type=int, default=None, help="fusion 단계에서 처리할 segment 수 제한")
     parser.add_argument("--dry-run", action="store_true", help="summarizer LLM 미호출(출력 미생성)")
     return parser.parse_args()
@@ -731,6 +735,7 @@ def main() -> None:
             output_base=output_base,
             batch_size=args.vlm_batch_size,
             concurrency=args.vlm_concurrency,
+            show_progress=args.vlm_show_progress,
         )
 
         # Fusion config 생성

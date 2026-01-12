@@ -69,6 +69,9 @@ def set_pipeline_config(
     summarize_prompt: Optional[str] = None,
     max_reruns: int = 2,
     force_preprocessing: bool = False,
+    vlm_batch_size: Optional[int] = 2,
+    vlm_concurrency: int = 3,
+    vlm_show_progress: bool = True,
 ) -> Dict[str, Any]:
     """파이프라인 설정을 변경합니다.
 
@@ -77,6 +80,9 @@ def set_pipeline_config(
         summarize_prompt: 요약 시 사용할 추가 프롬프트 (선택)
         max_reruns: Judge 실패 시 최대 재실행 횟수 (기본: 2)
         force_preprocessing: True면 기존 파일 삭제 후 Preprocessing 재실행 (기본: False)
+        vlm_batch_size: VLM 배치 크기 (기본: 2, None이면 전체를 한 번에 요청)
+        vlm_concurrency: VLM 병렬 요청 수 (기본: 3)
+        vlm_show_progress: VLM 진행 로그 출력 여부 (기본: True)
 
     Returns:
         success: 설정 성공 여부
@@ -100,6 +106,9 @@ def set_pipeline_config(
     tool_context.state["max_reruns"] = max_reruns
     tool_context.state["current_rerun"] = 0
     tool_context.state["force_preprocessing"] = force_preprocessing
+    tool_context.state["vlm_batch_size"] = vlm_batch_size
+    tool_context.state["vlm_concurrency"] = vlm_concurrency
+    tool_context.state["vlm_show_progress"] = vlm_show_progress
 
     return {
         "success": True,
@@ -107,6 +116,9 @@ def set_pipeline_config(
         "summarize_prompt": summarize_prompt,
         "max_reruns": max_reruns,
         "force_preprocessing": force_preprocessing,
+        "vlm_batch_size": vlm_batch_size,
+        "vlm_concurrency": vlm_concurrency,
+        "vlm_show_progress": vlm_show_progress,
         "video_root": str(video_root),
         "status": {
             "preprocessing_done": store.segments_units_jsonl().exists(),
@@ -155,6 +167,9 @@ def get_pipeline_status(tool_context: ToolContext) -> Dict[str, Any]:
             "summarize_prompt": tool_context.state.get("summarize_prompt"),
             "max_reruns": tool_context.state.get("max_reruns", 2),
             "current_rerun": tool_context.state.get("current_rerun", 0),
+            "vlm_batch_size": tool_context.state.get("vlm_batch_size", 2),
+            "vlm_concurrency": tool_context.state.get("vlm_concurrency", 3),
+            "vlm_show_progress": tool_context.state.get("vlm_show_progress", True),
         },
         "status": {
             "preprocessing_done": store.segments_units_jsonl().exists(),
