@@ -169,6 +169,7 @@ def _build_batch_prompt(
     claim_max_chars: int,
     bullets_min: int,
     bullets_max: int,
+    previous_context: Optional[str] = None,
 ) -> str:
     jsonl_text = "\n".join(
         json.dumps(segment, ensure_ascii=False) for segment in segments
@@ -185,8 +186,25 @@ def _build_batch_prompt(
     else:
         bullets_rule = "- bullets는 필요한 만큼 작성"
 
-    prompt = f"""
-당신은 "요약가"가 아니라 "초학자 튜터(독립형 강의 노트 작성자)"입니다.
+    # 이전 배치 context 섹션
+    context_section = ""
+    if previous_context:
+        context_section = f"""
+========================
+이전 배치 요약 (맥락 유지용)
+========================
+{previous_context}
+
+위 내용은 이전 배치에서 다룬 핵심 내용입니다.
+- 현재 배치 요약 시 위 내용과 일관성을 유지하세요.
+- 동일한 용어/개념은 같은 방식으로 설명하세요.
+- 중복 설명은 피하고, 새로운 정보에 집중하세요.
+- 이전 내용과 연결되는 부분이 있으면 자연스럽게 연결하세요.
+========================
+
+"""
+
+    prompt = f"""{context_section}당신은 "요약가"가 아니라 "초학자 튜터(독립형 강의 노트 작성자)"입니다.
 목표는 입력(STT/VLM)을 그대로 줄이는 것이 아니라, 사용자가 영상을/슬라이드를 보지 않아도 오직 당신의 출력(JSON)만 읽고 이해할 수 있도록 '설명'과 '연결'을 만들어 주는 것입니다.
 
 - 모든 출력은 한국어로 작성하되, 아래 용어 표기 규칙을 반드시 지키세요.
@@ -875,3 +893,203 @@ def run_summarizer(
             output_handle.close()
 
     print_jsonl_head(output_jsonl, max_lines=2)
+
+
+def run_batch_summarizer(
+    *,
+    segments_units_jsonl: Path,
+    output_dir: Path,
+    config: ConfigBundle,
+    previous_context: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """배치별 세그먼트 요약을 생성합니다.
+
+    Args:
+        segments_units_jsonl: 배치의 segments_units.jsonl 경로
+        output_dir: 배치별 출력 디렉토리
+        config: ConfigBundle 인스턴스
+        previous_context: 이전 배치의 요약 context (선택)
+        limit: 처리할 세그먼트 수 제한 (선택)
+
+    Returns:
+        success: 실행 성공 여부
+        segment_summaries_jsonl: 생성된 파일 경로
+        segments_count: 처리된 세그먼트 수
+        context: 다음 배치에 전달할 context
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not segments_units_jsonl.exists():
+        raise FileNotFoundError(f"segments_units.jsonl이 없습니다: {segments_units_jsonl}")
+
+    bullets_min = config.raw.summarizer.bullets_per_segment_min
+    bullets_max = config.raw.summarizer.bullets_per_segment_max
+    claim_max_chars = config.raw.summarizer.claim_max_chars
+
+    segments: List[Dict[str, Any]] = []
+    for segment in read_jsonl(segments_units_jsonl):
+        if limit is not None and len(segments) >= limit:
+            break
+        segments.append(segment)
+
+    if not segments:
+        # 세그먼트가 없으면 빈 파일 생성
+        output_jsonl = output_dir / "segment_summaries.jsonl"
+        output_jsonl.write_text("", encoding="utf-8")
+        return {
+            "success": True,
+            "segment_summaries_jsonl": str(output_jsonl),
+            "segments_count": 0,
+            "context": "",
+        }
+
+    prompt = _build_batch_prompt(
+        segments, claim_max_chars, bullets_min, bullets_max, previous_context
+    )
+
+    response_schema = _build_response_schema()
+    client_bundle = _init_gemini_client(config)
+
+    # Token 사용량 기록
+    try:
+        token_result = client_bundle.client.models.count_tokens(
+            model=client_bundle.model,
+            contents=prompt
+        )
+        input_tokens = token_result.total_tokens
+        update_token_usage(
+            output_dir=output_dir,
+            component="batch_summarizer",
+            input_tokens=input_tokens,
+            model=client_bundle.model,
+            extra={"segments_count": len(segments), "has_context": previous_context is not None}
+        )
+        print(f"[TOKEN] batch_summarizer input_tokens={input_tokens}")
+    except Exception as exc:
+        print(f"[TOKEN] count_tokens failed: {exc}")
+
+    output_jsonl = output_dir / "segment_summaries.jsonl"
+    output_handle = None
+    try:
+        output_handle = output_jsonl.open("w", encoding="utf-8")
+
+        llm_text = _run_with_retries(
+            client_bundle,
+            prompt,
+            response_schema,
+            config.raw.summarizer.temperature,
+            config.raw.llm_gemini.response_mime_type,
+            config.raw.llm_gemini.timeout_sec,
+            config.raw.llm_gemini.max_retries,
+            config.raw.llm_gemini.backoff_sec,
+        )
+
+        last_error: Optional[Exception] = None
+        attempts = config.raw.summarizer.json_repair_attempts
+        for _ in range(attempts + 1):
+            try:
+                payload = _parse_json_response(llm_text)
+                if not isinstance(payload, list):
+                    raise ValueError("응답이 JSON 배열 형식이 아닙니다.")
+
+                summary_map: Dict[int, Dict[str, Any]] = {}
+                for item in payload:
+                    if not isinstance(item, dict):
+                        raise ValueError("응답 배열의 항목 형식이 올바르지 않습니다.")
+                    if "segment_id" not in item:
+                        raise ValueError("응답에 segment_id가 없습니다.")
+                    sid = int(item["segment_id"])
+                    summary_map[sid] = _validate_summary(
+                        item, bullets_min, bullets_max, claim_max_chars
+                    )
+
+                # 파일에 기록
+                for segment in segments:
+                    segment_id = int(segment.get("segment_id"))
+                    summary = summary_map[segment_id]
+                    record = {
+                        "run_id": segment.get("run_id"),
+                        "segment_id": segment.get("segment_id"),
+                        "start_ms": segment.get("start_ms"),
+                        "end_ms": segment.get("end_ms"),
+                        "summary": summary,
+                        "version": {
+                            "schema_version": 1,
+                            "prompt_version": PROMPT_VERSION,
+                            "llm_model_id": config.raw.llm_gemini.model,
+                            "temperature": config.raw.summarizer.temperature,
+                            "backend": config.raw.llm_gemini.backend,
+                        },
+                    }
+                    output_handle.write(
+                        json.dumps(record, ensure_ascii=False, sort_keys=True)
+                    )
+                    output_handle.write("\n")
+
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                repair_prompt = _repair_prompt(
+                    llm_text, bullets_min, bullets_max, claim_max_chars
+                )
+                llm_text = _run_with_retries(
+                    client_bundle,
+                    repair_prompt,
+                    response_schema,
+                    config.raw.summarizer.temperature,
+                    config.raw.llm_gemini.response_mime_type,
+                    config.raw.llm_gemini.timeout_sec,
+                    config.raw.llm_gemini.max_retries,
+                    config.raw.llm_gemini.backoff_sec,
+                )
+        if last_error:
+            raise RuntimeError(f"LLM JSON/검증 실패: {last_error}")
+    finally:
+        if output_handle:
+            output_handle.close()
+
+    # 다음 배치를 위한 context 추출
+    next_context = extract_batch_context(output_jsonl)
+
+    print_jsonl_head(output_jsonl, max_lines=2)
+
+    return {
+        "success": True,
+        "segment_summaries_jsonl": str(output_jsonl),
+        "segments_count": len(segments),
+        "context": next_context,
+    }
+
+
+def extract_batch_context(summaries_jsonl: Path, max_chars: int = 500) -> str:
+    """배치 요약에서 다음 배치를 위한 context를 추출합니다.
+
+    각 segment의 첫 번째 bullet의 claim만 추출하여 간결한 context를 생성합니다.
+
+    Args:
+        summaries_jsonl: segment_summaries.jsonl 경로
+        max_chars: 최대 문자 수 (기본: 500)
+
+    Returns:
+        context 문자열 (max_chars 이하)
+    """
+    if not summaries_jsonl.exists():
+        return ""
+
+    context_parts = []
+    for summary_record in read_jsonl(summaries_jsonl):
+        segment_id = summary_record.get("segment_id", "?")
+        summary = summary_record.get("summary", {})
+        bullets = summary.get("bullets", [])
+        if bullets:
+            # 첫 번째 bullet의 claim만 추출
+            first_claim = bullets[0].get("claim", "")
+            if first_claim:
+                context_parts.append(f"[Seg {segment_id}] {first_claim}")
+
+    context = "\n".join(context_parts)
+    if len(context) > max_chars:
+        context = context[:max_chars] + "..."
+    return context
