@@ -625,12 +625,15 @@ def _run_batch_fusion_pipeline(
         batch_summaries_path = batch_dir / "segment_summaries.jsonl"
         
         if not dry_run:
+            config = load_config(str(fusion_config_path))
             summarize_result, summarize_elapsed = timer.time_stage(
                 f"batch_{batch_idx}.summarize",
                 run_batch_summarizer,
-                segments_jsonl=batch_segments_path,
-                output_path=batch_summaries_path,
+                segments_units_jsonl=batch_segments_path,
+                output_dir=batch_dir,
+                config=config,
                 previous_context=previous_context,
+                limit=limit,
             )
             
             # context 업데이트
