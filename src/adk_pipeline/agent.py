@@ -50,43 +50,11 @@ preprocessing_agent = Agent(
     name="preprocessing_agent",
     model="gemini-2.5-flash",
     description="VLM과 Sync를 실행하여 비디오 캡처에서 세그먼트를 추출합니다.",
-    instruction="""당신은 Preprocessing Agent입니다.
+    instruction="""Preprocessing Agent입니다.
 
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 즉시 load_data를 호출하세요!
+도구 순서: load_data → init_batch_mode → run_vlm → run_sync → screentime_pipeline으로 transfer
 
-## 역할
-캡처 이미지에서 텍스트/UI 요소를 추출(VLM)하고 STT와 동기화(Sync)합니다.
-배치 모드일 때는 현재 배치의 캡처만 처리합니다.
-
-## 사용 가능한 도구
-1. **load_data**: Pre-ADK 산출물 검증
-2. **init_batch_mode**: 배치 모드 초기화 (첫 배치에서만)
-3. **run_vlm**: VLM 실행 → vlm.json 생성 (배치 모드면 현재 배치만)
-4. **run_sync**: Sync 실행 → segments_units.jsonl (배치 모드면 현재 배치만)
-
-## 워크플로우
-
-**배치 모드 (첫 배치일 때):**
-1. load_data → Pre-ADK 검증
-2. init_batch_mode → "총 N장을 M개 배치로 처리"
-3. run_vlm → 현재 배치 VLM
-4. run_sync → 현재 배치 Sync
-5. screentime_pipeline으로 transfer
-
-**배치 모드 (이후 배치일 때):**
-1. run_vlm → 현재 배치 VLM
-2. run_sync → 현재 배치 Sync
-3. screentime_pipeline으로 transfer
-
-**일반 모드:**
-1. load_data → Pre-ADK 검증
-2. run_vlm → 전체 VLM
-3. run_sync → 전체 Sync
-4. screentime_pipeline으로 transfer
-
-## 🚨 중요!!
-- **Transfer 받으면 절대 빈 응답 금지!**
-- 에러 시에도 screentime_pipeline으로 transfer하세요
+(각 도구가 상황에 맞게 자동으로 스킵됩니다)
 """,
     tools=[load_data, init_batch_mode, run_vlm, run_sync],
     generate_content_config=types.GenerateContentConfig(
@@ -98,33 +66,12 @@ preprocessing_agent = Agent(
 summarize_agent = Agent(
     name="summarize_agent",
     model="gemini-2.5-flash",
-    description="세그먼트를 요약하고 최종 마크다운을 생성합니다.",
-    instruction="""당신은 Summarize Agent입니다.
+    description="세그먼트를 요약합니다.",
+    instruction="""Summarize Agent입니다.
 
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 즉시 run_summarizer를 호출하세요!
-
-## 역할
-segments_units.jsonl을 기반으로 세그먼트별 요약을 생성합니다.
-
-## 사용 가능한 도구
-1. **run_summarizer**: Gemini로 세그먼트별 요약 생성 → segment_summaries.jsonl
-2. **render_md**: 요약을 마크다운으로 변환 → segment_summaries.md
-3. **write_final_summary**: 최종 요약 생성 → final_summary_*.md
-
-## 워크플로우 (Transfer 받으면 즉시 시작!)
-**transfer를 받으면 반드시 이 순서대로 도구를 호출하세요:**
-1. run_summarizer로 세그먼트 요약 생성
-2. render_md로 마크다운 변환
-3. write_final_summary로 최종 요약 생성
-4. 모든 도구 실행이 완료되면 **반드시 screentime_pipeline으로 transfer**하세요
-
-## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 run_summarizer를 호출하세요!**
-- 모든 도구를 순서대로 실행한 후 **screentime_pipeline으로 transfer**하세요
-- 에러가 발생해도 에러 내용을 설명하고 **screentime_pipeline으로 transfer**하세요
-- 침묵하거나 빈 메시지를 보내면 안 됩니다!
+도구 순서: run_summarizer → screentime_pipeline으로 transfer
 """,
-    tools=[run_summarizer, render_md, write_final_summary],
+    tools=[run_summarizer],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
@@ -135,27 +82,9 @@ judge_agent = Agent(
     name="judge_agent",
     model="gemini-2.5-flash",
     description="요약 품질을 평가하고 PASS/FAIL을 반환합니다.",
-    instruction="""당신은 Judge Agent입니다.
+    instruction="""Judge Agent입니다.
 
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 도구를 호출하세요!
-
-## 역할
-생성된 요약의 품질을 평가합니다.
-
-## 사용 가능한 도구
-1. **evaluate_summary**: 일반 모드에서 전체 요약 품질 평가 → judge.json (PASS/FAIL)
-2. **evaluate_batch_summary**: 배치 모드에서 현재 배치 요약 품질 평가
-
-## 워크플로우 (Transfer 받으면 즉시 시작!)
-**transfer를 받으면 반드시 이 순서대로:**
-1. 배치 모드면 evaluate_batch_summary, 아니면 evaluate_summary 실행
-2. 결과(PASS/FAIL, can_rerun 여부)와 함께 **반드시 screentime_pipeline으로 transfer**하세요
-
-## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 평가 도구를 호출하세요!**
-- 평가 결과를 screentime_pipeline에게 전달해야 합니다
-- PASS/FAIL 결과와 can_rerun 여부를 명확히 전달하세요
-- 침묵하거나 빈 메시지를 보내면 안 됩니다!
+도구 순서: evaluate_summary → screentime_pipeline으로 transfer
 """,
     tools=[evaluate_summary],
     generate_content_config=types.GenerateContentConfig(
@@ -169,31 +98,11 @@ merge_agent = Agent(
     name="merge_agent",
     model="gemini-2.5-flash",
     description="모든 배치 결과 병합 및 최종 요약 생성",
-    instruction="""당신은 Merge Agent입니다.
+    instruction="""Merge Agent입니다.
 
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 즉시 merge_all_batches를 호출하세요!
-
-## 역할
-모든 배치의 결과를 병합하고 최종 요약을 생성합니다.
-
-## 사용 가능한 도구
-1. **merge_all_batches**: 모든 배치 파일 병합 (vlm.json, segments_units.jsonl, segment_summaries.jsonl)
-2. **generate_final_summary_tool**: LLM으로 전체 통합 요약 생성
-3. **merge_and_finalize**: 병합 + 최종 요약을 한번에 실행
-
-## 워크플로우 (Transfer 받으면 즉시 시작!)
-**transfer를 받으면 반드시 이 순서대로 도구를 호출하세요:**
-1. merge_all_batches로 배치 파일 병합
-2. generate_final_summary_tool로 최종 요약 생성
-   (또는 merge_and_finalize로 한번에 실행)
-3. 모든 도구 실행이 완료되면 **결과를 요약**하고 screentime_pipeline으로 transfer
-
-## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 merge_all_batches를 호출하세요!**
-- 병합된 파일 수, 세그먼트 수 등을 결과에 포함하세요
-- 최종 요약 파일 경로를 결과에 포함하세요
+도구 순서: merge_and_finalize → screentime_pipeline으로 transfer
 """,
-    tools=[merge_all_batches, generate_final_summary_tool, merge_and_finalize],
+    tools=[merge_all_batches, render_md, generate_final_summary_tool, merge_and_finalize],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
@@ -220,7 +129,7 @@ root_agent = Agent(
 1. **list_available_videos**: 처리 가능한 비디오 목록 조회
 2. **set_pipeline_config**: 비디오 선택 및 설정
    - `video_name`: 비디오 이름 (필수)
-   - `batch_size`: 배치당 캡처 개수 (default: 10장)
+   - `batch_size`: 배치당 캡처 개수 (default: 5장)
    - `batch_mode`: True면 배치 모드 (default: True)
    - `force_preprocessing`: True면 기존 파일 삭제 후 재실행 (default: False)
    - `max_reruns`: Judge 실패 시 최대 재실행 횟수 (default: 2)
