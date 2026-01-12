@@ -80,7 +80,7 @@ def _extract_context_from_summaries(
 
 def init_batch_mode(
     tool_context: ToolContext,
-    batch_size: int = 10,
+    batch_size: int = 5,
     context_max_chars: int = 500,
 ) -> Dict[str, Any]:
     """배치 모드를 초기화합니다.
@@ -89,7 +89,7 @@ def init_batch_mode(
     이미지(캡처) 개수 기반으로 배치를 분할하여 맥락 연결성을 유지합니다.
 
     Args:
-        batch_size: 배치당 캡처 개수 (기본 10장)
+        batch_size: 배치당 캡처 개수 (기본 5장)
         context_max_chars: 이전 배치 context 최대 문자 수 (기본 500)
 
     Returns:
@@ -168,6 +168,9 @@ def init_batch_mode(
     tool_context.state["context_max_chars"] = context_max_chars
     tool_context.state["previous_context"] = ""
     tool_context.state["cumulative_segment_count"] = 0  # segment_id 오프셋용
+    # 배치 플래그 설정 (첫 배치/마지막 배치 자동 감지용)
+    tool_context.state["is_first_batch"] = True
+    tool_context.state["is_last_batch"] = (total_batches == 1)
 
     # duration_ms도 저장 (기존 호환성)
     if stt_duration_ms:
@@ -312,6 +315,9 @@ def mark_batch_complete(tool_context: ToolContext) -> Dict[str, Any]:
 
     if not all_completed:
         tool_context.state["current_batch_index"] = next_batch_index
+        # 배치 플래그 업데이트
+        tool_context.state["is_first_batch"] = False
+        tool_context.state["is_last_batch"] = (next_batch_index == total_batches - 1)
 
     return {
         "success": True,
