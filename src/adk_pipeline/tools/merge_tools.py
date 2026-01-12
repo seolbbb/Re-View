@@ -201,11 +201,12 @@ def generate_final_summary(tool_context: ToolContext) -> Dict[str, Any]:
 def merge_and_finalize(tool_context: ToolContext) -> Dict[str, Any]:
     """배치 병합과 최종 요약을 한번에 수행합니다.
 
-    merge_all_batches + generate_final_summary를 연속 실행합니다.
+    merge_all_batches + render_md + generate_final_summary를 연속 실행합니다.
 
     Returns:
         success: 실행 성공 여부
         merge_result: 병합 결과
+        render_result: 마크다운 렌더링 결과
         final_result: 최종 요약 결과
     """
     # 1. 배치 병합
@@ -217,18 +218,25 @@ def merge_and_finalize(tool_context: ToolContext) -> Dict[str, Any]:
             "merge_result": merge_result,
         }
 
-    # 2. 최종 요약 생성
+    # 2. 마크다운 렌더링
+    from .summarize_tools import render_md
+    render_result = render_md(tool_context)
+    # render_md 실패해도 계속 진행 (치명적이지 않음)
+
+    # 3. 최종 요약 생성
     final_result = generate_final_summary(tool_context)
     if not final_result.get("success"):
         return {
             "success": False,
             "error": f"최종 요약 생성 실패: {final_result.get('error')}",
             "merge_result": merge_result,
+            "render_result": render_result,
             "final_result": final_result,
         }
 
     return {
         "success": True,
         "merge_result": merge_result,
+        "render_result": render_result,
         "final_result": final_result,
     }
