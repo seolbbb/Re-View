@@ -52,7 +52,7 @@ preprocessing_agent = Agent(
     description="VLM과 Sync를 실행하여 비디오 캡처에서 세그먼트를 추출합니다.",
     instruction="""Preprocessing Agent입니다.
 
-도구 순서: load_data → init_batch_mode → run_vlm → run_sync → screentime_pipeline으로 transfer
+도구 순서: load_data → init_batch_mode → run_vlm → run_sync → Root로 transfer
 
 (각 도구가 상황에 맞게 자동으로 스킵됩니다)
 """,
@@ -69,7 +69,7 @@ summarize_agent = Agent(
     description="세그먼트를 요약합니다.",
     instruction="""Summarize Agent입니다.
 
-도구 순서: run_summarizer → screentime_pipeline으로 transfer
+도구 순서: run_summarizer → Root로 transfer
 """,
     tools=[run_summarizer],
     generate_content_config=types.GenerateContentConfig(
@@ -84,7 +84,7 @@ judge_agent = Agent(
     description="요약 품질을 평가하고 PASS/FAIL을 반환합니다.",
     instruction="""Judge Agent입니다.
 
-도구 순서: evaluate_summary → screentime_pipeline으로 transfer
+도구 순서: evaluate_summary → Root로 transfer
 """,
     tools=[evaluate_summary],
     generate_content_config=types.GenerateContentConfig(
@@ -100,7 +100,7 @@ merge_agent = Agent(
     description="모든 배치 결과 병합 및 최종 요약 생성",
     instruction="""Merge Agent입니다.
 
-도구 순서: merge_and_finalize → screentime_pipeline으로 transfer
+도구 순서: merge_and_finalize → Root로 transfer
 """,
     tools=[merge_all_batches, render_md, generate_final_summary_tool, merge_and_finalize],
     generate_content_config=types.GenerateContentConfig(
