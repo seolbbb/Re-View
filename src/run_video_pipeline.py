@@ -463,8 +463,8 @@ def _run_fusion_pipeline(
             workers=1,
             json_repair_attempts=1,
             limit=limit,
-            return_reasons=True,
             verbose=True,
+            write_outputs=True,
         )
         fusion_info["timings"]["judge_sec"] = judge_elapsed
     
