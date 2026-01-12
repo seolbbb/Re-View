@@ -19,7 +19,7 @@ summarizer:
   bullets_per_segment_max: 0
   claim_max_chars: 0
   temperature: 0.2
-  json_repair_attempts: 0
+  json_repair_attempts: 2
 
 llm_gemini:
   backend: "developer_api"

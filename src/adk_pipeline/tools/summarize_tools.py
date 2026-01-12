@@ -63,9 +63,12 @@ def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
 
         try:
             from src.fusion.summarizer import run_batch_summarizer
+            from src.fusion.config import load_config
+            config = load_config(str(store.fusion_config_yaml()))
             result = run_batch_summarizer(
-                segments_jsonl=segments_path,
-                output_path=summaries_output,
+                segments_units_jsonl=segments_path,
+                output_dir=summaries_output.parent,
+                config=config,
                 previous_context=previous_context,
             )
 

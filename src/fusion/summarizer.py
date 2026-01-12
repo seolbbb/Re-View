@@ -469,25 +469,41 @@ def _generate_content(
     response_mime_type: str,
     timeout_sec: int,
 ) -> str:
+    import concurrent.futures
+
     client = client_bundle.client
     config = {
         "temperature": temperature,
         "response_mime_type": response_mime_type,
         "response_schema": response_schema,
     }
-    try:
-        response = client.models.generate_content(
-            model=client_bundle.model,
-            contents=prompt,
-            config=config,
-            timeout=timeout_sec,
-        )
-    except TypeError:
-        response = client.models.generate_content(
-            model=client_bundle.model,
-            contents=prompt,
-            config=config,
-        )
+
+    def _call_api():
+        try:
+            return client.models.generate_content(
+                model=client_bundle.model,
+                contents=prompt,
+                config=config,
+                timeout=timeout_sec,
+            )
+        except TypeError:
+            return client.models.generate_content(
+                model=client_bundle.model,
+                contents=prompt,
+                config=config,
+            )
+
+    # 강제 타임아웃 적용 (SDK timeout이 안 먹힐 경우 대비)
+    print(f"[DEBUG] Gemini API 호출 시작 (timeout={timeout_sec}s)...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_call_api)
+        try:
+            response = future.result(timeout=timeout_sec + 10)  # 여유 10초 추가
+            print(f"[DEBUG] Gemini API 호출 완료")
+        except concurrent.futures.TimeoutError:
+            print(f"[DEBUG] Gemini API 타임아웃!")
+            raise TimeoutError(f"Gemini API 호출이 {timeout_sec + 10}초 후 타임아웃되었습니다.")
+
     return _extract_text_from_response(response)
 
 
@@ -553,8 +569,7 @@ def _validate_summary_payload(
         raise ValueError("explanations 형식이 올바르지 않습니다.")
     if not isinstance(open_questions, list):
         raise ValueError("open_questions 형식이 올바르지 않습니다.")
-    if bullets_min > 0 and len(bullets) < bullets_min:
-        raise ValueError("bullets 개수가 부족합니다.")
+    # bullets 개수, claim 길이 검증 제거 (Judge에서 품질 평가)
 
     normalized_bullets: List[Dict[str, Any]] = []
     max_items = bullets_max if bullets_max > 0 else len(bullets)
@@ -562,8 +577,6 @@ def _validate_summary_payload(
         if not isinstance(bullet, dict):
             continue
         claim = str(bullet.get("claim", "")).strip()
-        if claim_max_chars > 0 and len(claim) > claim_max_chars:
-            raise ValueError("claim 길이가 초과되었습니다.")
         source_type = _normalize_source_type(bullet.get("source_type"))
         evidence_refs = _normalize_evidence_refs(bullet.get("evidence_refs"))
         confidence = _normalize_confidence(bullet.get("confidence"))
@@ -980,7 +993,7 @@ def run_batch_summarizer(
             response_schema,
             config.raw.summarizer.temperature,
             config.raw.llm_gemini.response_mime_type,
-            config.raw.llm_gemini.timeout_sec,
+            300,  # config.raw.llm_gemini.timeout_sec
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
         )
@@ -1001,7 +1014,7 @@ def run_batch_summarizer(
                         raise ValueError("응답에 segment_id가 없습니다.")
                     sid = int(item["segment_id"])
                     summary_map[sid] = _validate_summary_payload(
-                        item, bullets_min, bullets_max, claim_max_chars
+                        item.get("summary", {}), sid, claim_max_chars, bullets_min, bullets_max
                     )
 
                 # 파일에 기록

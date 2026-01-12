@@ -527,7 +527,7 @@ def run_judge(
 
     # Count input tokens for all payloads and save to token_usage.json
     try:
-        full_prompt = _build_prompt(payloads, return_reasons)
+        full_prompt = _build_prompt(payloads)
         client_bundle = _init_gemini_client(config)
         token_result = client_bundle.client.models.count_tokens(
             model=client_bundle.model,

@@ -49,7 +49,7 @@ def run_vlm_openrouter(
     image_paths: List[str] = []
     for item in sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
-        key=lambda x: (int(x.get("timestamp_ms", 0)), str(x.get("file_name", ""))),
+        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:

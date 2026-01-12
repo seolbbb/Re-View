@@ -342,7 +342,7 @@ def _run_vlm_openrouter(
     image_paths: List[str] = []
     for item in sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
-        key=lambda x: (int(x.get("timestamp_ms", 0)), str(x.get("file_name", ""))),
+        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
@@ -463,7 +463,7 @@ def _run_fusion_pipeline(
             workers=1,
             json_repair_attempts=1,
             limit=limit,
-            return_reasons=True,
+            write_outputs=True,
             verbose=True,
         )
         fusion_info["timings"]["judge_sec"] = judge_elapsed
@@ -522,8 +522,8 @@ def _run_batch_fusion_pipeline(
     for i in range(total_batches):
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, total_captures)
-        start_ms = int(sorted_manifest[start_idx].get("timestamp_ms", 0))
-        end_ms = int(sorted_manifest[end_idx - 1].get("timestamp_ms", 0)) + 1000
+        start_ms = int(sorted_manifest[start_idx].get("start_ms", sorted_manifest[start_idx].get("timestamp_ms", 0)))
+        end_ms = int(sorted_manifest[end_idx - 1].get("end_ms", sorted_manifest[end_idx - 1].get("timestamp_ms", 0) + 1000))
         batch_ranges.append({
             "start_idx": start_idx,
             "end_idx": end_idx,
@@ -558,6 +558,11 @@ def _run_batch_fusion_pipeline(
         accumulated_summaries_path.unlink()
     
     for batch_idx, batch_info in enumerate(batch_ranges):
+        # 첫 배치가 아니면 API rate limiting 방지를 위해 대기
+        if batch_idx > 0:
+            print(f"\n⏳ API rate limiting 방지를 위해 5초 대기...")
+            time.sleep(5)
+
         print(f"\n{'='*50}")
         print(f"🔄 배치 {batch_idx + 1}/{total_batches} 처리 중...")
         print(f"   캡처 범위: {batch_info['start_idx']} ~ {batch_info['end_idx'] - 1}")
@@ -606,7 +611,7 @@ def _run_batch_fusion_pipeline(
             output_dir=batch_dir,
             time_range=(batch_info["start_ms"], batch_info["end_ms"]),
             sync_config={
-                "min_segment_sec": 30,
+                "min_segment_sec": 15,
                 "max_segment_sec": 120,
                 "max_transcript_chars": 1000,
                 "silence_gap_ms": 500,
@@ -663,8 +668,8 @@ def _run_batch_fusion_pipeline(
                 workers=1,
                 json_repair_attempts=1,
                 limit=limit,
-                return_reasons=True,
                 verbose=False,
+                write_outputs=True,
             )
             
             # Judge 결과 읽기
