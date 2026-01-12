@@ -294,3 +294,95 @@ def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"배치 VLM 실행 실패: {e}"}
+
+
+def run_batch_sync(tool_context: ToolContext) -> Dict[str, Any]:
+    """현재 배치의 VLM 결과와 해당 시간 범위의 STT를 동기화합니다.
+
+    배치 모드에서 사용됩니다. 현재 배치의 vlm.json과 해당 시간 범위의
+    STT segments를 동기화하여 배치별 segments_units.jsonl을 생성합니다.
+
+    Returns:
+        success: 실행 성공 여부
+        batch_index: 처리된 배치 인덱스
+        segments_units_jsonl: 생성된 파일 경로
+        segments_count: 생성된 segment 수
+    """
+    video_name = tool_context.state.get("video_name")
+    if not video_name:
+        return {"success": False, "error": "video_name 미설정"}
+
+    batch_mode = tool_context.state.get("batch_mode", False)
+    if not batch_mode:
+        return {"success": False, "error": "배치 모드가 비활성화 상태입니다."}
+
+    store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+
+    # 현재 배치 정보 가져오기
+    current_batch_index = tool_context.state.get("current_batch_index", 0)
+    batch_duration_ms = tool_context.state.get("batch_duration_ms", 200000)
+    total_duration_ms = tool_context.state.get("total_duration_ms", 0)
+
+    start_ms = current_batch_index * batch_duration_ms
+    end_ms = min((current_batch_index + 1) * batch_duration_ms, total_duration_ms)
+
+    # 배치 디렉토리
+    batch_dir = store.batch_dir(current_batch_index)
+
+    # VLM이 먼저 완료되어야 함
+    batch_vlm_json = store.batch_vlm_json(current_batch_index)
+    if not batch_vlm_json.exists():
+        return {"success": False, "error": f"배치 {current_batch_index}의 vlm.json이 없습니다. run_batch_vlm을 먼저 실행하세요."}
+
+    # 이미 존재하면 스킵
+    batch_segments_units = store.batch_segments_units_jsonl(current_batch_index)
+    if batch_segments_units.exists():
+        # 기존 파일에서 segment 수 확인
+        segments_count = 0
+        with open(batch_segments_units, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    segments_count += 1
+        return {
+            "success": True,
+            "skipped": True,
+            "batch_index": current_batch_index,
+            "segments_units_jsonl": str(batch_segments_units),
+            "segments_count": segments_count,
+            "message": f"배치 {current_batch_index}의 segments_units.jsonl이 이미 존재합니다. 스킵합니다.",
+        }
+
+    try:
+        # Sync 설정 (기본값 사용)
+        sync_config = {
+            "min_segment_sec": 30,
+            "max_segment_sec": 120,
+            "max_transcript_chars": 1000,
+            "silence_gap_ms": 500,
+            "max_visual_items": 10,
+            "max_visual_chars": 3000,
+            "dedup_similarity_threshold": 0.9,
+        }
+
+        from src.fusion.sync_engine import run_batch_sync_engine
+        result = run_batch_sync_engine(
+            stt_json=store.stt_json(),
+            vlm_json=batch_vlm_json,
+            manifest_json=store.manifest_json(),
+            output_dir=batch_dir,
+            time_range=(start_ms, end_ms),
+            sync_config=sync_config,
+            segment_id_offset=0,  # 배치 내에서는 1부터 시작
+        )
+
+        return {
+            "success": True,
+            "skipped": False,
+            "batch_index": current_batch_index,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "segments_units_jsonl": result["segments_units_jsonl"],
+            "segments_count": result["segments_count"],
+        }
+    except Exception as e:
+        return {"success": False, "error": f"배치 Sync 실행 실패: {e}"}

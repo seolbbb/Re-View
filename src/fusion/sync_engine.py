@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ConfigBundle
 from .io_utils import compute_run_id, ensure_output_root, read_json, write_json, print_jsonl_head
@@ -418,3 +418,161 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
     write_json(output_dir / "trace_map.json", {"run_id": run_id, "segments": trace_map_segments})
 
     print_jsonl_head(output_dir / "segments.jsonl", max_lines=2)
+
+
+def run_batch_sync_engine(
+    *,
+    stt_json: Path,
+    vlm_json: Path,
+    manifest_json: Optional[Path],
+    output_dir: Path,
+    time_range: Tuple[int, int],
+    sync_config: Dict[str, object],
+    segment_id_offset: int = 0,
+) -> Dict[str, object]:
+    """배치 단위로 Sync를 실행합니다.
+
+    특정 시간 범위의 데이터만 처리하여 배치별 segments_units.jsonl을 생성합니다.
+
+    Args:
+        stt_json: stt.json 경로
+        vlm_json: 배치별 vlm.json 경로
+        manifest_json: manifest.json 경로 (선택)
+        output_dir: 출력 디렉토리 (배치별 디렉토리)
+        time_range: (start_ms, end_ms) 시간 범위
+        sync_config: sync_engine 설정 (min_segment_sec, max_segment_sec 등)
+        segment_id_offset: segment_id 오프셋 (배치 병합 시 사용)
+
+    Returns:
+        segments_count: 생성된 segment 수
+        segments_units_jsonl: 생성된 파일 경로
+    """
+    start_ms, end_ms = time_range
+
+    # STT 로드 및 시간 범위 필터링
+    stt_segments, stt_duration_ms = _load_stt_segments(stt_json)
+    filtered_stt_segments = [
+        seg for seg in stt_segments
+        if seg["end_ms"] > start_ms and seg["start_ms"] < end_ms
+    ]
+
+    # VLM 로드 (이미 배치별로 필터링된 상태)
+    vlm_items, vlm_duration_ms = _load_vlm_items(vlm_json)
+
+    # manifest scores 로드
+    manifest_scores = _load_manifest_scores(manifest_json) if manifest_json else {}
+
+    # 설정 값 추출
+    min_segment_ms = int(sync_config.get("min_segment_sec", 30)) * 1000
+    max_segment_ms = int(sync_config.get("max_segment_sec", 120)) * 1000
+    max_transcript_chars = int(sync_config.get("max_transcript_chars", 1000))
+    silence_gap_ms = int(sync_config.get("silence_gap_ms", 500))
+    max_visual_items = int(sync_config.get("max_visual_items", 10))
+    max_visual_chars = int(sync_config.get("max_visual_chars", 3000))
+    dedup_similarity_threshold = float(sync_config.get("dedup_similarity_threshold", 0.9))
+
+    # duration 계산 (배치 범위 내)
+    duration_ms = end_ms - start_ms
+
+    # VLM 아이템이 없으면 빈 결과 반환
+    if not vlm_items and not filtered_stt_segments:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        segments_units_path = output_dir / "segments_units.jsonl"
+        segments_units_path.write_text("", encoding="utf-8")
+        return {
+            "segments_count": 0,
+            "segments_units_jsonl": str(segments_units_path),
+        }
+
+    # 초기 세그먼트 생성 (VLM 타임스탬프 기반)
+    # 시간 범위를 배치 내부로 조정
+    adjusted_vlm_items = [
+        {**item, "timestamp_ms": int(item["timestamp_ms"]) - start_ms}
+        for item in vlm_items
+        if start_ms <= int(item["timestamp_ms"]) < end_ms
+    ]
+
+    if not adjusted_vlm_items:
+        # VLM 아이템이 없으면 전체 범위를 하나의 세그먼트로
+        initial_segments = [SegmentWindow(start_ms=0, end_ms=duration_ms)]
+    else:
+        initial_segments = _build_initial_segments(adjusted_vlm_items, duration_ms, min_segment_ms)
+
+    # 세그먼트 분할
+    # STT 세그먼트도 배치 시간 기준으로 조정
+    adjusted_stt_segments = [
+        {
+            **seg,
+            "start_ms": max(0, int(seg["start_ms"]) - start_ms),
+            "end_ms": min(duration_ms, int(seg["end_ms"]) - start_ms),
+        }
+        for seg in filtered_stt_segments
+    ]
+
+    refined_segments: List[SegmentWindow] = []
+    for segment in initial_segments:
+        refined_segments.extend(
+            _split_segment_recursive(
+                segment,
+                adjusted_stt_segments,
+                max_segment_ms,
+                max_transcript_chars,
+                silence_gap_ms,
+            )
+        )
+
+    refined_segments = sorted(refined_segments, key=lambda x: (x.start_ms, x.end_ms))
+
+    # run_id 생성
+    run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
+
+    # 출력 디렉토리 생성
+    output_dir.mkdir(parents=True, exist_ok=True)
+    segments_units_path = output_dir / "segments_units.jsonl"
+
+    # 결과 생성
+    with open(segments_units_path, "w", encoding="utf-8") as f:
+        for idx, segment in enumerate(refined_segments, start=1):
+            # 배치 내 조정된 시간을 원래 시간으로 복원
+            actual_start_ms = segment.start_ms + start_ms
+            actual_end_ms = segment.end_ms + start_ms
+
+            transcript_units, transcript_text = _build_transcript_units(
+                adjusted_stt_segments, segment.start_ms, segment.end_ms
+            )
+            # transcript_units의 시간도 원래 시간으로 복원
+            for unit in transcript_units:
+                unit["start_ms"] = int(unit["start_ms"]) + start_ms
+                unit["end_ms"] = int(unit["end_ms"]) + start_ms
+
+            # VLM 아이템 선택 (조정된 시간 기준)
+            selected_vlm_items = _select_vlm_items(
+                adjusted_vlm_items,
+                {},  # manifest_scores는 원래 시간 기준이라 사용 안 함
+                segment.start_ms,
+                segment.end_ms,
+                max_visual_items,
+            )
+            visual_units, visual_text = _extract_visual_units(
+                selected_vlm_items,
+                dedup_similarity_threshold,
+                max_visual_chars,
+            )
+            # visual_units의 시간도 원래 시간으로 복원
+            for unit in visual_units:
+                unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
+
+            record = {
+                "run_id": run_id,
+                "segment_id": idx + segment_id_offset,
+                "start_ms": actual_start_ms,
+                "end_ms": actual_end_ms,
+                "transcript_units": transcript_units,
+                "visual_units": visual_units,
+            }
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+    return {
+        "segments_count": len(refined_segments),
+        "segments_units_jsonl": str(segments_units_path),
+    }
