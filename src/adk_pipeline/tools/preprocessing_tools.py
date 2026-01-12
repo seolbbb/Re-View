@@ -28,11 +28,18 @@ _OUTPUT_BASE = _PROJECT_ROOT / DEFAULT_OUTPUT_BASE
 def load_data(tool_context: ToolContext) -> Dict[str, Any]:
     """Pre-ADK 산출물(stt.json, manifest.json, captures)을 검증합니다.
 
+    첫 배치가 아니면 스킵합니다 (이미 검증됨).
+
     Returns:
         success: 검증 성공 여부
         artifacts: 산출물 경로들
         error: 실패 시 에러 메시지
     """
+    # 첫 배치가 아니면 스킵 (이미 검증됨)
+    is_first_batch = tool_context.state.get("is_first_batch", True)
+    if not is_first_batch:
+        return {"success": True, "skipped": True, "message": "첫 배치가 아니므로 스킵"}
+
     video_name = tool_context.state.get("video_name")
     if not video_name:
         return {"success": False, "error": "video_name 미설정"}
