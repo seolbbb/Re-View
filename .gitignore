@@ -47,6 +47,11 @@ src/data/output/grid_search
 !src/data/output/grid_search/capture_threshold_gridSearch.png
 !src/data/output/grid_search/grid_search_report.md
 !src/data/output/grid_search/grid_search_results.json
+*.db
 
 # Docs
 "장면 변환 프레임 캡처.md"
+
+# capture benchmark
+temp_bench/
+src/db
