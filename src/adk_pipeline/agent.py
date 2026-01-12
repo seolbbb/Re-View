@@ -52,9 +52,15 @@ preprocessing_agent = Agent(
     description="VLM과 Sync를 실행하여 비디오 캡처에서 세그먼트를 추출합니다.",
     instruction="""Preprocessing Agent입니다.
 
-도구 순서: load_data → init_batch_mode → run_vlm → run_sync → Root로 transfer
+## 도구 순서
+1. load_data (첫 배치면 실행, 아니면 자동 스킵)
+2. init_batch_mode (첫 배치면 실행)
+3. run_vlm
+4. run_sync
+5. Root로 transfer
 
-(각 도구가 상황에 맞게 자동으로 스킵됩니다)
+## 에러 처리
+도구 실패 시 에러 메시지를 포함하여 Root로 transfer하세요.
 """,
     tools=[load_data, init_batch_mode, run_vlm, run_sync],
     generate_content_config=types.GenerateContentConfig(
@@ -69,7 +75,12 @@ summarize_agent = Agent(
     description="세그먼트를 요약합니다.",
     instruction="""Summarize Agent입니다.
 
-도구 순서: run_summarizer → Root로 transfer
+## 도구 순서
+1. run_summarizer (현재 배치 요약 생성, fusion에 누적 저장)
+2. Root로 transfer
+
+## 에러 처리
+도구 실패 시 에러 메시지를 포함하여 Root로 transfer하세요.
 """,
     tools=[run_summarizer],
     generate_content_config=types.GenerateContentConfig(
@@ -84,7 +95,12 @@ judge_agent = Agent(
     description="요약 품질을 평가하고 PASS/FAIL을 반환합니다.",
     instruction="""Judge Agent입니다.
 
-도구 순서: evaluate_summary → Root로 transfer
+## 도구 순서
+1. evaluate_summary (품질 평가, PASS/FAIL 반환)
+2. Root로 transfer (PASS/FAIL 결과 포함)
+
+## 에러 처리
+도구 실패 시 에러 메시지를 포함하여 Root로 transfer하세요.
 """,
     tools=[evaluate_summary],
     generate_content_config=types.GenerateContentConfig(
@@ -100,7 +116,12 @@ merge_agent = Agent(
     description="모든 배치 결과 병합 및 최종 요약 생성",
     instruction="""Merge Agent입니다.
 
-도구 순서: merge_and_finalize → Root로 transfer
+## 도구 순서
+1. merge_and_finalize (병합 + render_md + final_summary 한번에 실행)
+2. Root로 transfer (최종 요약 파일 경로 포함)
+
+## 에러 처리
+도구 실패 시 에러 메시지를 포함하여 Root로 transfer하세요.
 """,
     tools=[merge_all_batches, render_md, generate_final_summary_tool, merge_and_finalize],
     generate_content_config=types.GenerateContentConfig(
@@ -118,55 +139,31 @@ root_agent = Agent(
 
 ## 역할
 사용자와 대화하면서 비디오 처리 파이프라인을 조율합니다.
-실제 처리 작업은 Sub-Agent들에게 위임합니다.
 
-## 🚨 중요: 기본 동작 = 배치 모드
-파이프라인은 **배치 모드**가 기본입니다. 기본 5장씩 분할 처리하며, `batch_size` 옵션으로 사용자가 조절할 수 있습니다.
+## 기본 동작: 배치 모드
+- 기본 5장씩 분할 처리
+- `batch_size` 옵션으로 사용자가 조절 가능
 
-## 사용 가능한 도구
+## 파이프라인 실행 (step-by-step)
 
-### 기본 도구
-1. **list_available_videos**: 처리 가능한 비디오 목록 조회
-2. **set_pipeline_config**: 비디오 선택 및 설정
-   - `video_name`: 비디오 이름 (필수)
-   - `batch_size`: 배치당 캡처 개수 (default: 5장)
-   - `batch_mode`: True면 배치 모드 (default: True)
-   - `force_preprocessing`: True면 기존 파일 삭제 후 재실행 (default: False)
-   - `max_reruns`: Judge 실패 시 최대 재실행 횟수 (default: 2)
-3. **get_pipeline_status**: 현재 파이프라인 상태 조회
+사용자가 "트앴소 해봐" 같이 요청하면:
 
-### 배치 관리 도구
-4. **init_batch_mode**: 배치 모드 초기화 (manifest에서 캡처 수 확인, 배치 개수 결정)
-5. **get_batch_info**: 현재 배치 상태 조회
-6. **get_current_batch_time_range**: 현재 배치의 시간/인덱스 범위 조회
-7. **mark_batch_complete**: 현재 배치 완료 표시, 다음 배치로 이동
-8. **get_previous_context**: 이전 배치의 요약 context 조회
+**STEP 1**: set_pipeline_config(video_name="트오소" 포함하는 이름) 호출
+**STEP 2**: preprocessing_agent로 transfer
+**STEP 3**: (preprocessing 완료 후) summarize_agent로 transfer
+**STEP 4**: (summarize 완료 후) judge_agent로 transfer
+**STEP 5**: (judge 완료 후) "배치 X 완료" 사용자에게 알림
+**STEP 6**: get_batch_info 호출하여 all_completed 확인
 
-## Sub-Agents (transfer 가능)
-1. **preprocessing_agent**: VLM + Sync (배치 모드면 현재 배치만 처리)
-2. **summarize_agent**: 요약 생성 (배치 모드면 현재 배치만, fusion에 누적)
-3. **judge_agent**: 품질 평가
-4. **merge_agent**: 모든 배치 병합 + 최종 요약 (배치 모드에서만)
+**STEP 7** (조건 분기):
+- all_completed=False → mark_batch_complete 후 **STEP 2로 돌아가세요**
+- all_completed=True → merge_agent로 transfer
 
-## 파이프라인 실행 순서 (배치 모드)
+**STEP 8**: (merge 완료 후) "최종 요약 완료!" 사용자에게 알림
 
-사용자가 "test3 해봐" 같이 요청하면:
-
-1. **set_pipeline_config(video_name="test3_Diffusion")**  ← batch_mode=True 자동
-2. **preprocessing_agent**로 transfer (load_data + init_batch_mode + VLM + Sync)
-3. **summarize_agent**로 transfer (요약 생성)
-4. **judge_agent**로 transfer (배치 평가)
-5. 🎉 "배치 0 완료!" 결과 표시
-6. **mark_batch_complete** → 다음 배치로 이동
-7. 2-6 반복 (모든 배치 완료까지)
-8. **merge_agent**로 transfer (병합 + 최종 요약)
-9. 🎉 최종 결과 보고
-
-## 🚨 중요!!
-- Sub-agent가 돌아오면 그 결과를 확인하고 **즉시 다음 단계를 진행**하세요
-- 배치 모드에서는 각 배치 완료 후 사용자에게 진행 상황을 알려주세요
-- 에러가 발생해도 해당 단계의 agent를 재실행하세요 (preprocessing 에러 → preprocessing 재실행)
-- 사용자가 명시적으로 중단을 요청하지 않는 한 파이프라인을 끝까지 진행하세요
+## 에러 처리
+- Sub-agent가 에러를 반환하면: 해당 agent를 다시 transfer (최대 2회)
+- 사용자가 중단을 요청하지 않는 한 파이프라인을 끝까지 진행하세요
 """,
     tools=[
         list_available_videos,
