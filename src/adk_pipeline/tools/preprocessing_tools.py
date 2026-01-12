@@ -199,3 +199,98 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"Sync 실행 실패: {e}"}
+
+
+# ========== 배치 처리 도구 ==========
+
+
+def run_batch_vlm(tool_context: ToolContext) -> Dict[str, Any]:
+    """현재 배치의 시간 범위에 해당하는 캡처만 VLM 처리합니다.
+
+    배치 모드에서 사용됩니다. 현재 배치 인덱스의 시간 범위에 해당하는
+    캡처 이미지만 VLM 처리하여 배치별 vlm.json을 생성합니다.
+
+    Returns:
+        success: 실행 성공 여부
+        batch_index: 처리된 배치 인덱스
+        vlm_json: 생성된 vlm.json 경로
+        image_count: 처리된 이미지 수
+    """
+    video_name = tool_context.state.get("video_name")
+    if not video_name:
+        return {"success": False, "error": "video_name 미설정"}
+
+    batch_mode = tool_context.state.get("batch_mode", False)
+    if not batch_mode:
+        return {"success": False, "error": "배치 모드가 비활성화 상태입니다."}
+
+    store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+
+    # 현재 배치 정보 가져오기
+    current_batch_index = tool_context.state.get("current_batch_index", 0)
+    batch_duration_ms = tool_context.state.get("batch_duration_ms", 200000)
+    total_duration_ms = tool_context.state.get("total_duration_ms", 0)
+
+    start_ms = current_batch_index * batch_duration_ms
+    end_ms = min((current_batch_index + 1) * batch_duration_ms, total_duration_ms)
+
+    # 배치 디렉토리 생성
+    batch_dir = store.batch_dir(current_batch_index)
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    # 이미 존재하면 스킵
+    batch_vlm_json = store.batch_vlm_json(current_batch_index)
+    if batch_vlm_json.exists():
+        return {
+            "success": True,
+            "skipped": True,
+            "batch_index": current_batch_index,
+            "vlm_json": str(batch_vlm_json),
+            "message": f"배치 {current_batch_index}의 vlm.json이 이미 존재합니다. 스킵합니다.",
+        }
+
+    # VLM 설정 가져오기
+    raw_batch_size = tool_context.state.get("vlm_batch_size", 2)
+    raw_concurrency = tool_context.state.get("vlm_concurrency", 3)
+    show_progress = bool(tool_context.state.get("vlm_show_progress", True))
+
+    try:
+        batch_size: Optional[int]
+        if raw_batch_size is None:
+            batch_size = None
+        else:
+            batch_size = int(raw_batch_size)
+            if batch_size < 1:
+                return {"success": False, "error": "vlm_batch_size는 1 이상이어야 합니다."}
+
+        concurrency = int(raw_concurrency)
+        if concurrency < 1:
+            return {"success": False, "error": "vlm_concurrency는 1 이상의 정수여야 합니다."}
+    except (TypeError, ValueError):
+        return {"success": False, "error": "VLM 설정 값이 올바르지 않습니다."}
+
+    try:
+        from .internal.vlm_openrouter import run_vlm_for_batch
+        result = run_vlm_for_batch(
+            captures_dir=store.captures_dir(),
+            manifest_json=store.manifest_json(),
+            video_name=video_name,
+            output_dir=batch_dir,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            show_progress=show_progress,
+        )
+
+        return {
+            "success": True,
+            "skipped": False,
+            "batch_index": current_batch_index,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "vlm_json": result["vlm_json"],
+            "image_count": result["image_count"],
+        }
+    except Exception as e:
+        return {"success": False, "error": f"배치 VLM 실행 실패: {e}"}
