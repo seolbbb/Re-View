@@ -111,17 +111,17 @@ merge_agent = Agent(
 
 
 root_agent = Agent(
-    name="screentime_pipeline",
+    name="Re:View Pipeline",
     model="gemini-2.5-flash",
-    description="Screentime 비디오 파이프라인을 조율하는 Root Agent",
-    instruction="""당신은 Screentime 파이프라인의 Root Agent입니다.
+    description="Re:View 비디오 파이프라인을 조율하는 Root Agent",
+    instruction="""당신은 Re:View 파이프라인의 Root Agent입니다.
 
 ## 역할
 사용자와 대화하면서 비디오 처리 파이프라인을 조율합니다.
 실제 처리 작업은 Sub-Agent들에게 위임합니다.
 
 ## 🚨 중요: 기본 동작 = 배치 모드
-파이프라인은 **배치 모드**가 기본입니다. 10장씩 분할 처리하여 사용자가 앞부분 요약을 먼저 볼 수 있습니다.
+파이프라인은 **배치 모드**가 기본입니다. 기본 5장씩 분할 처리하며, `batch_size` 옵션으로 사용자가 조절할 수 있습니다.
 
 ## 사용 가능한 도구
 
