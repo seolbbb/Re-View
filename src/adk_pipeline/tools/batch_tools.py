@@ -80,7 +80,7 @@ def _extract_context_from_summaries(
 
 def init_batch_mode(
     tool_context: ToolContext,
-    batch_capture_count: int = 10,
+    batch_size: int = 10,
     context_max_chars: int = 500,
 ) -> Dict[str, Any]:
     """배치 모드를 초기화합니다.
@@ -89,14 +89,14 @@ def init_batch_mode(
     이미지(캡처) 개수 기반으로 배치를 분할하여 맥락 연결성을 유지합니다.
 
     Args:
-        batch_capture_count: 배치당 캡처 개수 (기본 10장)
+        batch_size: 배치당 캡처 개수 (기본 10장)
         context_max_chars: 이전 배치 context 최대 문자 수 (기본 500)
 
     Returns:
         success: 초기화 성공 여부
         total_captures: 전체 캡처 개수
         total_batches: 전체 배치 개수
-        batch_capture_count: 배치당 캡처 개수
+        batch_size: 배치당 캡처 개수
     """
     video_name = tool_context.state.get("video_name")
     if not video_name:
@@ -123,13 +123,13 @@ def init_batch_mode(
     )
 
     # 배치 개수 계산 (캡처 개수 기반)
-    total_batches = max(1, math.ceil(total_captures / batch_capture_count))
+    total_batches = max(1, math.ceil(total_captures / batch_size))
 
     # 각 배치의 캡처 인덱스 범위 계산
     batch_ranges: List[Dict[str, Any]] = []
     for batch_idx in range(total_batches):
-        start_idx = batch_idx * batch_capture_count
-        end_idx = min((batch_idx + 1) * batch_capture_count, total_captures)
+        start_idx = batch_idx * batch_size
+        end_idx = min((batch_idx + 1) * batch_size, total_captures)
 
         # 해당 범위의 캡처들
         batch_captures = sorted_manifest[start_idx:end_idx]
@@ -158,7 +158,7 @@ def init_batch_mode(
 
     # state에 배치 정보 저장
     tool_context.state["batch_mode"] = True
-    tool_context.state["batch_capture_count"] = batch_capture_count
+    tool_context.state["batch_size"] = batch_size
     tool_context.state["total_captures"] = total_captures
     tool_context.state["total_batches"] = total_batches
     tool_context.state["batch_ranges"] = batch_ranges
@@ -183,10 +183,10 @@ def init_batch_mode(
         "success": True,
         "total_captures": total_captures,
         "total_batches": total_batches,
-        "batch_capture_count": batch_capture_count,
+        "batch_size": batch_size,
         "batch_ranges": batch_ranges,
         "context_max_chars": context_max_chars,
-        "message": f"배치 모드 초기화 완료. 총 {total_captures}장을 {total_batches}개 배치로 처리합니다. (배치당 {batch_capture_count}장)",
+        "message": f"배치 모드 초기화 완료. 총 {total_captures}장을 {total_batches}개 배치로 처리합니다. (배치당 {batch_size}장)",
     }
 
 

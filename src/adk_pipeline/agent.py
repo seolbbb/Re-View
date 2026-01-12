@@ -21,19 +21,14 @@ from .tools.preprocessing_tools import (
     load_data,
     run_vlm,
     run_sync,
-    run_batch_vlm,
-    run_batch_sync,
 )
 from .tools.summarize_tools import (
     run_summarizer,
     render_md,
     write_final_summary,
-    run_batch_summarizer,
-    render_batch_md,
 )
 from .tools.judge_tools import (
     evaluate_summary,
-    evaluate_batch_summary,
 )
 from .tools.batch_tools import (
     init_batch_mode,
@@ -61,31 +56,39 @@ preprocessing_agent = Agent(
 
 ## 역할
 캡처 이미지에서 텍스트/UI 요소를 추출(VLM)하고 STT와 동기화(Sync)합니다.
+배치 모드일 때는 현재 배치의 캡처만 처리합니다.
 
 ## 사용 가능한 도구
-1. **load_data**: Pre-ADK 산출물(stt.json, manifest.json, captures) 검증
-2. **run_vlm**: 캡처 이미지에서 VLM으로 텍스트 추출 → vlm.json 생성
-3. **run_sync**: STT와 VLM 결과 동기화 → segments_units.jsonl 생성
+1. **load_data**: Pre-ADK 산출물 검증
+2. **init_batch_mode**: 배치 모드 초기화 (첫 배치에서만)
+3. **run_vlm**: VLM 실행 → vlm.json 생성 (배치 모드면 현재 배치만)
+4. **run_sync**: Sync 실행 → segments_units.jsonl (배치 모드면 현재 배치만)
 
-## 워크플로우 (Transfer 받으면 즉시 시작!)
-**transfer를 받으면 반드시 이 순서대로 도구를 호출하세요:**
-1. load_data로 Pre-ADK 산출물 검증
-2. run_vlm으로 VLM 실행
-3. run_sync로 Sync 실행
-4. 모든 도구 실행이 완료되면 **결과를 요약**하고 screentime_pipeline으로 transfer
+## 워크플로우
 
-## 재실행 (force_preprocessing)
-- state에 `force_preprocessing=True`가 설정되어 있으면 기존 파일을 삭제하고 처음부터 다시 실행합니다
-- 일반적으로는 기존 파일이 있으면 스킵합니다
+**배치 모드 (첫 배치일 때):**
+1. load_data → Pre-ADK 검증
+2. init_batch_mode → "총 N장을 M개 배치로 처리"
+3. run_vlm → 현재 배치 VLM
+4. run_sync → 현재 배치 Sync
+5. screentime_pipeline으로 transfer
 
-## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 load_data를 호출하세요!**
-- 모든 도구를 순서대로 실행한 후 **screentime_pipeline으로 transfer**하세요
-- 스킵되었더라도 반드시 결과를 말로 요약하고 transfer하세요!
-- 에러가 발생해도 에러 내용을 설명하고 screentime_pipeline으로 transfer하세요
-- 침묵하거나 빈 메시지를 보내면 안 됩니다!
+**배치 모드 (이후 배치일 때):**
+1. run_vlm → 현재 배치 VLM
+2. run_sync → 현재 배치 Sync
+3. screentime_pipeline으로 transfer
+
+**일반 모드:**
+1. load_data → Pre-ADK 검증
+2. run_vlm → 전체 VLM
+3. run_sync → 전체 Sync
+4. screentime_pipeline으로 transfer
+
+## 🚨 중요!!
+- **Transfer 받으면 절대 빈 응답 금지!**
+- 에러 시에도 screentime_pipeline으로 transfer하세요
 """,
-    tools=[load_data, run_vlm, run_sync],
+    tools=[load_data, init_batch_mode, run_vlm, run_sync],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
@@ -154,90 +157,12 @@ judge_agent = Agent(
 - PASS/FAIL 결과와 can_rerun 여부를 명확히 전달하세요
 - 침묵하거나 빈 메시지를 보내면 안 됩니다!
 """,
-    tools=[evaluate_summary, evaluate_batch_summary],
+    tools=[evaluate_summary],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
 )
 
-
-
-# === 배치 처리용 Sub-Agents ===
-
-batch_preprocessing_agent = Agent(
-    name="batch_preprocessing_agent",
-    model="gemini-2.5-flash",
-    description="Pre-ADK 검증 및 배치 초기화 후 현재 배치 VLM/Sync 처리",
-    instruction="""당신은 Batch Preprocessing Agent입니다.
-
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 도구를 호출하세요!
-
-## 역할
-Pre-ADK 검증, 배치 초기화, 현재 배치 VLM/Sync 처리를 수행합니다.
-
-## 사용 가능한 도구
-1. **load_data**: Pre-ADK 산출물 검증 (stt.json, manifest.json, captures 확인)
-2. **init_batch_mode**: 배치 모드 초기화 (캡처 수 확인, 배치 개수 결정)
-3. **run_batch_vlm**: 현재 배치의 캡처에서 VLM으로 텍스트 추출
-4. **run_batch_sync**: 현재 배치의 STT와 VLM 결과 동기화
-
-## 워크플로우 (Transfer 받으면 즉시 시작!)
-
-**첫 번째 배치인 경우 (init_batch_mode 안 된 경우):**
-1. load_data로 Pre-ADK 검증
-2. init_batch_mode로 배치 초기화 → "총 N장을 M개 배치로 처리"
-3. run_batch_vlm으로 현재 배치 VLM 실행
-4. run_batch_sync로 현재 배치 Sync 실행
-5. 결과와 함께 screentime_pipeline으로 transfer
-
-**이후 배치인 경우 (이미 초기화됨):**
-1. run_batch_vlm으로 현재 배치 VLM 실행
-2. run_batch_sync로 현재 배치 Sync 실행
-3. 결과와 함께 screentime_pipeline으로 transfer
-
-## 🚨 중요!!
-- **Transfer를 받으면 절대 빈 응답하지 마세요!**
-- 현재 배치 정보(batch_index, 캡처 범위)를 결과에 포함하세요
-""",
-    tools=[load_data, init_batch_mode, run_batch_vlm, run_batch_sync],
-    generate_content_config=types.GenerateContentConfig(
-        temperature=0.1,
-    ),
-)
-
-
-
-batch_summarize_agent = Agent(
-    name="batch_summarize_agent",
-    model="gemini-2.5-flash",
-    description="현재 배치 요약 생성, 이전 context 활용",
-    instruction="""당신은 Batch Summarize Agent입니다.
-
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 즉시 run_batch_summarizer를 호출하세요!
-
-## 역할
-현재 배치의 세그먼트를 요약합니다. 이전 배치의 context를 활용합니다.
-
-## 사용 가능한 도구
-1. **run_batch_summarizer**: 현재 배치 세그먼트 요약 생성
-2. **render_batch_md**: 현재 배치 요약을 마크다운으로 변환
-
-## 워크플로우 (Transfer 받으면 즉시 시작!)
-**transfer를 받으면 반드시 이 순서대로 도구를 호출하세요:**
-1. run_batch_summarizer로 현재 배치 요약 생성
-2. render_batch_md로 마크다운 변환
-3. 모든 도구 실행이 완료되면 **결과를 요약**하고 screentime_pipeline으로 transfer
-
-## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 run_batch_summarizer를 호출하세요!**
-- 현재 배치 정보(batch_index, segments_count)를 결과에 포함하세요
-- context 정보가 다음 배치에 전달될 수 있도록 결과에 포함하세요
-""",
-    tools=[run_batch_summarizer, render_batch_md],
-    generate_content_config=types.GenerateContentConfig(
-        temperature=0.1,
-    ),
-)
 
 
 merge_agent = Agent(
@@ -295,7 +220,7 @@ root_agent = Agent(
 1. **list_available_videos**: 처리 가능한 비디오 목록 조회
 2. **set_pipeline_config**: 비디오 선택 및 설정
    - `video_name`: 비디오 이름 (필수)
-   - `batch_capture_count`: 배치당 캡처 개수 (default: 10장)
+   - `batch_size`: 배치당 캡처 개수 (default: 10장)
    - `batch_mode`: True면 배치 모드 (default: True)
    - `force_preprocessing`: True면 기존 파일 삭제 후 재실행 (default: False)
    - `max_reruns`: Judge 실패 시 최대 재실행 횟수 (default: 2)
@@ -309,29 +234,24 @@ root_agent = Agent(
 8. **get_previous_context**: 이전 배치의 요약 context 조회
 
 ## Sub-Agents (transfer 가능)
-
-### 배치 모드 Sub-Agents (기본)
-1. **batch_preprocessing_agent**: 현재 배치 VLM + Sync
-2. **batch_summarize_agent**: 현재 배치 요약 생성
-3. **judge_agent**: 품질 평가 (evaluate_batch_summary 사용)
-4. **merge_agent**: 모든 배치 병합 + 최종 요약
+1. **preprocessing_agent**: VLM + Sync (배치 모드면 현재 배치만 처리)
+2. **summarize_agent**: 요약 생성 (배치 모드면 현재 배치만, fusion에 누적)
+3. **judge_agent**: 품질 평가
+4. **merge_agent**: 모든 배치 병합 + 최종 요약 (배치 모드에서만)
 
 ## 파이프라인 실행 순서 (배치 모드)
 
 사용자가 "test3 해봐" 같이 요청하면:
 
 1. **set_pipeline_config(video_name="test3_Diffusion")**  ← batch_mode=True 자동
-2. **load_data**로 Pre-ADK 검증
-3. **init_batch_mode**로 배치 초기화 (예: "총 50장을 5개 배치로 처리")
-4. **배치 루프** (current_batch_index < total_batches 동안):
-   a. **batch_preprocessing_agent**로 transfer (VLM + Sync)
-   b. **batch_summarize_agent**로 transfer (요약 생성)
-   c. **judge_agent**로 transfer (배치 평가)
-   d. 🎉 "배치 0 완료!" 결과 표시
-   e. **mark_batch_complete** → 다음 배치로 이동
-   f. FAIL이면 해당 배치 재시도 (max_reruns까지)
-5. 모든 배치 완료 후 **merge_agent**로 transfer (병합 + 최종 요약)
-6. 🎉 최종 결과 보고
+2. **preprocessing_agent**로 transfer (load_data + init_batch_mode + VLM + Sync)
+3. **summarize_agent**로 transfer (요약 생성)
+4. **judge_agent**로 transfer (배치 평가)
+5. 🎉 "배치 0 완료!" 결과 표시
+6. **mark_batch_complete** → 다음 배치로 이동
+7. 2-6 반복 (모든 배치 완료까지)
+8. **merge_agent**로 transfer (병합 + 최종 요약)
+9. 🎉 최종 결과 보고
 
 ## 🚨 중요!!
 - Sub-agent가 돌아오면 그 결과를 확인하고 **즉시 다음 단계를 진행**하세요
@@ -353,8 +273,6 @@ root_agent = Agent(
         preprocessing_agent,
         summarize_agent,
         judge_agent,
-        batch_preprocessing_agent,
-        batch_summarize_agent,
         merge_agent,
     ],
     generate_content_config=types.GenerateContentConfig(
@@ -369,6 +287,4 @@ root_agent = Agent(
 preprocessing_agent._sub_agents = [root_agent]
 summarize_agent._sub_agents = [root_agent]
 judge_agent._sub_agents = [root_agent]
-batch_preprocessing_agent._sub_agents = [root_agent]
-batch_summarize_agent._sub_agents = [root_agent]
 merge_agent._sub_agents = [root_agent]
