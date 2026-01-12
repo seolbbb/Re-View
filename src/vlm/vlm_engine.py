@@ -8,7 +8,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -16,20 +16,6 @@ from openai import OpenAI
 from src.common.schemas import OcrBox, OcrResult
 
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
-
-SYSTEM_PROMPT = (
-    "Output only Markdown. Use Markdown tables when layout matters. "
-    "Use LaTeX for equations (inline $...$ and block $$...$$). "
-    "Do not wrap the output in code fences."
-)
-
-USER_PROMPT = (
-    "이미지에 포함된 모든 텍스트와 수식을 가능한 한 원문 그대로 옮겨 적어라. "
-    "원문 텍스트는 번역하지 말고 원문 언어를 유지하라. "
-    "필요한 설명은 한국어로 간결히 작성하라. "
-    "레이아웃이 중요하면 Markdown 표/목록을 사용하고, 수식은 LaTeX($...$, $$...$$)로 표기하라. "
-    "텍스트가 거의 없거나 그림/그래프 위주라면 시각 요소를 구체적으로 설명하라"
-)
 
 FULL_IMAGE_BBOX = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
 
@@ -45,6 +31,101 @@ DEFAULT_REQUEST_PARAMS = {
 }
 
 BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
+PROVIDER_NAME_RE = re.compile(r'provider_name["\']?:\s*["\']([^"\']+)')
+ERROR_CODE_RE = re.compile(r"Error code:\s*(\d+)")
+PROMPT_SECTION_RE = re.compile(r"^##\s+.+?\(([^)]+)\)\s*$", re.MULTILINE)
+PROMPT_BLOCK_RE = re.compile(
+    r"^###\s*(SYSTEM|USER)\s*$\n```text\n(.*?)\n```",
+    re.MULTILINE | re.DOTALL,
+)
+
+PROMPT_VERSIONS_PATH = Path(__file__).resolve().with_name("prompt_versions.md")
+DEFAULT_PROMPT_VERSION = "vlm_v1.1"
+
+
+def _extract_status_code(exc: Exception) -> Optional[int]:
+    for attr in ("status_code", "http_status", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    message = str(exc)
+    match = ERROR_CODE_RE.search(message)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_provider_name(message: str) -> Optional[str]:
+    match = PROVIDER_NAME_RE.search(message)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _is_service_unavailable_error(exc: Exception) -> bool:
+    status_code = _extract_status_code(exc)
+    if status_code == 503:
+        return True
+    message = str(exc).lower()
+    return "service_unavailable" in message or "service unavailable" in message
+
+
+def _format_service_unavailable_message(exc: Exception) -> str:
+    provider = _extract_provider_name(str(exc))
+    if provider:
+        return (
+            f"VLM 제공자({provider})에서 503 오류가 발생했습니다. "
+            "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
+        )
+    return (
+        "VLM 제공자에서 503 오류가 발생했습니다. "
+        "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
+    )
+
+
+def _parse_prompt_versions(content: str) -> Dict[str, Dict[str, str]]:
+    versions: Dict[str, Dict[str, str]] = {}
+    matches = list(PROMPT_SECTION_RE.finditer(content))
+    for idx, match in enumerate(matches):
+        version_id = match.group(1).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
+        section = content[start:end]
+        prompts: Dict[str, str] = {}
+        for block in PROMPT_BLOCK_RE.finditer(section):
+            name = block.group(1).strip().lower()
+            text = block.group(2).strip()
+            prompts[name] = text
+        if prompts:
+            versions[version_id] = prompts
+    return versions
+
+
+def load_prompt_bundle(
+    *,
+    prompt_version: Optional[str] = None,
+    prompt_path: Optional[Path] = None,
+) -> Tuple[str, str]:
+    version_id = (
+        prompt_version
+        or os.getenv("VLM_PROMPT_VERSION")
+        or DEFAULT_PROMPT_VERSION
+    )
+    path = prompt_path or PROMPT_VERSIONS_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"prompt_versions.md를 찾을 수 없습니다: {path}")
+    content = path.read_text(encoding="utf-8")
+    versions = _parse_prompt_versions(content)
+    if version_id not in versions:
+        available = ", ".join(sorted(versions.keys()))
+        raise ValueError(f"프롬프트 버전을 찾을 수 없습니다: {version_id} (가능: {available})")
+    prompt_pair = versions[version_id]
+    if "system" not in prompt_pair or "user" not in prompt_pair:
+        raise ValueError(f"프롬프트 블록이 누락되었습니다: {version_id}")
+    return prompt_pair["system"], prompt_pair["user"]
 
 
 def load_env() -> None:
@@ -57,7 +138,14 @@ def load_env() -> None:
 class OpenRouterVlmExtractor:
     """Vision-capable OpenRouter 모델로 이미지 텍스트/수식 힌트를 추출한다."""
 
-    def __init__(self, video_name: Optional[str] = None, output_root: Path = Path("data/outputs")) -> None:
+    def __init__(
+        self,
+        video_name: Optional[str] = None,
+        output_root: Path = Path("data/outputs"),
+        *,
+        prompt_version: Optional[str] = None,
+        prompt_path: Optional[Path] = None,
+    ) -> None:
         load_env()
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
@@ -67,9 +155,10 @@ class OpenRouterVlmExtractor:
         self.model_name = "qwen/qwen3-vl-32b-instruct"
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         self.request_params = dict(DEFAULT_REQUEST_PARAMS)
-
-        self.system_prompt = SYSTEM_PROMPT
-        self.user_prompt = USER_PROMPT
+        self.system_prompt, self.user_prompt = load_prompt_bundle(
+            prompt_version=prompt_version,
+            prompt_path=prompt_path,
+        )
         self.video_name = video_name
         self.output_root = Path(output_root)
 
@@ -127,11 +216,16 @@ class OpenRouterVlmExtractor:
             {"role": "user", "content": content_parts},
         ]
 
-        completion = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            **request_params,
-        )
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                **request_params,
+            )
+        except Exception as exc:
+            if _is_service_unavailable_error(exc):
+                raise RuntimeError(_format_service_unavailable_message(exc)) from exc
+            raise
         content = completion.choices[0].message.content or ""
         sections = self._split_batch_content(content, len(image_paths))
 
@@ -226,11 +320,16 @@ class OpenRouterVlmExtractor:
                 },
             ]
 
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                **request_params,
-            )
+            try:
+                completion = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    **request_params,
+                )
+            except Exception as exc:
+                if _is_service_unavailable_error(exc):
+                    raise RuntimeError(_format_service_unavailable_message(exc)) from exc
+                raise
             content = completion.choices[0].message.content or ""
             if content.strip():
                 detections = [OcrBox(text=content, bbox=FULL_IMAGE_BBOX)]
@@ -301,13 +400,29 @@ if __name__ == "__main__":
         help="data/outputs/{video_name}/vlm_raw.json 경로를 만들 때 사용할 이름",
     )
     parser.add_argument(
+        "--prompt-version",
+        default=None,
+        help="prompt_versions.md의 프롬프트 버전 ID (예: vlm_v1.0)",
+    )
+    parser.add_argument(
+        "--prompt-path",
+        default=None,
+        help="prompt_versions.md 경로 (기본: src/vlm/prompt_versions.md)",
+    )
+    parser.add_argument(
         "--output-root",
         default="data/outputs",
         help="원시 결과 출력 베이스 디렉토리 (기본: data/outputs)",
     )
     args = parser.parse_args()
 
-    extractor = OpenRouterVlmExtractor(video_name=args.video_name, output_root=Path(args.output_root))
+    prompt_path = Path(args.prompt_path) if args.prompt_path else None
+    extractor = OpenRouterVlmExtractor(
+        video_name=args.video_name,
+        output_root=Path(args.output_root),
+        prompt_version=args.prompt_version,
+        prompt_path=prompt_path,
+    )
     if args.model:
         extractor.model_name = args.model
 
