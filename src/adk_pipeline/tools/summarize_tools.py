@@ -167,6 +167,61 @@ def render_md(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": f"MD 렌더링 실패: {e}"}
 
 
+def render_batch_md(tool_context: ToolContext) -> Dict[str, Any]:
+    """현재 배치의 요약을 마크다운으로 변환합니다.
+
+    배치 완료 후 사용자에게 보여줄 수 있는 MD 파일을 생성합니다.
+
+    Returns:
+        success: 실행 성공 여부
+        batch_index: 렌더링한 배치 인덱스
+        batch_summaries_md: 생성된 파일 경로
+    """
+    video_name = tool_context.state.get("video_name")
+    if not video_name:
+        return {"success": False, "error": "video_name 미설정"}
+
+    batch_mode = tool_context.state.get("batch_mode", False)
+    if not batch_mode:
+        return {"success": False, "error": "배치 모드가 비활성화 상태입니다."}
+
+    current_batch_index = tool_context.state.get("current_batch_index", 0)
+    store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+
+    # 배치 summaries JSONL 확인
+    batch_summaries_path = store.batch_segment_summaries_jsonl(current_batch_index)
+    if not batch_summaries_path.exists():
+        return {
+            "success": False,
+            "error": f"배치 {current_batch_index} segment_summaries.jsonl이 없습니다."
+        }
+
+    batch_md_output = store.batch_segment_summaries_md(current_batch_index)
+
+    try:
+        from src.fusion.config import load_config
+        config = load_config(str(store.fusion_config_yaml()))
+
+        from .internal.render_md import render_md as _render_md
+        _render_md(
+            summaries_jsonl=batch_summaries_path,
+            output_md=batch_md_output,
+            include_sources=config.raw.render.include_sources,
+            sources_jsonl=store.batch_segments_units_jsonl(current_batch_index),
+            md_wrap_width=config.raw.render.md_wrap_width,
+            limit=None,
+        )
+
+        return {
+            "success": True,
+            "batch_index": current_batch_index,
+            "batch_summaries_md": str(batch_md_output),
+            "message": f"배치 {current_batch_index} MD 렌더링 완료",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"배치 MD 렌더링 실패: {e}"}
+
+
 def write_final_summary(tool_context: ToolContext) -> Dict[str, Any]:
     """최종 요약을 생성합니다.
 

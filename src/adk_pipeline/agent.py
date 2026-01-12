@@ -25,6 +25,7 @@ from .tools.preprocessing_tools import (
 from .tools.summarize_tools import (
     run_summarizer,
     render_md,
+    render_batch_md,
     write_final_summary,
 )
 from .tools.judge_tools import (
@@ -72,17 +73,18 @@ preprocessing_agent = Agent(
 summarize_agent = Agent(
     name="summarize_agent",
     model="gemini-2.5-flash",
-    description="세그먼트를 요약합니다.",
+    description="세그먼트를 요약하고 배치별 MD를 생성합니다.",
     instruction="""Summarize Agent입니다.
 
 ## 도구 순서
 1. run_summarizer (현재 배치 요약 생성, fusion에 누적 저장)
-2. Root로 transfer
+2. render_batch_md (현재 배치 요약을 MD으로 렌더링)
+3. Root로 transfer (batch_summaries_md 경로 포함)
 
 ## 에러 처리
 도구 실패 시 에러 메시지를 포함하여 Root로 transfer하세요.
 """,
-    tools=[run_summarizer],
+    tools=[run_summarizer, render_batch_md],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
@@ -146,13 +148,13 @@ root_agent = Agent(
 
 ## 파이프라인 실행 (step-by-step)
 
-사용자가 "트앴소 해봐" 같이 요청하면:
+사용자가 "test3 요약해줘" 같이 요청하면:
 
-**STEP 1**: set_pipeline_config(video_name="트오소" 포함하는 이름) 호출
+**STEP 1**: set_pipeline_config(video_name="test3" 포함하는 이름) 호출
 **STEP 2**: preprocessing_agent로 transfer
 **STEP 3**: (preprocessing 완료 후) summarize_agent로 transfer
 **STEP 4**: (summarize 완료 후) judge_agent로 transfer
-**STEP 5**: (judge 완료 후) "배치 X 완료" 사용자에게 알림
+**STEP 5**: (judge 완료 후) "배치 X 완료" 사용자에게 알리고 summarizer 요약 결과 표시
 **STEP 6**: get_batch_info 호출하여 all_completed 확인
 
 **STEP 7** (조건 분기):
