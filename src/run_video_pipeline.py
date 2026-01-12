@@ -49,6 +49,7 @@ from src.fusion.summarizer import run_summarizer
 from src.fusion.sync_engine import run_sync_engine
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+from src.judge.judge import run_judge
 
 
 # ============================================================
@@ -327,6 +328,7 @@ def _run_vlm_openrouter(
     output_base: Path,
     batch_size: Optional[int],
     concurrency: int,
+    show_progress: bool,
 ) -> int:
     """VLM(Vision Language Model) 실행. 처리된 이미지 수 반환."""
     extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_base)
@@ -353,6 +355,7 @@ def _run_vlm_openrouter(
     results = extractor.extract_features(
         image_paths,
         batch_size=batch_size,
+        show_progress=show_progress,
         concurrency=concurrency,
     )
     raw_path = extractor.get_output_path()
@@ -363,6 +366,7 @@ def _run_vlm_openrouter(
         vlm_raw_json=raw_path,
         output_vlm_json=raw_path.with_name("vlm.json"),
     )
+    raw_path.unlink(missing_ok=True)
     
     return len(image_paths)
 
@@ -443,6 +447,26 @@ def _run_fusion_pipeline(
                 outputs_dir.joinpath(f"final_summary_{fmt}.md").write_text(
                     summaries[fmt], encoding="utf-8"
                 )
+        
+        # Judge 실행
+        judge_output_dir = output_dir / "judge"
+        judge_output_dir.mkdir(parents=True, exist_ok=True)
+        _, judge_elapsed = timer.time_stage(
+            "fusion.judge",
+            run_judge,
+            config=config,
+            segments_units_path=output_dir / "segments_units.jsonl",
+            segment_summaries_path=output_dir / "segment_summaries.jsonl",
+            output_report_path=judge_output_dir / "judge_report.json",
+            output_segments_path=judge_output_dir / "judge_segment_reports.jsonl",
+            batch_size=3,
+            workers=1,
+            json_repair_attempts=1,
+            limit=limit,
+            return_reasons=True,
+            verbose=True,
+        )
+        fusion_info["timings"]["judge_sec"] = judge_elapsed
     
     # Segment 수 카운트
     segments_file = output_dir / "segment_summaries.jsonl"
@@ -496,7 +520,7 @@ def _print_benchmark_report(
     
     # 주요 스테이지 정렬 출력
     stage_order = ["stt", "capture", "vlm", "fusion.sync_engine", "fusion.llm_summarizer", 
-                   "fusion.renderer", "fusion.final_summary"]
+                   "fusion.renderer", "fusion.final_summary", "fusion.judge"]
     
     for stage in stage_order:
         if stage in report["stages"]:
@@ -592,6 +616,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capture-verbose", action="store_true", help="캡처 상세 로그 출력")
     parser.add_argument("--vlm-batch-size", type=int, default=2, help="VLM 배치 크기(미지정 시 전부 한 번에)")
     parser.add_argument("--vlm-concurrency", type=int, default=3, help="VLM 병렬 요청 수 (기본: 3)")
+    parser.add_argument("--vlm-show-progress", action=argparse.BooleanOptionalAction, default=True, help="VLM 진행 로그 출력 여부 (기본: True)")
     parser.add_argument("--limit", type=int, default=None, help="fusion 단계에서 처리할 segment 수 제한")
     parser.add_argument("--dry-run", action="store_true", help="summarizer LLM 미호출(출력 미생성)")
     return parser.parse_args()
@@ -723,6 +748,7 @@ def main() -> None:
             output_base=output_base,
             batch_size=args.vlm_batch_size,
             concurrency=args.vlm_concurrency,
+            show_progress=args.vlm_show_progress,
         )
 
         # Fusion config 생성

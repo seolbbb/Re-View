@@ -1,11 +1,17 @@
 """
 ================================================================================
-process_content.py - Hybrid 슬라이드 캡처 파이프라인 (Production Default)
+process_content.py - Hybrid 슬라이드 캡처 파이프라인 (V2 최적화)
 ================================================================================
 
 [역할]
     강의 영상에서 슬라이드 전환을 감지하고 깨끗한 이미지를 추출하는 메인 파이프라인.
     HybridSlideExtractor를 사용하여 단일 패스로 고효율 캡처를 수행합니다.
+
+[V2 최적화 (Delayed Save)]
+    - 슬라이드를 즉시 저장하지 않고, 다음 슬라이드 감지 시점까지 버퍼링
+    - 다음 슬라이드의 start_ms = 이전 슬라이드의 end_ms로 확정
+    - 확정된 시점에 최종 파일명으로 한 번만 저장
+    - 후처리 rename 루프 제거 → I/O 오버헤드 감소, 약 2배 속도 향상
 
 [파이프라인 아키텍처]
     +-------------------------------------------------------------------------+
@@ -14,18 +20,20 @@ process_content.py - Hybrid 슬라이드 캡처 파이프라인 (Production Defa
                                     |
                                     v
     +-------------------------------------------------------------------------+
-    |  1단계: HybridSlideExtractor (Hybrid Single-Pass)                       |
+    |  1단계: HybridSlideExtractor (Hybrid Single-Pass + Delayed Save)        |
     |  -----------------------------------------------------------------------+
     |  - 프레임 단위 분석: 연속 프레임 간 픽셀 차이(dHash) 감지                 |
     |  - 전환 감지: 프레임 차이 > SENSITIVITY_DIFF -> 전환 시작                 |
     |  - 안정성 확인: 2.5초간 변화 없으면 -> 슬라이드 안정 상태로 판정           |
     |  - 마우스 제거: 2.5초 버퍼 -> Median 기준 Best Frame 선택                 |
     |  - 중복 제거: ORB 특징 + RANSAC 기하 검증 + Sim<0.5 구조변경 오버라이드   |
+    |  - [V2] Delayed Save: 다음 슬라이드 감지 시 이전 슬라이드 저장            |
     +-------------------------------------------------------------------------+
                                     |
                                     v
     +-------------------------------------------------------------------------+
     |  출력: 캡처된 슬라이드 이미지 (src/data/output/{video}/captures/*.jpg)    |
+    |        파일명 형식: {video}_{idx}_{start_ms}_{end_ms}.jpg                |
     |        manifest.json (run_video_pipeline.py 연동용)                      |
     +-------------------------------------------------------------------------+
 
@@ -44,17 +52,15 @@ process_content.py - Hybrid 슬라이드 캡처 파이프라인 (Production Defa
 [연동]
     - 직접 실행: python src/capture/process_content.py
     - 파이프라인 호출: run_video_pipeline.py -> process_single_video_capture()
-
-[최종 수정] 2026-01-07
-================================================================================
 """
 
 import os
 import sys
 import glob
 import time
-import logging
 import shutil
+import json
+from pathlib import Path
 
 # ============================================================
 # 프로젝트 경로 구성
@@ -62,13 +68,13 @@ import shutil
 # ============================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))  # src/capture/
 src_dir = os.path.dirname(current_dir)                      # src/
-project_root = os.path.dirname(src_dir)                     # Screentime-MVP/
+project_root = os.path.dirname(src_dir)                     
 
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# Hybrid 캡처 엔진 임포트
-from src.capture.tools import HybridSlideExtractor
+# V2 Hybrid 캡처 엔진 임포트 (Delayed Save 패턴)
+from src.capture.tools.hybrid_extractor import HybridSlideExtractor
 
 # ============================================================
 # 설정 파라미터 (임계값)
@@ -82,13 +88,16 @@ SENSITIVITY_SIM = 0.8    # ORB 구조 유사도 (중복 제거 엄격도)
 MIN_INTERVAL = 0.5       # 최소 캡처 간격 (초)
 
 
+# ============================================================
+# 유틸리티 함수
+# ============================================================
 def print_summary_table(title: str, metrics: dict) -> None:
     """
     처리 결과를 정렬된 테이블 형태로 출력합니다.
     
     Args:
-        title: 테이블 제목
-        metrics: 출력할 메트릭 딕셔너리 {키: 값}
+        title (str): 테이블 제목
+        metrics (dict): 출력할 메트릭 딕셔너리 {키: 값}
     """
     print("\n" + "="*60)
     print(f"Result: {title}")
@@ -96,6 +105,99 @@ def print_summary_table(title: str, metrics: dict) -> None:
     for key, value in metrics.items():
         print(f"   {key:<20}: {value}")
     print("="*60)
+
+
+# ============================================================
+# 핵심 처리 로직 (V2 최적화)
+# ============================================================
+def _process_video_core(
+    video_path: str,
+    output_base: str,
+    scene_threshold: float,
+    sensitivity_sim: float,
+    min_interval: float,
+    is_standalone: bool = False
+) -> list:
+    """
+    [V2 Core] 비디오 캡처 및 메타데이터 생성을 수행하는 핵심 로직입니다.
+    
+    V2 최적화:
+        - HybridSlideExtractorV2 사용 (Delayed Save 패턴)
+        - 파일 renaming 루프 제거 → I/O 오버헤드 감소
+        - Extractor가 직접 {video}_{idx}_{start_ms}_{end_ms}.jpg 형식으로 저장
+    
+    Args:
+        video_path (str): 입력 비디오 파일 경로
+        output_base (str): 출력 기본 디렉토리
+        scene_threshold (float): 장면 전환 감지 임계값 (픽셀 차이)
+        sensitivity_sim (float): ORB 구조 유사도 임계값
+        min_interval (float): 최소 캡처 간격 (초)
+        is_standalone (bool): 독립 실행 모드 여부
+        
+    Returns:
+        list: 추출된 슬라이드 메타데이터
+              [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
+    """
+    video_name = Path(video_path).stem
+    
+    # 출력 경로 설정
+    video_output_root = os.path.join(output_base, video_name)
+    captures_dir = os.path.join(video_output_root, "captures")
+    
+    # 디렉토리 정리 (Standalone 모드일 때만 청소)
+    if is_standalone and os.path.exists(captures_dir):
+        shutil.rmtree(captures_dir)
+        
+    os.makedirs(captures_dir, exist_ok=True)
+    
+    # Standalone 모드일 때 로그 정리
+    if is_standalone:
+        for log_name in ["capture_log.txt"]:
+            log_path = os.path.join(video_output_root, log_name)
+            if os.path.exists(log_path):
+                os.remove(log_path)
+
+    print(f"\n[Capture V2] Processing: {video_name}")
+    
+    # ================================================================
+    # [V2] HybridSlideExtractor 사용 (Delayed Save 패턴)
+    # - 슬라이드가 직접 최종 파일명으로 저장됨
+    # - 후처리 rename 루프 불필요
+    # ================================================================
+    extractor = HybridSlideExtractor(
+        video_path,
+        output_dir=captures_dir,
+        sensitivity_diff=scene_threshold,
+        sensitivity_sim=sensitivity_sim,
+        min_interval=min_interval
+    )
+    
+    start_time = time.time()
+    slides = extractor.process(video_name=video_name)
+    elapsed = time.time() - start_time
+    
+    # ================================================================
+    # [V2] Manifest 생성
+    # Extractor가 이미 올바른 형식으로 반환하므로 변환 불필요
+    # slides = [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
+    # ================================================================
+    manifest_path = os.path.join(video_output_root, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(slides, f, ensure_ascii=False, indent=2)
+    
+    if is_standalone:
+        metrics = {
+            "Total Time": f"{elapsed:.2f}s",
+            "Mode": "Hybrid V2 (Delayed Save)",
+            "Total Slides": len(slides),
+            "Output Path": captures_dir,
+            "Manifest": manifest_path
+        }
+        print_summary_table(f"Capture Result: {video_name}", metrics)
+    else:
+        print(f"[Capture V2] Completed: {len(slides)} slides in {elapsed:.2f}s")
+
+    return slides
 
 
 # ============================================================
@@ -110,142 +212,106 @@ def process_single_video_capture(
     min_interval: float = 0.5
 ) -> list:
     """
-    run_video_pipeline.py와의 호환성을 위한 엔트리포인트.
-    내부적으로 HybridSlideExtractor를 사용하여 슬라이드를 캡처합니다.
+    [역할] run_video_pipeline.py에서 호출되는 메인 인터페이스입니다.
+    
+    이 함수는 run_video_pipeline.py의 캡처 단계에서 호출됩니다.
+    V2 최적화 로직을 사용하여 슬라이드를 추출합니다.
     
     Args:
-        video_path: 입력 비디오 파일의 절대 경로
-        output_base: 출력 베이스 디렉토리 
-                     (실제 출력: {output_base}/{video_name}/captures/)
-        scene_threshold: 장면 전환 감지 임계값 (sensitivity_diff로 전달)
-        dedupe_threshold: [호환성 유지용] 사용되지 않음 (Hybrid는 자체 중복 제거 사용)
-        min_interval: 최소 캡처 간격 (초)
-    
+        video_path (str): 처리할 비디오 파일 경로
+        output_base (str): 출력 기본 디렉토리
+        scene_threshold (float): 장면 전환 감지 임계값
+        dedupe_threshold (float): (미사용, 호환성 유지)
+        min_interval (float): 최소 캡처 간격 (초)
+        
     Returns:
-        list: 캡처된 슬라이드 메타데이터 리스트
-              [{"file_name": "...", "timestamp_ms": ..., "timestamp_human": "..."}, ...]
-    
-    Side Effects:
-        - {output_base}/{video_name}/captures/ 폴더에 이미지 저장
-        - {output_base}/{video_name}/manifest.json 파일 생성
+        list: 추출된 슬라이드 메타데이터
     """
-    from pathlib import Path
-    import json
-    
-    video_name = Path(video_path).stem
-    video_output_root = os.path.join(output_base, video_name)
-    captures_dir = os.path.join(video_output_root, "captures")
-    os.makedirs(captures_dir, exist_ok=True)
-    
-    print(f"\n[Capture] Processing (Hybrid): {video_name}")
-    
-    # HybridSlideExtractor 초기화 및 실행
-    extractor = HybridSlideExtractor(
-        video_path,
-        output_dir=captures_dir,
-        sensitivity_diff=scene_threshold,  # 픽셀 차이 민감도
-        sensitivity_sim=SENSITIVITY_SIM,   # ORB 구조 유사도
-        min_interval=min_interval          # 최소 캡처 간격
+    return _process_video_core(
+        video_path=video_path,
+        output_base=output_base,
+        scene_threshold=scene_threshold,
+        sensitivity_sim=SENSITIVITY_SIM,
+        min_interval=min_interval,
+        is_standalone=False
     )
-    
-    slides = extractor.process(video_name=video_name)
-    
-    # manifest.json 저장 (run_video_pipeline.py가 VLM 처리에 사용)
-    manifest_path = os.path.join(video_output_root, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(slides, f, ensure_ascii=False, indent=2)
-    
-    print(f"[Capture] Completed: {len(slides)} slides captured")
-    
-    return slides
 
 
-def process_single_video_v2(video_path: str, output_root: str) -> None:
+def process_single_video_standalone(video_path: str, output_root: str) -> None:
     """
-    단일 비디오에 대해 Hybrid 캡처를 수행합니다.
-    독립 실행(main)에서 사용되는 함수입니다.
+    [역할] 독립 실행(Standalone) 시 호출되는 래퍼 함수입니다.
+    
+    커맨드 라인에서 직접 실행할 때 사용됩니다.
+    결과 요약 테이블을 출력합니다.
     
     Args:
-        video_path: 입력 비디오 파일 경로
-        output_root: 출력 루트 디렉토리
+        video_path (str): 처리할 비디오 파일 경로
+        output_root (str): 출력 기본 디렉토리
     """
-    filename = os.path.basename(video_path)
-    video_name = os.path.splitext(filename)[0]
-    
-    video_output_dir = os.path.join(output_root, video_name)
-    captures_dir = os.path.join(video_output_dir, "captures")
-    
-    # 기존 출력 폴더 정리 (Clean Start)
-    if os.path.exists(captures_dir):
-        shutil.rmtree(captures_dir)
-    os.makedirs(captures_dir, exist_ok=True)
-    
-    # 이전 로그 파일 정리
-    for log_name in ["process_log_fast.txt", "process_log_ultimate.txt", "process_log_hybrid.txt"]:
-        log_path = os.path.join(video_output_dir, log_name)
-        if os.path.exists(log_path):
-            os.remove(log_path)
-    
-    print(f"\n[Started] Processing (Hybrid v2): {filename}")
-    
-    # HybridSlideExtractor 초기화
-    extractor = HybridSlideExtractor(
-        video_path, 
-        output_dir=captures_dir,
-        sensitivity_diff=SENSITIVITY_DIFF,  # 픽셀 차이 민감도
-        sensitivity_sim=SENSITIVITY_SIM,    # ORB 구조 유사도
-        min_interval=MIN_INTERVAL           # 최소 캡처 간격
+    _process_video_core(
+        video_path=video_path,
+        output_base=output_root,
+        scene_threshold=SENSITIVITY_DIFF,
+        sensitivity_sim=SENSITIVITY_SIM,
+        min_interval=MIN_INTERVAL,
+        is_standalone=True
     )
-    
-    start_time = time.time()
-    
-    # 캡처 실행
-    slides = extractor.process(video_name=video_name)
-    
-    elapsed = time.time() - start_time
-    
-    # manifest.json 저장 (캡처 메타데이터)
-    import json
-    manifest_path = os.path.join(video_output_dir, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(slides, f, ensure_ascii=False, indent=2)
-    
-    # 결과 요약 출력
-    metrics = {
-        "Total Time": f"{elapsed:.2f}s",
-        "Mode": "Hybrid Single-Pass",
-        "Total Slides": len(slides),
-        "Output Path": captures_dir,
-        "Manifest": manifest_path
-    }
-    print_summary_table(f"Hybrid Result: {filename}", metrics)
 
 
+# ============================================================
+# 메인 진입점 (Entry Point)
+# ============================================================
 def main() -> None:
     """
-    메인 엔트리포인트: src/data/input/ 폴더의 모든 MP4 파일을 처리합니다.
+    [역할]
+    스크립트의 진입점(Entry Point)입니다.
     
-    사용법:
-        python src/capture/process_content.py
+    선택적인 비디오 파일 경로 인자를 받아 처리하거나, 
+    인자가 없는 경우 설정된 입력 폴더(src/data/input) 내의 모든 MP4 파일을 검색하여
+    순차적으로 캡처 프로세스를 실행합니다.
+    
+    Usage:
+        python src/capture/process_content.py                      # 모든 비디오 처리
+        python src/capture/process_content.py --video sample1.mp4  # 특정 비디오만 처리
     """
+    import argparse
+    parser = argparse.ArgumentParser(description="Hybrid Slide Capture Pipeline (V2)")
+    parser.add_argument("--video", help="특정 비디오 파일 하나만 처리할 경우 경로 지정", default=None)
+    
+    args = parser.parse_args()
+
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-        
-    # 입력 폴더에서 MP4 파일 검색
-    video_files = glob.glob(os.path.join(INPUT_DIR, "*.mp4"))
+    
+    video_files = []
+    
+    if args.video:
+        # 특정 비디오 지정 모드
+        target_path = os.path.abspath(args.video)
+        if not os.path.exists(target_path):
+            print(f"Error: Video file not found: {target_path}")
+            return
+        video_files.append(target_path)
+    else:
+        # 배치 처리 모드 (기본 동작)
+        # 입력 폴더에서 MP4 파일 검색
+        video_files = glob.glob(os.path.join(INPUT_DIR, "*.mp4"))
+
     if not video_files:
         print("Warning: No video files to process.")
         return
         
     print(f"============================================================")
-    print(f"Hybrid Pipeline v2: Single-Pass High Efficiency")
+    print(f"Capture Pipeline V2 Started (Target: {len(video_files)} files)")
     print(f"============================================================")
     
     # 각 비디오 파일 처리
     for video_path in video_files:
-        process_single_video_v2(video_path, OUTPUT_DIR)
+        process_single_video_standalone(video_path, OUTPUT_DIR)
         
-    print("\n[Done] All videos processed successfully.")
+    print(f"============================================================")
+    print(f"Capture Pipeline V2 Completed")
+    print(f"============================================================")
 
 
 if __name__ == "__main__":

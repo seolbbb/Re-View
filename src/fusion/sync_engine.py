@@ -75,12 +75,12 @@ def _load_manifest_scores(path: Optional[Path]) -> Dict[int, float]:
         raise ValueError(f"manifest.json 형식이 올바르지 않습니다: {path}")
     scores: Dict[int, float] = {}
     for item in payload:
-        if "timestamp_ms" not in item:
+        if "start_ms" not in item:
             continue
-        timestamp_ms = int(item["timestamp_ms"])
+        start_ms = int(item["start_ms"])
         diff_score = float(item.get("diff_score", 0.0))
-        if timestamp_ms not in scores or diff_score > scores[timestamp_ms]:
-            scores[timestamp_ms] = diff_score
+        if start_ms not in scores or diff_score > scores[start_ms]:
+            scores[start_ms] = diff_score
     return scores
 
 
@@ -398,8 +398,6 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
                             "end_ms": segment.end_ms,
                             "transcript_units": transcript_units,
                             "visual_units": visual_units,
-                            "transcript_text": transcript_text,
-                            "visual_text": visual_text,
                         },
                         ensure_ascii=False,
                         sort_keys=True,
