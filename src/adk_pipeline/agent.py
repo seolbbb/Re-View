@@ -167,34 +167,44 @@ judge_agent = Agent(
 batch_preprocessing_agent = Agent(
     name="batch_preprocessing_agent",
     model="gemini-2.5-flash",
-    description="현재 배치의 시간 범위에 해당하는 캡처만 VLM 처리 후 Sync",
+    description="Pre-ADK 검증 및 배치 초기화 후 현재 배치 VLM/Sync 처리",
     instruction="""당신은 Batch Preprocessing Agent입니다.
 
-🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 즉시 run_batch_vlm을 호출하세요!
+🚨 **절대 빈 응답 금지!** Transfer를 받으면 반드시 도구를 호출하세요!
 
 ## 역할
-현재 배치의 시간 범위에 해당하는 캡처만 VLM 처리하고 Sync합니다.
+Pre-ADK 검증, 배치 초기화, 현재 배치 VLM/Sync 처리를 수행합니다.
 
 ## 사용 가능한 도구
-1. **run_batch_vlm**: 현재 배치의 캡처에서 VLM으로 텍스트 추출
-2. **run_batch_sync**: 현재 배치의 STT와 VLM 결과 동기화
+1. **load_data**: Pre-ADK 산출물 검증 (stt.json, manifest.json, captures 확인)
+2. **init_batch_mode**: 배치 모드 초기화 (캡처 수 확인, 배치 개수 결정)
+3. **run_batch_vlm**: 현재 배치의 캡처에서 VLM으로 텍스트 추출
+4. **run_batch_sync**: 현재 배치의 STT와 VLM 결과 동기화
 
 ## 워크플로우 (Transfer 받으면 즉시 시작!)
-**transfer를 받으면 반드시 이 순서대로 도구를 호출하세요:**
+
+**첫 번째 배치인 경우 (init_batch_mode 안 된 경우):**
+1. load_data로 Pre-ADK 검증
+2. init_batch_mode로 배치 초기화 → "총 N장을 M개 배치로 처리"
+3. run_batch_vlm으로 현재 배치 VLM 실행
+4. run_batch_sync로 현재 배치 Sync 실행
+5. 결과와 함께 screentime_pipeline으로 transfer
+
+**이후 배치인 경우 (이미 초기화됨):**
 1. run_batch_vlm으로 현재 배치 VLM 실행
 2. run_batch_sync로 현재 배치 Sync 실행
-3. 모든 도구 실행이 완료되면 **결과를 요약**하고 screentime_pipeline으로 transfer
+3. 결과와 함께 screentime_pipeline으로 transfer
 
-## 🚨 중요!! (반드시 지키세요)
-- **Transfer를 받으면 절대 빈 응답하지 마세요! 즉시 run_batch_vlm을 호출하세요!**
-- 현재 배치 정보(batch_index, 시간 범위)를 결과에 포함하세요
-- 에러가 발생해도 에러 내용을 설명하고 screentime_pipeline으로 transfer하세요
+## 🚨 중요!!
+- **Transfer를 받으면 절대 빈 응답하지 마세요!**
+- 현재 배치 정보(batch_index, 캡처 범위)를 결과에 포함하세요
 """,
-    tools=[run_batch_vlm, run_batch_sync],
+    tools=[load_data, init_batch_mode, run_batch_vlm, run_batch_sync],
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
     ),
 )
+
 
 
 batch_summarize_agent = Agent(
@@ -276,65 +286,52 @@ root_agent = Agent(
 사용자와 대화하면서 비디오 처리 파이프라인을 조율합니다.
 실제 처리 작업은 Sub-Agent들에게 위임합니다.
 
+## 🚨 중요: 기본 동작 = 배치 모드
+파이프라인은 **배치 모드**가 기본입니다. 10장씩 분할 처리하여 사용자가 앞부분 요약을 먼저 볼 수 있습니다.
+
 ## 사용 가능한 도구
 
 ### 기본 도구
 1. **list_available_videos**: 처리 가능한 비디오 목록 조회
 2. **set_pipeline_config**: 비디오 선택 및 설정
    - `video_name`: 비디오 이름 (필수)
-   - `batch_mode`: True면 배치 모드 활성화 (default: False)
-   - `batch_duration_ms`: 배치당 시간 (default: 200000ms = 3.3분)
-   - `force_preprocessing`: True면 기존 파일 삭제 후 처음부터 재실행 (default: False)
+   - `batch_capture_count`: 배치당 캡처 개수 (default: 10장)
+   - `batch_mode`: True면 배치 모드 (default: True)
+   - `force_preprocessing`: True면 기존 파일 삭제 후 재실행 (default: False)
    - `max_reruns`: Judge 실패 시 최대 재실행 횟수 (default: 2)
-   - `vlm_batch_size`: VLM 배치 크기 (default: 2, None이면 전체)
-   - `vlm_concurrency`: VLM 병렬 요청 수 (default: 3)
 3. **get_pipeline_status**: 현재 파이프라인 상태 조회
 
-### 배치 모드 도구 (batch_mode=True일 때 사용)
-4. **init_batch_mode**: 배치 모드 초기화 (manifest.json에서 duration 계산, 배치 개수 결정)
+### 배치 관리 도구
+4. **init_batch_mode**: 배치 모드 초기화 (manifest에서 캡처 수 확인, 배치 개수 결정)
 5. **get_batch_info**: 현재 배치 상태 조회
-6. **get_current_batch_time_range**: 현재 배치의 시간 범위 조회
+6. **get_current_batch_time_range**: 현재 배치의 시간/인덱스 범위 조회
 7. **mark_batch_complete**: 현재 배치 완료 표시, 다음 배치로 이동
 8. **get_previous_context**: 이전 배치의 요약 context 조회
 
 ## Sub-Agents (transfer 가능)
 
-### 일반 모드
-1. **preprocessing_agent**: VLM + Sync 실행 (전처리)
-2. **summarize_agent**: 요약 생성 + MD 렌더링
-3. **judge_agent**: 품질 평가 (PASS/FAIL)
+### 배치 모드 Sub-Agents (기본)
+1. **batch_preprocessing_agent**: 현재 배치 VLM + Sync
+2. **batch_summarize_agent**: 현재 배치 요약 생성
+3. **judge_agent**: 품질 평가 (evaluate_batch_summary 사용)
+4. **merge_agent**: 모든 배치 병합 + 최종 요약
 
-### 배치 모드
-4. **batch_preprocessing_agent**: 현재 배치 VLM + Sync
-5. **batch_summarize_agent**: 현재 배치 요약 생성
-6. **merge_agent**: 모든 배치 병합 + 최종 요약
+## 파이프라인 실행 순서 (배치 모드)
 
-## 파이프라인 실행 순서
+사용자가 "test3 해봐" 같이 요청하면:
 
-### 일반 모드 (batch_mode=False)
-1. **set_pipeline_config**로 비디오 설정
-2. **preprocessing_agent**로 transfer → 완료 후 돌아옴
-3. **summarize_agent**로 transfer → 완료 후 돌아옴
-4. **judge_agent**로 transfer → 결과와 함께 돌아옴
-5. judge 결과 확인:
-   - **PASS**: 완료, 최종 결과 경로 안내
-   - **FAIL + can_rerun=True**: summarize_agent로 재시도
-   - **FAIL + can_rerun=False**: 실패 종료
-
-### 배치 모드 (batch_mode=True) ⭐ 추천
-사용자가 앞부분 요약을 먼저 볼 수 있도록 순차적으로 처리합니다.
-
-1. **set_pipeline_config(batch_mode=True, batch_duration_ms=200000)**로 설정
+1. **set_pipeline_config(video_name="test3_Diffusion")**  ← batch_mode=True 자동
 2. **load_data**로 Pre-ADK 검증
-3. **init_batch_mode**로 배치 초기화
+3. **init_batch_mode**로 배치 초기화 (예: "총 50장을 5개 배치로 처리")
 4. **배치 루프** (current_batch_index < total_batches 동안):
    a. **batch_preprocessing_agent**로 transfer (VLM + Sync)
    b. **batch_summarize_agent**로 transfer (요약 생성)
-   c. **judge_agent** (evaluate_batch_summary)로 transfer (배치 평가)
-   d. 결과 표시 후 **mark_batch_complete**
-   e. FAIL이면 해당 배치 재시도 (max_reruns까지)
-5. **merge_agent**로 transfer (모든 배치 병합 + 최종 요약)
-6. 최종 결과 보고
+   c. **judge_agent**로 transfer (배치 평가)
+   d. 🎉 "배치 0 완료!" 결과 표시
+   e. **mark_batch_complete** → 다음 배치로 이동
+   f. FAIL이면 해당 배치 재시도 (max_reruns까지)
+5. 모든 배치 완료 후 **merge_agent**로 transfer (병합 + 최종 요약)
+6. 🎉 최종 결과 보고
 
 ## 🚨 중요!!
 - Sub-agent가 돌아오면 그 결과를 확인하고 **즉시 다음 단계를 진행**하세요
