@@ -72,9 +72,19 @@ def set_pipeline_config(
     vlm_batch_size: Optional[int] = 2,
     vlm_concurrency: int = 3,
     vlm_show_progress: bool = True,
+<<<<<<< HEAD
 ) -> Dict[str, Any]:
     """파이프라인 설정을 변경합니다.
 
+=======
+    batch_mode: bool = True,
+    batch_size: int = 4,
+    context_max_chars: int = 500,
+) -> Dict[str, Any]:
+    """파이프라인 설정을 변경합니다.
+
+
+>>>>>>> feat
     Args:
         video_name: 처리할 비디오 이름 (data/outputs 하위 디렉터리 이름)
         summarize_prompt: 요약 시 사용할 추가 프롬프트 (선택)
@@ -83,6 +93,12 @@ def set_pipeline_config(
         vlm_batch_size: VLM 배치 크기 (기본: 2, None이면 전체를 한 번에 요청)
         vlm_concurrency: VLM 병렬 요청 수 (기본: 3)
         vlm_show_progress: VLM 진행 로그 출력 여부 (기본: True)
+<<<<<<< HEAD
+=======
+        batch_mode: 배치 처리 모드 활성화 (기본: True)
+        batch_size: 배치당 캡처 개수 (기본: 4장)
+        context_max_chars: 이전 배치 context 최대 문자 수 (기본: 500)
+>>>>>>> feat
 
     Returns:
         success: 설정 성공 여부
@@ -110,6 +126,19 @@ def set_pipeline_config(
     tool_context.state["vlm_concurrency"] = vlm_concurrency
     tool_context.state["vlm_show_progress"] = vlm_show_progress
 
+<<<<<<< HEAD
+=======
+    # 배치 모드 설정 (기본값: True)
+    tool_context.state["batch_mode"] = batch_mode
+    tool_context.state["batch_size"] = batch_size
+    tool_context.state["context_max_chars"] = context_max_chars
+    if batch_mode:
+        # 배치 모드 관련 초기값 설정 (init_batch_mode에서 최종 설정됨)
+        tool_context.state["current_batch_index"] = 0
+        tool_context.state["completed_batches"] = []
+        tool_context.state["previous_context"] = ""
+
+>>>>>>> feat
     return {
         "success": True,
         "video_name": sanitized,
@@ -119,6 +148,12 @@ def set_pipeline_config(
         "vlm_batch_size": vlm_batch_size,
         "vlm_concurrency": vlm_concurrency,
         "vlm_show_progress": vlm_show_progress,
+<<<<<<< HEAD
+=======
+        "batch_mode": batch_mode,
+        "batch_size": batch_size,
+        "context_max_chars": context_max_chars,
+>>>>>>> feat
         "video_root": str(video_root),
         "status": {
             "preprocessing_done": store.segments_units_jsonl().exists(),
@@ -160,6 +195,20 @@ def get_pipeline_status(tool_context: ToolContext) -> Dict[str, Any]:
         if final_files:
             outputs["final_summaries"] = [str(f) for f in final_files]
 
+<<<<<<< HEAD
+=======
+    # 배치 모드 상태
+    batch_status = None
+    batch_mode = tool_context.state.get("batch_mode", False)
+    if batch_mode:
+        batch_status = {
+            "current_batch_index": tool_context.state.get("current_batch_index", 0),
+            "total_batches": tool_context.state.get("total_batches", 0),
+            "completed_batches": tool_context.state.get("completed_batches", []),
+            "batch_size": tool_context.state.get("batch_size", 10),
+        }
+
+>>>>>>> feat
     return {
         "video_name": video_name,
         "video_root": str(store.video_root()),
@@ -170,11 +219,19 @@ def get_pipeline_status(tool_context: ToolContext) -> Dict[str, Any]:
             "vlm_batch_size": tool_context.state.get("vlm_batch_size", 2),
             "vlm_concurrency": tool_context.state.get("vlm_concurrency", 3),
             "vlm_show_progress": tool_context.state.get("vlm_show_progress", True),
+<<<<<<< HEAD
+=======
+            "batch_mode": batch_mode,
+>>>>>>> feat
         },
         "status": {
             "preprocessing_done": store.segments_units_jsonl().exists(),
             "summarize_done": store.segment_summaries_jsonl().exists(),
             "judge_done": (store.fusion_dir() / "judge.json").exists(),
         },
+<<<<<<< HEAD
+=======
+        "batch_status": batch_status,
+>>>>>>> feat
         "outputs": outputs,
     }

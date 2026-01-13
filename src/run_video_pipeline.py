@@ -342,7 +342,7 @@ def _run_vlm_openrouter(
     image_paths: List[str] = []
     for item in sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
-        key=lambda x: (int(x.get("timestamp_ms", 0)), str(x.get("file_name", ""))),
+        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
@@ -463,6 +463,7 @@ def _run_fusion_pipeline(
             workers=1,
             json_repair_attempts=1,
             limit=limit,
+            write_outputs=True,
             verbose=True,
             write_outputs=True,
         )
@@ -476,6 +477,235 @@ def _run_fusion_pipeline(
     return fusion_info
 
 
+def _run_batch_fusion_pipeline(
+    *,
+    video_root: Path,
+    captures_dir: Path,
+    manifest_json: Path,
+    stt_json: Path,
+    video_name: str,
+    batch_size: int,
+    timer: BenchmarkTimer,
+    vlm_batch_size: Optional[int],
+    vlm_concurrency: int,
+    vlm_show_progress: bool,
+    limit: Optional[int],
+    dry_run: bool,
+    repo_root: Path,
+) -> Dict[str, Any]:
+    """
+    배치 모드 Fusion 파이프라인 실행.
+    
+    캡처를 batch_size장씩 분할하여:
+    VLM → Sync → Summarize → Judge 를 각 배치마다 반복.
+    
+    Returns:
+        fusion 세부 메트릭 딕셔너리
+    """
+    import math
+    from src.fusion.summarizer import run_batch_summarizer
+    from src.judge.judge import run_judge
+    
+    # manifest 로드 및 정렬
+    manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+    sorted_manifest = sorted(
+        (x for x in manifest_payload if isinstance(x, dict)),
+        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+    )
+    
+    total_captures = len(sorted_manifest)
+    total_batches = max(1, math.ceil(total_captures / batch_size))
+    
+    print(f"\n📦 배치 모드: {total_captures}장을 {total_batches}개 배치로 처리 (배치당 {batch_size}장)")
+    
+    # 배치 범위 계산
+    batch_ranges = []
+    for i in range(total_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, total_captures)
+        start_ms = int(sorted_manifest[start_idx].get("start_ms", sorted_manifest[start_idx].get("timestamp_ms", 0)))
+        end_ms = int(sorted_manifest[end_idx - 1].get("end_ms", sorted_manifest[end_idx - 1].get("timestamp_ms", 0) + 1000))
+        batch_ranges.append({
+            "start_idx": start_idx,
+            "end_idx": end_idx,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "capture_count": end_idx - start_idx,
+        })
+    
+    # 배치 디렉토리 생성
+    batches_dir = video_root / "batches"
+    batches_dir.mkdir(parents=True, exist_ok=True)
+    fusion_dir = video_root / "fusion"
+    fusion_dir.mkdir(parents=True, exist_ok=True)
+    
+    # fusion config 생성 (첫 번째 배치용)
+    template_config = repo_root / "src" / "fusion" / "config.yaml"
+    fusion_config_path = video_root / "config.yaml"
+    
+    fusion_info: Dict[str, Any] = {
+        "segment_count": 0,
+        "batch_count": total_batches,
+        "batch_results": [],
+        "timings": {},
+    }
+    
+    cumulative_segment_count = 0
+    previous_context = ""
+    
+    # 누적 summaries 파일 초기화
+    accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
+    if accumulated_summaries_path.exists():
+        accumulated_summaries_path.unlink()
+    
+    for batch_idx, batch_info in enumerate(batch_ranges):
+        # 첫 배치가 아니면 API rate limiting 방지를 위해 대기
+        if batch_idx > 0:
+            print(f"\n⏳ API rate limiting 방지를 위해 5초 대기...")
+            time.sleep(5)
+
+        print(f"\n{'='*50}")
+        print(f"🔄 배치 {batch_idx + 1}/{total_batches} 처리 중...")
+        print(f"   캡처 범위: {batch_info['start_idx']} ~ {batch_info['end_idx'] - 1}")
+        print(f"{'='*50}")
+        
+        batch_dir = batches_dir / f"batch_{batch_idx}"
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 해당 배치의 캡처 목록
+        batch_manifest = sorted_manifest[batch_info["start_idx"]:batch_info["end_idx"]]
+        
+        # 1. VLM 실행
+        from src.adk_pipeline.tools.internal.vlm_openrouter import run_vlm_for_batch
+        _, vlm_elapsed = timer.time_stage(
+            f"batch_{batch_idx}.vlm",
+            run_vlm_for_batch,
+            captures_dir=captures_dir,
+            manifest_json=manifest_json,
+            video_name=video_name,
+            output_dir=batch_dir,
+            batch_manifest=batch_manifest,
+            batch_size=vlm_batch_size,
+            concurrency=vlm_concurrency,
+            show_progress=vlm_show_progress,
+        )
+        
+        # 2. Sync 실행
+        if not fusion_config_path.exists():
+            _generate_fusion_config(
+                template_config=template_config,
+                output_config=fusion_config_path,
+                repo_root=repo_root,
+                stt_json=stt_json,
+                vlm_json=batch_dir / "vlm.json",
+                manifest_json=manifest_json,
+                output_root=video_root,
+            )
+        
+        from src.fusion.sync_engine import run_batch_sync_engine
+        sync_result, sync_elapsed = timer.time_stage(
+            f"batch_{batch_idx}.sync",
+            run_batch_sync_engine,
+            stt_json=stt_json,
+            vlm_json=batch_dir / "vlm.json",
+            manifest_json=manifest_json,
+            output_dir=batch_dir,
+            time_range=(batch_info["start_ms"], batch_info["end_ms"]),
+            sync_config={
+                "min_segment_sec": 15,
+                "max_segment_sec": 120,
+                "max_transcript_chars": 1000,
+                "silence_gap_ms": 500,
+                "max_visual_items": 10,
+                "max_visual_chars": 3000,
+                "dedup_similarity_threshold": 0.9,
+            },
+            segment_id_offset=cumulative_segment_count,
+        )
+        
+        new_segment_count = sync_result.get("segments_count", 0)
+        cumulative_segment_count += new_segment_count
+        
+        # 3. Summarize 실행
+        batch_segments_path = batch_dir / "segments_units.jsonl"
+        batch_summaries_path = batch_dir / "segment_summaries.jsonl"
+        
+        if not dry_run:
+            config = load_config(str(fusion_config_path))
+            summarize_result, summarize_elapsed = timer.time_stage(
+                f"batch_{batch_idx}.summarize",
+                run_batch_summarizer,
+                segments_units_jsonl=batch_segments_path,
+                output_dir=batch_dir,
+                config=config,
+                previous_context=previous_context,
+                limit=limit,
+            )
+            
+            # context 업데이트
+            new_context = summarize_result.get("context", "")
+            if new_context:
+                previous_context = new_context[:500]
+            
+            # 누적 저장
+            if batch_summaries_path.exists():
+                with open(batch_summaries_path, "r", encoding="utf-8") as f:
+                    batch_content = f.read()
+                with open(accumulated_summaries_path, "a", encoding="utf-8") as f:
+                    f.write(batch_content)
+            
+            # 4. Judge 실행 (선택적)
+            batch_judge_path = batch_dir / "judge.json"
+            config = load_config(str(fusion_config_path))
+            _, judge_elapsed = timer.time_stage(
+                f"batch_{batch_idx}.judge",
+                run_judge,
+                config=config,
+                segments_units_path=batch_segments_path,
+                segment_summaries_path=batch_summaries_path,
+                output_report_path=batch_judge_path,
+                output_segments_path=batch_dir / "judge_segments.jsonl",
+                batch_size=3,
+                workers=1,
+                json_repair_attempts=1,
+                limit=limit,
+                verbose=False,
+                write_outputs=True,
+            )
+            
+            # Judge 결과 읽기
+            if batch_judge_path.exists():
+                judge_result = json.loads(batch_judge_path.read_text(encoding="utf-8"))
+                passed = judge_result.get("pass", True)
+                score = judge_result.get("final_score", 0)
+                print(f"  📊 배치 {batch_idx} Judge: {'PASS' if passed else 'FAIL'} (score: {score:.1f})")
+        
+        fusion_info["batch_results"].append({
+            "batch_index": batch_idx,
+            "capture_range": [batch_info["start_idx"], batch_info["end_idx"]],
+            "segments_count": new_segment_count,
+        })
+        
+        print(f"  ✅ 배치 {batch_idx + 1} 완료! (세그먼트: {new_segment_count}개)")
+    
+    fusion_info["segment_count"] = cumulative_segment_count
+    
+    # 최종 마크다운 렌더링
+    if not dry_run and accumulated_summaries_path.exists():
+        config = load_config(str(fusion_config_path))
+        _, render_elapsed = timer.time_stage(
+            "fusion.renderer",
+            render_segment_summaries_md,
+            summaries_jsonl=accumulated_summaries_path,
+            output_md=fusion_dir / "segment_summaries.md",
+            include_sources=config.raw.render.include_sources,
+            sources_jsonl=fusion_dir / "segments_units.jsonl" if (fusion_dir / "segments_units.jsonl").exists() else None,
+            md_wrap_width=config.raw.render.md_wrap_width,
+            limit=limit,
+        )
+        fusion_info["timings"]["renderer_sec"] = render_elapsed
+    
+    return fusion_info
 # ============================================================
 # 벤치마크 리포트 생성
 # ============================================================
@@ -619,6 +849,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vlm-show-progress", action=argparse.BooleanOptionalAction, default=True, help="VLM 진행 로그 출력 여부 (기본: True)")
     parser.add_argument("--limit", type=int, default=None, help="fusion 단계에서 처리할 segment 수 제한")
     parser.add_argument("--dry-run", action="store_true", help="summarizer LLM 미호출(출력 미생성)")
+    parser.add_argument("--batch-mode", action="store_true", default=False, help="배치 모드 활성화 (캡처를 n장씩 분할 처리)")
+    parser.add_argument("--batch-size", type=int, default=10, help="배치당 캡처 개수 (기본: 10)")
     return parser.parse_args()
 
 
@@ -725,6 +957,7 @@ def main() -> None:
             )
             capture_count = len(capture_result) if capture_result else 0
 
+<<<<<<< HEAD
         # VLM 실행
         vlm_image_count, vlm_elapsed = timer.time_stage(
             "vlm",
@@ -751,9 +984,86 @@ def main() -> None:
             stt_json=stt_json,
             vlm_json=video_root / "vlm.json",
             manifest_json=manifest_json,
-            output_root=video_root,
-        )
+=======
+        # 배치 모드 vs 일반 모드 분기
+        if args.batch_mode:
+            # 배치 모드: VLM → Sync → Summarize → Judge를 배치 단위로 반복
+            vlm_elapsed = 0.0  # 배치에서 내부적으로 측정
+            fusion_info = _run_batch_fusion_pipeline(
+                video_root=video_root,
+                captures_dir=captures_dir,
+                manifest_json=manifest_json,
+                stt_json=stt_json,
+                video_name=video_name,
+                batch_size=args.batch_size,
+                timer=timer,
+                vlm_batch_size=args.vlm_batch_size,
+                vlm_concurrency=args.vlm_concurrency,
+                vlm_show_progress=args.vlm_show_progress,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                repo_root=repo_root,
+            )
+            segment_count = fusion_info.get("segment_count", 0)
+            vlm_image_count = capture_count  # 배치 모드에서는 캡처 수와 동일
+        else:
+            # 일반 모드: VLM 전체 실행 후 Fusion 파이프라인
+            vlm_image_count, vlm_elapsed = timer.time_stage(
+                "vlm",
+                _run_vlm_openrouter,
+                captures_dir=captures_dir,
+                manifest_json=manifest_json,
+                video_name=video_name,
+                output_base=output_base,
+                batch_size=args.vlm_batch_size,
+                concurrency=args.vlm_concurrency,
+                show_progress=args.vlm_show_progress,
+            )
 
+            # Fusion config 생성
+            template_config = repo_root / "src" / "fusion" / "config.yaml"
+            if not template_config.exists():
+                raise FileNotFoundError(f"fusion config template을 찾을 수 없습니다: {template_config}")
+            
+            fusion_config_path = video_root / "config.yaml"
+            _generate_fusion_config(
+                template_config=template_config,
+                output_config=fusion_config_path,
+                repo_root=repo_root,
+                stt_json=stt_json,
+                vlm_json=video_root / "vlm.json",
+                manifest_json=manifest_json,
+                output_root=video_root,
+            )
+
+            # Fusion 파이프라인 실행
+            fusion_info = _run_fusion_pipeline(
+                fusion_config_path, 
+                limit=args.limit, 
+                dry_run=args.dry_run,
+                timer=timer
+            )
+            segment_count = fusion_info.get("segment_count", 0)
+        
+        timer.end_total()
+
+        # 벤치마크 리포트 생성 및 출력
+        md_report = _print_benchmark_report(
+            video_info=video_info,
+            timer=timer,
+            capture_count=capture_count,
+            segment_count=segment_count,
+            video_path=video_path,
+>>>>>>> feat
+            output_root=video_root,
+            parallel=args.parallel
+        )
+        
+        # 마크다운 리포트 저장
+        report_path = video_root / "benchmark_report.md"
+        report_path.write_text(md_report, encoding="utf-8")
+
+<<<<<<< HEAD
         # Fusion 파이프라인 실행
         fusion_info = _run_fusion_pipeline(
             fusion_config_path, 
@@ -780,6 +1090,8 @@ def main() -> None:
         report_path = video_root / "benchmark_report.md"
         report_path.write_text(md_report, encoding="utf-8")
 
+=======
+>>>>>>> feat
         # 최종 메타데이터 저장
         benchmark_report = timer.get_report(video_info.get("duration_sec"))
         
