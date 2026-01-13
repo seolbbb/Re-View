@@ -58,8 +58,6 @@ class VideoStore:
 
     def attempts_dir(self) -> Path:
         return self.fusion_dir() / "attempts"
-<<<<<<< HEAD
-=======
 
     # ========== 배치 처리 관련 경로 ==========
 
@@ -98,4 +96,3 @@ class VideoStore:
     def batch_context_json(self) -> Path:
         """배치 처리 시 누적 context를 저장하는 파일."""
         return self.batches_dir() / "batch_context.json"
->>>>>>> feat

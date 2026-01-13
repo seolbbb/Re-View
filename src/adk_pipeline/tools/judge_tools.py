@@ -45,18 +45,12 @@ def _read_float(value: Any, default: float) -> float:
     return float(value)
 
 
-<<<<<<< HEAD
-def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
-    """요약 품질을 평가하고 PASS/FAIL을 반환합니다.
-
-=======
 
 def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
     """요약 품질을 평가하고 PASS/FAIL을 반환합니다.
 
     배치 모드일 때는 현재 배치의 summaries를 평가합니다.
 
->>>>>>> feat
     Returns:
         success: 실행 성공 여부
         result: PASS 또는 FAIL
@@ -68,16 +62,6 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "video_name 미설정"}
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
-<<<<<<< HEAD
-
-    # Summarize가 먼저 완료되어야 함
-    if not store.segment_summaries_jsonl().exists():
-        return {"success": False, "error": "segment_summaries.jsonl이 없습니다. Summarize를 먼저 실행하세요."}
-    if not store.segments_units_jsonl().exists():
-        return {"success": False, "error": "segments_units.jsonl이 없습니다. Preprocessing을 먼저 실행하세요."}
-    if not store.fusion_config_yaml().exists():
-        return {"success": False, "error": "config.yaml이 없습니다. Preprocessing을 먼저 실행하세요."}
-=======
     batch_mode = tool_context.state.get("batch_mode", False)
 
     # 배치 모드: 현재 배치 평가
@@ -158,7 +142,6 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "segments_units.jsonl이 없습니다."}
     if not store.fusion_config_yaml().exists():
         return {"success": False, "error": "config.yaml이 없습니다."}
->>>>>>> feat
 
     try:
         batch_size = _read_int(tool_context.state.get("judge_batch_size"), 3)
@@ -192,10 +175,6 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         final_score = float(result.get("final_score", 0.0))
         score = round(final_score / 10.0, 4)
 
-<<<<<<< HEAD
-        # 재실행 가능 여부 확인
-=======
->>>>>>> feat
         current_rerun = tool_context.state.get("current_rerun", 1)
         max_reruns = tool_context.state.get("max_reruns", 2)
         passed = result.get("pass", True)

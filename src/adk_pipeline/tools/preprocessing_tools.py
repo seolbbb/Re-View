@@ -28,24 +28,18 @@ _OUTPUT_BASE = _PROJECT_ROOT / DEFAULT_OUTPUT_BASE
 def load_data(tool_context: ToolContext) -> Dict[str, Any]:
     """Pre-ADK 산출물(stt.json, manifest.json, captures)을 검증합니다.
 
-<<<<<<< HEAD
-=======
     첫 배치가 아니면 스킵합니다 (이미 검증됨).
 
->>>>>>> feat
     Returns:
         success: 검증 성공 여부
         artifacts: 산출물 경로들
         error: 실패 시 에러 메시지
     """
-<<<<<<< HEAD
-=======
     # 첫 배치가 아니면 스킵 (이미 검증됨)
     is_first_batch = tool_context.state.get("is_first_batch", True)
     if not is_first_batch:
         return {"success": True, "skipped": True, "message": "첫 배치가 아니므로 스킵"}
 
->>>>>>> feat
     video_name = tool_context.state.get("video_name")
     if not video_name:
         return {"success": False, "error": "video_name 미설정"}
@@ -83,11 +77,8 @@ def load_data(tool_context: ToolContext) -> Dict[str, Any]:
 def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
     """VLM을 실행하여 캡처 이미지에서 텍스트/UI 요소를 추출합니다.
 
-<<<<<<< HEAD
-=======
     배치 모드일 때는 현재 배치의 캡처 범위만 처리하고 batch 폴더에 저장합니다.
 
->>>>>>> feat
     Returns:
         success: 실행 성공 여부
         vlm_json: 생성된 vlm.json 경로
@@ -99,9 +90,6 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
 
     force_rerun = tool_context.state.get("force_preprocessing", False)
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
-<<<<<<< HEAD
-
-=======
     batch_mode = tool_context.state.get("batch_mode", False)
 
     # 배치 모드: 현재 배치의 캡처 범위만 처리
@@ -166,7 +154,6 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
             return {"success": False, "error": f"배치 VLM 실행 실패: {e}"}
 
     # 일반 모드: 전체 캡처 처리
->>>>>>> feat
     # 강제 재실행 시 기존 파일 삭제
     if force_rerun and store.vlm_json().exists():
         store.vlm_json().unlink()
@@ -226,11 +213,8 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
 def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
     """Sync를 실행하여 STT와 VLM 결과를 동기화합니다.
 
-<<<<<<< HEAD
-=======
     배치 모드일 때는 현재 배치의 vlm.json을 사용하고 batch 폴더에 저장합니다.
 
->>>>>>> feat
     Returns:
         success: 실행 성공 여부
         segments_units_jsonl: 생성된 파일 경로
@@ -242,8 +226,6 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
 
     force_rerun = tool_context.state.get("force_preprocessing", False)
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
-<<<<<<< HEAD
-=======
     batch_mode = tool_context.state.get("batch_mode", False)
 
     # 배치 모드: 현재 배치의 vlm.json으로 sync
@@ -344,7 +326,6 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
             return {"success": False, "error": f"배치 Sync 실행 실패: {e}"}
 
     # 일반 모드: 전체 Sync
->>>>>>> feat
     video_root = store.video_root()
 
     # VLM이 먼저 완료되어야 함
@@ -392,7 +373,4 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"Sync 실행 실패: {e}"}
-<<<<<<< HEAD
-=======
 
->>>>>>> feat

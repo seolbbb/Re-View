@@ -4,18 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-<<<<<<< HEAD
-from typing import Dict, List, Optional
-=======
 from typing import Dict, List, Optional, Tuple
->>>>>>> feat
 
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
 
 
-<<<<<<< HEAD
-=======
 def _filter_manifest_by_time_range(
     manifest_payload: List[Dict],
     start_ms: int,
@@ -34,7 +28,6 @@ def _filter_manifest_by_time_range(
     return filtered
 
 
->>>>>>> feat
 def run_vlm_openrouter(
     *,
     captures_dir: Path,
@@ -56,11 +49,7 @@ def run_vlm_openrouter(
     image_paths: List[str] = []
     for item in sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
-<<<<<<< HEAD
-        key=lambda x: (int(x.get("timestamp_ms", 0)), str(x.get("file_name", ""))),
-=======
         key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
->>>>>>> feat
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
@@ -88,8 +77,6 @@ def run_vlm_openrouter(
     raw_path.unlink(missing_ok=True)
 
     return {"vlm_raw_json": str(raw_path), "vlm_json": str(vlm_json)}
-<<<<<<< HEAD
-=======
 
 
 def run_vlm_for_batch(
@@ -219,4 +206,3 @@ def run_vlm_for_batch(
         "image_count": len(image_paths),
     }
 
->>>>>>> feat

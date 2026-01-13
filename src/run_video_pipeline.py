@@ -706,6 +706,8 @@ def _run_batch_fusion_pipeline(
         fusion_info["timings"]["renderer_sec"] = render_elapsed
     
     return fusion_info
+
+
 # ============================================================
 # 벤치마크 리포트 생성
 # ============================================================
@@ -957,34 +959,6 @@ def main() -> None:
             )
             capture_count = len(capture_result) if capture_result else 0
 
-<<<<<<< HEAD
-        # VLM 실행
-        vlm_image_count, vlm_elapsed = timer.time_stage(
-            "vlm",
-            _run_vlm_openrouter,
-            captures_dir=captures_dir,
-            manifest_json=manifest_json,
-            video_name=video_name,
-            output_base=output_base,
-            batch_size=args.vlm_batch_size,
-            concurrency=args.vlm_concurrency,
-            show_progress=args.vlm_show_progress,
-        )
-
-        # Fusion config 생성
-        template_config = repo_root / "src" / "fusion" / "config.yaml"
-        if not template_config.exists():
-            raise FileNotFoundError(f"fusion config template을 찾을 수 없습니다: {template_config}")
-        
-        fusion_config_path = video_root / "config.yaml"
-        _generate_fusion_config(
-            template_config=template_config,
-            output_config=fusion_config_path,
-            repo_root=repo_root,
-            stt_json=stt_json,
-            vlm_json=video_root / "vlm.json",
-            manifest_json=manifest_json,
-=======
         # 배치 모드 vs 일반 모드 분기
         if args.batch_mode:
             # 배치 모드: VLM → Sync → Summarize → Judge를 배치 단위로 반복
@@ -1054,7 +1028,6 @@ def main() -> None:
             capture_count=capture_count,
             segment_count=segment_count,
             video_path=video_path,
->>>>>>> feat
             output_root=video_root,
             parallel=args.parallel
         )
@@ -1063,35 +1036,6 @@ def main() -> None:
         report_path = video_root / "benchmark_report.md"
         report_path.write_text(md_report, encoding="utf-8")
 
-<<<<<<< HEAD
-        # Fusion 파이프라인 실행
-        fusion_info = _run_fusion_pipeline(
-            fusion_config_path, 
-            limit=args.limit, 
-            dry_run=args.dry_run,
-            timer=timer
-        )
-        segment_count = fusion_info.get("segment_count", 0)
-        
-        timer.end_total()
-
-        # 벤치마크 리포트 생성 및 출력
-        md_report = _print_benchmark_report(
-            video_info=video_info,
-            timer=timer,
-            capture_count=capture_count,
-            segment_count=segment_count,
-            video_path=video_path,
-            output_root=video_root,
-            parallel=args.parallel
-        )
-        
-        # 마크다운 리포트 저장
-        report_path = video_root / "benchmark_report.md"
-        report_path.write_text(md_report, encoding="utf-8")
-
-=======
->>>>>>> feat
         # 최종 메타데이터 저장
         benchmark_report = timer.get_report(video_info.get("duration_sec"))
         

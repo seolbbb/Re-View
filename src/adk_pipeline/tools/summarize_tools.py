@@ -2,13 +2,9 @@
 
 Summarize Agent가 사용하는 도구:
 - run_summarizer: 세그먼트별 요약 생성
-<<<<<<< HEAD
-- render_md: 마크다운 변환
-=======
 - run_batch_summarizer: 배치별 세그먼트 요약 생성
 - render_md: 마크다운 변환
 - render_batch_md: 배치별 마크다운 변환
->>>>>>> feat
 - write_final_summary: 최종 요약 생성
 """
 
@@ -34,12 +30,9 @@ _OUTPUT_BASE = _PROJECT_ROOT / DEFAULT_OUTPUT_BASE
 def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
     """Gemini로 세그먼트별 요약을 생성합니다.
 
-<<<<<<< HEAD
-=======
     배치 모드일 때는 현재 배치의 segments를 요약하고,
     batch 폴더와 fusion 폴더에 모두 저장합니다 (fusion은 append).
 
->>>>>>> feat
     Returns:
         success: 실행 성공 여부
         segment_summaries_jsonl: 생성된 파일 경로
@@ -49,9 +42,6 @@ def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "video_name 미설정"}
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
-<<<<<<< HEAD
-
-=======
     batch_mode = tool_context.state.get("batch_mode", False)
 
     # 배치 모드: 현재 배치의 segments만 요약
@@ -108,7 +98,6 @@ def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
             return {"success": False, "error": f"배치 Summarizer 실행 실패: {e}"}
 
     # 일반 모드: 전체 요약
->>>>>>> feat
     # Preprocessing이 먼저 완료되어야 함
     if not store.segments_units_jsonl().exists():
         return {"success": False, "error": "segments_units.jsonl이 없습니다. Preprocessing을 먼저 실행하세요."}
@@ -179,8 +168,6 @@ def render_md(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": f"MD 렌더링 실패: {e}"}
 
 
-<<<<<<< HEAD
-=======
 def render_batch_md(tool_context: ToolContext) -> Dict[str, Any]:
     """현재 배치의 요약을 마크다운으로 변환합니다.
 
@@ -236,7 +223,6 @@ def render_batch_md(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": f"배치 MD 렌더링 실패: {e}"}
 
 
->>>>>>> feat
 def write_final_summary(tool_context: ToolContext) -> Dict[str, Any]:
     """최종 요약을 생성합니다.
 
