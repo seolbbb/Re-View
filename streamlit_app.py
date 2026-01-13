@@ -3,15 +3,24 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
-from src.run_video_pipeline import run_pipeline, _sanitize_video_name
+from src.adk_pipeline.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
+from src.services.pipeline_service import (
+    build_adk_state,
+    get_default_output_base,
+    run_pre_adk_pipeline,
+    send_adk_message,
+    start_adk_session,
+)
 
 ROOT = Path(__file__).resolve().parent
-UPLOAD_DIR = ROOT / "data" / "uploads"
-DEFAULT_OUTPUT_BASE = "data/outputs"
+INPUT_DIR = ROOT / "data" / "inputs"
+DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
+ADK_OUTPUT_BASE = get_default_output_base()
+VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
 
 
 def _read_text(path: Path) -> Optional[str]:
@@ -29,12 +38,12 @@ def _read_json(path: Path) -> Optional[Any]:
 
 
 def _save_upload(uploaded_file) -> Path:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
     suffix = Path(uploaded_file.name).suffix or ".mp4"
     stem = Path(uploaded_file.name).stem or "video"
-    safe_stem = _sanitize_video_name(stem)
+    safe_stem = sanitize_video_name(stem)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    destination = UPLOAD_DIR / f"{timestamp}_{safe_stem}{suffix}"
+    destination = INPUT_DIR / f"{timestamp}_{safe_stem}{suffix}"
     destination.write_bytes(uploaded_file.getbuffer())
     return destination
 
@@ -49,6 +58,47 @@ def _load_manifest(video_root: Path) -> List[Dict[str, Any]]:
     if not isinstance(payload, list):
         return []
     return payload
+
+
+def _list_output_names(output_base: Path) -> List[str]:
+    if not output_base.exists():
+        return []
+    return sorted([path.name for path in output_base.iterdir() if path.is_dir()])
+
+
+def _find_existing_video(video_name: str) -> Optional[Path]:
+    if not video_name:
+        return None
+    for base_dir in (INPUT_DIR,):
+        if not base_dir.exists():
+            continue
+        for ext in VIDEO_EXTENSIONS:
+            candidate = base_dir / f"{video_name}{ext}"
+            if candidate.exists():
+                return candidate
+        for path in base_dir.glob(f"{video_name}.*"):
+            if path.suffix.lower() in VIDEO_EXTENSIONS:
+                return path
+    return None
+
+
+def _has_pre_adk_outputs(video_root: Path) -> bool:
+    return (
+        (video_root / "stt.json").exists()
+        and (video_root / "manifest.json").exists()
+        and (video_root / "captures").exists()
+    )
+
+
+def _resolve_video_name(
+    video_path: Optional[Path],
+    video_root_value: Optional[str],
+) -> Optional[str]:
+    if video_path:
+        return sanitize_video_name(video_path.stem)
+    if video_root_value:
+        return Path(video_root_value).name
+    return None
 
 
 def _render_final_summaries(video_root: Path, *, scroll_height: int = 600) -> None:
@@ -86,6 +136,17 @@ def _render_segment_summaries(video_root: Path) -> None:
         st.info("No segment summaries found.")
 
 
+def _extract_manifest_timestamp_ms(item: Dict[str, Any]) -> Optional[int]:
+    for key in ("timestamp_ms", "start_ms", "start"):
+        if key not in item:
+            continue
+        try:
+            return int(item[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _render_captures(video_root: Path) -> None:
     manifest = _load_manifest(video_root)
     if not manifest:
@@ -104,7 +165,10 @@ def _render_captures(video_root: Path) -> None:
             if isinstance(text, str) and text.strip():
                 vlm_lookup[timestamp] = text.strip()
 
-    manifest = sorted(manifest, key=lambda item: int(item.get("timestamp_ms", 0)))
+    manifest = sorted(
+        manifest,
+        key=lambda item: _extract_manifest_timestamp_ms(item) or 0,
+    )
     max_items = st.slider(
         "Max captures",
         min_value=1,
@@ -125,16 +189,21 @@ def _render_captures(video_root: Path) -> None:
         image_path = video_root / "captures" / file_name
         if not image_path.exists():
             continue
-        caption = item.get("timestamp_human") or file_name
+        timestamp_ms = _extract_manifest_timestamp_ms(item)
+        caption = item.get("timestamp_human")
+        if not caption and timestamp_ms is not None:
+            caption = f"{timestamp_ms / 1000:.2f}s"
+        if not caption:
+            caption = file_name
         with cols[idx % columns]:
             if show_vlm:
-                vlm_text = vlm_lookup.get(int(item.get("timestamp_ms", -1)))
+                vlm_text = vlm_lookup.get(timestamp_ms) if timestamp_ms is not None else None
                 if vlm_text:
                     if show_full_vlm:
                         st.markdown(vlm_text)
                     else:
                         preview = " ".join(vlm_text.split())
-                        preview = preview[:200] + ("…" if len(preview) > 200 else "")
+                        preview = preview[:200] + ("..." if len(preview) > 200 else "")
                         st.caption(preview)
                 else:
                     st.caption("VLM: (no text)")
@@ -147,21 +216,10 @@ def _render_captures(video_root: Path) -> None:
         st.image(str(graph_path), width="stretch")
 
 
-def _render_run_meta(video_root: Path, run_meta: Optional[Dict[str, Any]]) -> None:
-    if run_meta:
-        st.json(run_meta)
-        return
-
-    payload = _read_json(video_root / "pipeline_run.json")
-    if payload is None:
-        st.info("No pipeline metadata found.")
-        return
-    st.json(payload)
-
-
 def main() -> None:
     st.set_page_config(page_title="Screentime Pipeline", layout="wide")
     st.title("Screentime Video Pipeline")
+    st.toggle("Chat panel", value=True, key="show_chat")
 
     if "video_root" not in st.session_state:
         st.session_state.video_root = None
@@ -173,8 +231,32 @@ def main() -> None:
         st.session_state.uploaded_video_path = None
     if "uploaded_video_signature" not in st.session_state:
         st.session_state.uploaded_video_signature = None
+    if "pre_adk_status" not in st.session_state:
+        st.session_state.pre_adk_status = "idle"
+    if "pre_adk_error" not in st.session_state:
+        st.session_state.pre_adk_error = None
+    if "pre_adk_signature" not in st.session_state:
+        st.session_state.pre_adk_signature = None
+    if "pre_adk_result" not in st.session_state:
+        st.session_state.pre_adk_result = None
+    if "adk_session" not in st.session_state:
+        st.session_state.adk_session = None
+    if "adk_state_signature" not in st.session_state:
+        st.session_state.adk_state_signature = None
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "adk_busy" not in st.session_state:
+        st.session_state.adk_busy = False
+    if "selected_output_name" not in st.session_state:
+        st.session_state.selected_output_name = None
+    if "preview_video_path" not in st.session_state:
+        st.session_state.preview_video_path = None
 
-    source = st.radio("Video source", ["Upload", "Local path"], horizontal=True)
+    source = st.radio(
+        "Video source",
+        ["Upload", "Local path", "Existing output"],
+        horizontal=True,
+    )
     video_path: Optional[Path] = None
 
     if source == "Upload":
@@ -187,7 +269,7 @@ def main() -> None:
                 st.session_state.uploaded_video_signature = signature
             if st.session_state.uploaded_video_path:
                 video_path = Path(st.session_state.uploaded_video_path)
-    else:
+    elif source == "Local path":
         path_str = st.text_input("Video path", value="")
         if path_str:
             candidate = Path(path_str).expanduser().resolve()
@@ -195,19 +277,55 @@ def main() -> None:
                 video_path = candidate
             else:
                 st.error("Video path does not exist.")
+    else:
+        available_outputs = _list_output_names(ADK_OUTPUT_BASE)
+        if not available_outputs:
+            st.info("No outputs found yet. Upload a video to create outputs.")
+        else:
+            selected_output = st.selectbox(
+                "Select existing output",
+                options=[""] + available_outputs,
+                index=0,
+            )
+            if st.button("Load selected output", disabled=not selected_output):
+                candidate = ADK_OUTPUT_BASE / selected_output
+                if candidate.exists():
+                    st.session_state.video_root = str(candidate)
+                    st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
+                    st.session_state.pre_adk_status = "done"
+                    st.session_state.pre_adk_error = None
+                    st.session_state.pre_adk_signature = None
+                    st.session_state.pre_adk_result = None
+                    st.session_state.adk_session = None
+                    st.session_state.adk_state_signature = None
+                    st.session_state.chat_messages = []
+                    st.session_state.selected_output_name = selected_output
+                    preview_candidate = _find_existing_video(selected_output)
+                    st.session_state.preview_video_path = (
+                        str(preview_candidate) if preview_candidate else None
+                    )
+                else:
+                    st.error("Selected output folder does not exist.")
 
     if video_path:
         if str(video_path) != st.session_state.selected_video:
             st.session_state.selected_video = str(video_path)
             st.session_state.video_root = None
             st.session_state.run_meta = None
+            st.session_state.pre_adk_status = "idle"
+            st.session_state.pre_adk_error = None
+            st.session_state.pre_adk_signature = None
+            st.session_state.pre_adk_result = None
+            st.session_state.adk_session = None
+            st.session_state.adk_state_signature = None
+            st.session_state.chat_messages = []
+        st.session_state.preview_video_path = str(video_path)
 
     with st.sidebar:
         st.header("Pipeline options")
-        output_base = st.text_input("Output base", value=DEFAULT_OUTPUT_BASE)
-        output_base_path = Path(output_base)
-        if not output_base_path.is_absolute():
-            output_base_path = (ROOT / output_base_path).resolve()
+        st.subheader("Pre-ADK")
+        st.text_input("Output base", value=DEFAULT_OUTPUT_BASE_STR, disabled=True)
+        st.caption("ADK output base is fixed to data/outputs.")
         stt_backend = st.selectbox("STT backend", ["clova"])
         parallel = st.checkbox("Parallel STT + capture", value=True)
         capture_threshold = st.number_input("Capture threshold", min_value=0.1, value=3.0, step=0.1)
@@ -218,16 +336,22 @@ def main() -> None:
             step=0.1,
         )
         capture_min_interval = st.number_input("Capture min interval (sec)", min_value=0.1, value=0.5, step=0.1)
+        rerun_pre_adk = st.button("Rerun Pre-ADK", disabled=video_path is None)
 
+        st.markdown("---")
+        st.subheader("ADK options")
+        force_preprocessing = st.checkbox("Force preprocessing (VLM/Sync)", value=False)
+        max_reruns = st.number_input("Max reruns", min_value=0, value=2, step=1)
         vlm_batch_size: Optional[int] = None
         if st.checkbox("Set VLM batch size", value=False):
-            vlm_batch_size = int(st.number_input("VLM batch size", min_value=1, value=1, step=1))
-
-        limit: Optional[int] = None
-        if st.checkbox("Limit fusion segments", value=False):
-            limit = int(st.number_input("Segment limit", min_value=1, value=10, step=1))
-
-        dry_run = st.checkbox("Dry run (skip LLM summarizer)", value=False)
+            vlm_batch_size = int(st.number_input("VLM batch size", min_value=1, value=2, step=1))
+        vlm_concurrency = st.number_input("VLM concurrency", min_value=1, value=3, step=1)
+        vlm_show_progress = st.checkbox("VLM show progress", value=True)
+        judge_min_score = st.number_input("Judge min score", min_value=0.0, max_value=10.0, value=7.0, step=0.1)
+        if st.button("Reset ADK session", disabled=st.session_state.adk_session is None):
+            st.session_state.adk_session = None
+            st.session_state.adk_state_signature = None
+            st.session_state.chat_messages = []
 
         st.markdown("---")
         st.subheader("Existing outputs")
@@ -235,10 +359,12 @@ def main() -> None:
             if not video_path:
                 st.error("Select a video first.")
             else:
-                candidate = output_base_path / _sanitize_video_name(video_path.stem)
+                candidate = ADK_OUTPUT_BASE / sanitize_video_name(video_path.stem)
                 if candidate.exists():
                     st.session_state.video_root = str(candidate)
                     st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
+                    st.session_state.pre_adk_status = "done"
+                    st.session_state.preview_video_path = str(video_path)
                 else:
                     st.warning("No outputs found for selected video.")
 
@@ -251,51 +377,111 @@ def main() -> None:
                 if candidate.exists():
                     st.session_state.video_root = str(candidate)
                     st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
+                    if _has_pre_adk_outputs(candidate):
+                        st.session_state.pre_adk_status = "done"
+                    preview_candidate = _find_existing_video(candidate.name)
+                    st.session_state.preview_video_path = (
+                        str(preview_candidate) if preview_candidate else None
+                    )
                 else:
                     st.error("Output folder does not exist.")
 
-    run_clicked = st.button("Run pipeline", type="primary", disabled=video_path is None)
-    if run_clicked:
-        if not video_path:
-            st.error("Select a video first.")
-        else:
-            with st.spinner("Running pipeline..."):
+    video_root_value = st.session_state.video_root
+    video_name = _resolve_video_name(video_path, video_root_value)
+
+    if video_path:
+        pre_adk_signature: Tuple[str] = (str(video_path),)
+        should_run_pre_adk = st.session_state.pre_adk_signature != pre_adk_signature
+        if rerun_pre_adk:
+            should_run_pre_adk = True
+
+        if should_run_pre_adk:
+            st.session_state.pre_adk_status = "running"
+            st.session_state.pre_adk_error = None
+            st.session_state.adk_session = None
+            st.session_state.adk_state_signature = None
+            st.session_state.chat_messages = []
+            with st.spinner("Running Pre-ADK..."):
                 try:
-                    video_root, run_meta = run_pipeline(
-                        video=video_path,
-                        output_base=output_base,
+                    result = run_pre_adk_pipeline(
+                        video_path=video_path,
+                        output_base=ADK_OUTPUT_BASE,
                         stt_backend=stt_backend,
                         parallel=parallel,
                         capture_threshold=capture_threshold,
                         capture_dedupe_threshold=capture_dedupe_threshold,
                         capture_min_interval=capture_min_interval,
-                        capture_verbose=False,
-                        vlm_batch_size=vlm_batch_size,
-                        limit=limit,
-                        dry_run=dry_run,
+                        force=rerun_pre_adk,
                     )
                 except Exception as exc:
-                    st.error(f"Pipeline failed: {exc}")
+                    st.session_state.pre_adk_status = "error"
+                    st.session_state.pre_adk_error = str(exc)
                 else:
-                    st.session_state.video_root = str(video_root)
-                    st.session_state.run_meta = run_meta
-                    st.success("Pipeline finished.")
+                    st.session_state.pre_adk_status = "done"
+                    st.session_state.pre_adk_signature = pre_adk_signature
+                    st.session_state.pre_adk_result = result
+                    st.session_state.video_root = result.get("video_root")
+                    video_root_value = st.session_state.video_root
 
-    video_root_value = st.session_state.video_root
-    if video_path or video_root_value:
-        st.markdown("---")
-        video_col, summary_col = st.columns([3, 2], gap="large")
+    if (
+        st.session_state.pre_adk_status == "idle"
+        and video_root_value
+        and _has_pre_adk_outputs(Path(video_root_value))
+    ):
+        st.session_state.pre_adk_status = "done"
 
-        with video_col:
+    if video_name and st.session_state.pre_adk_status == "done":
+        adk_state = build_adk_state(
+            video_name=video_name,
+            force_preprocessing=force_preprocessing,
+            max_reruns=int(max_reruns),
+            vlm_batch_size=vlm_batch_size,
+            vlm_concurrency=int(vlm_concurrency),
+            vlm_show_progress=bool(vlm_show_progress),
+            judge_min_score=float(judge_min_score),
+        )
+        adk_state_signature = (
+            video_name,
+            force_preprocessing,
+            int(max_reruns),
+            vlm_batch_size,
+            int(vlm_concurrency),
+            bool(vlm_show_progress),
+            float(judge_min_score),
+        )
+        if st.session_state.adk_session is None:
+            st.session_state.adk_session = start_adk_session(state=adk_state)
+            st.session_state.adk_state_signature = adk_state_signature
+    else:
+        adk_state_signature = None
+
+    if st.session_state.pre_adk_status == "running":
+        st.info("Pre-ADK is running. This can take a while for long videos.")
+    elif st.session_state.pre_adk_status == "error":
+        st.error(f"Pre-ADK failed: {st.session_state.pre_adk_error}")
+    elif st.session_state.pre_adk_status == "done":
+        st.success("Pre-ADK completed.")
+
+    if st.session_state.show_chat:
+        main_col, chat_col = st.columns([2, 1], gap="large")
+    else:
+        main_col = st.container()
+        chat_col = None
+
+    with main_col:
+        if video_path or video_root_value:
+            st.markdown("---")
             st.markdown("### Video")
-            if video_path:
-                st.video(_load_video_bytes(str(video_path)))
-                st.caption(f"Selected: {video_path}")
+            preview_path_value = st.session_state.preview_video_path
+            preview_path = Path(preview_path_value) if preview_path_value else None
+            if preview_path:
+                st.video(_load_video_bytes(str(preview_path)))
+                st.caption(f"Selected: {preview_path}")
             else:
                 st.info("No video selected.")
 
-        with summary_col:
             if video_root_value:
+                st.markdown("---")
                 summary_height = st.slider(
                     "Summary height",
                     min_value=320,
@@ -310,16 +496,107 @@ def main() -> None:
             else:
                 st.info("Run pipeline or load outputs to see summaries.")
 
-    if video_root_value:
-        video_root = Path(video_root_value)
-        st.markdown(f"Outputs: `{video_root}`")
-        tabs = st.tabs(["Segment summaries", "Captures", "Run meta"])
-        with tabs[0]:
-            _render_segment_summaries(video_root)
-        with tabs[1]:
-            _render_captures(video_root)
-        with tabs[2]:
-            _render_run_meta(video_root, st.session_state.run_meta)
+        if video_root_value:
+            video_root = Path(video_root_value)
+            st.markdown(f"Outputs: `{video_root}`")
+            tabs = st.tabs(["Segment summaries", "Captures"])
+            with tabs[0]:
+                _render_segment_summaries(video_root)
+            with tabs[1]:
+                _render_captures(video_root)
+
+    if chat_col:
+        with chat_col:
+            st.markdown("### ADK Chat")
+            if not video_name:
+                st.info("Upload a video or load outputs to start.")
+                return
+            if st.session_state.pre_adk_status == "running":
+                st.info("Pre-ADK is running. Chat will be ready after it finishes.")
+                return
+            if st.session_state.pre_adk_status == "error":
+                st.error("Pre-ADK failed. Fix the error and rerun.")
+                return
+            if st.session_state.adk_session is None:
+                st.info("ADK session is not ready yet.")
+                return
+
+            if (
+                adk_state_signature
+                and st.session_state.adk_state_signature
+                and adk_state_signature != st.session_state.adk_state_signature
+            ):
+                st.warning("ADK settings changed. Reset session to apply them.")
+
+            if st.session_state.adk_busy:
+                st.info("ADK is running. Please wait for the current run to finish.")
+
+            if st.button(
+                "Run pipeline",
+                disabled=st.session_state.adk_session is None or st.session_state.adk_busy,
+            ):
+                st.session_state.adk_busy = True
+                message = f"{video_name}로 파이프라인 실행해줘"
+                st.session_state.chat_messages.append({"role": "user", "content": message})
+                try:
+                    with st.spinner("Running ADK pipeline..."):
+                        responses = send_adk_message(st.session_state.adk_session, message)
+                    for response in responses:
+                        st.session_state.chat_messages.append(
+                            {
+                                "role": "assistant",
+                                "author": response.author,
+                                "content": response.text,
+                            }
+                        )
+                except Exception as exc:
+                    st.session_state.chat_messages.append(
+                        {
+                            "role": "assistant",
+                            "author": "system",
+                            "content": f"ADK error: {exc}",
+                        }
+                    )
+                finally:
+                    st.session_state.adk_busy = False
+                st.rerun()
+
+            chat_container = st.container(height=520)
+            with chat_container:
+                for message in st.session_state.chat_messages:
+                    role = message.get("role", "assistant")
+                    with st.chat_message(role):
+                        author = message.get("author")
+                        if author:
+                            st.caption(author)
+                        st.markdown(message.get("content", ""))
+
+            prompt = st.chat_input("Message ADK", disabled=st.session_state.adk_busy)
+            if prompt and not st.session_state.adk_busy:
+                st.session_state.adk_busy = True
+                st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                try:
+                    with st.spinner("Waiting for ADK..."):
+                        responses = send_adk_message(st.session_state.adk_session, prompt)
+                    for response in responses:
+                        st.session_state.chat_messages.append(
+                            {
+                                "role": "assistant",
+                                "author": response.author,
+                                "content": response.text,
+                            }
+                        )
+                except Exception as exc:
+                    st.session_state.chat_messages.append(
+                        {
+                            "role": "assistant",
+                            "author": "system",
+                            "content": f"ADK error: {exc}",
+                        }
+                    )
+                finally:
+                    st.session_state.adk_busy = False
+                st.rerun()
 
 
 if __name__ == "__main__":
