@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from src.fusion.config import load_config
-from src.fusion.sync_engine import run_sync_engine
+from src.fusion.sync_engine import run_sync_engine, run_batch_sync_engine
 
 
 def run_sync(

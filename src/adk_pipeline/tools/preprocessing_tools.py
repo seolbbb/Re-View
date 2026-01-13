@@ -28,11 +28,18 @@ _OUTPUT_BASE = _PROJECT_ROOT / DEFAULT_OUTPUT_BASE
 def load_data(tool_context: ToolContext) -> Dict[str, Any]:
     """Pre-ADK 산출물(stt.json, manifest.json, captures)을 검증합니다.
 
+    첫 배치가 아니면 스킵합니다 (이미 검증됨).
+
     Returns:
         success: 검증 성공 여부
         artifacts: 산출물 경로들
         error: 실패 시 에러 메시지
     """
+    # 첫 배치가 아니면 스킵 (이미 검증됨)
+    is_first_batch = tool_context.state.get("is_first_batch", True)
+    if not is_first_batch:
+        return {"success": True, "skipped": True, "message": "첫 배치가 아니므로 스킵"}
+
     video_name = tool_context.state.get("video_name")
     if not video_name:
         return {"success": False, "error": "video_name 미설정"}
@@ -70,6 +77,8 @@ def load_data(tool_context: ToolContext) -> Dict[str, Any]:
 def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
     """VLM을 실행하여 캡처 이미지에서 텍스트/UI 요소를 추출합니다.
 
+    배치 모드일 때는 현재 배치의 캡처 범위만 처리하고 batch 폴더에 저장합니다.
+
     Returns:
         success: 실행 성공 여부
         vlm_json: 생성된 vlm.json 경로
@@ -81,7 +90,70 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
 
     force_rerun = tool_context.state.get("force_preprocessing", False)
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+    batch_mode = tool_context.state.get("batch_mode", False)
 
+    # 배치 모드: 현재 배치의 캡처 범위만 처리
+    if batch_mode:
+        batch_ranges = tool_context.state.get("batch_ranges", [])
+        current_batch_index = tool_context.state.get("current_batch_index", 0)
+        sorted_manifest = tool_context.state.get("sorted_manifest", [])
+
+        if current_batch_index >= len(batch_ranges):
+            return {"success": False, "error": f"배치 인덱스 {current_batch_index}가 범위를 벗어났습니다."}
+
+        batch_info = batch_ranges[current_batch_index]
+        start_idx = batch_info["start_idx"]
+        end_idx = batch_info["end_idx"]
+        batch_manifest = sorted_manifest[start_idx:end_idx]
+
+        # 배치 폴더에 저장
+        output_dir = store.batch_dir(current_batch_index)
+        vlm_output_path = store.batch_vlm_json(current_batch_index)
+
+        if vlm_output_path.exists() and not force_rerun:
+            return {
+                "success": True,
+                "skipped": True,
+                "vlm_json": str(vlm_output_path),
+                "message": f"배치 {current_batch_index} vlm.json이 이미 존재합니다.",
+            }
+
+        raw_batch_size = tool_context.state.get("vlm_batch_size", 2)
+        raw_concurrency = tool_context.state.get("vlm_concurrency", 3)
+        show_progress = bool(tool_context.state.get("vlm_show_progress", True))
+
+        try:
+            vlm_batch_size = int(raw_batch_size) if raw_batch_size else None
+            concurrency = int(raw_concurrency)
+        except (TypeError, ValueError):
+            vlm_batch_size = 2
+            concurrency = 3
+
+        try:
+            from .internal.vlm_openrouter import run_vlm_for_batch
+            result = run_vlm_for_batch(
+                captures_dir=store.captures_dir(),
+                manifest_json=store.manifest_json(),
+                video_name=video_name,
+                output_dir=output_dir,
+                batch_manifest=batch_manifest,
+                batch_size=vlm_batch_size,
+                concurrency=concurrency,
+                show_progress=show_progress,
+            )
+
+            return {
+                "success": True,
+                "skipped": False,
+                "batch_index": current_batch_index,
+                "vlm_json": result.get("vlm_json", ""),
+                "image_count": result.get("image_count", 0),
+                "message": f"배치 {current_batch_index} VLM 완료 ({result.get('image_count', 0)}장 처리)",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"배치 VLM 실행 실패: {e}"}
+
+    # 일반 모드: 전체 캡처 처리
     # 강제 재실행 시 기존 파일 삭제
     if force_rerun and store.vlm_json().exists():
         store.vlm_json().unlink()
@@ -141,6 +213,8 @@ def run_vlm(tool_context: ToolContext) -> Dict[str, Any]:
 def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
     """Sync를 실행하여 STT와 VLM 결과를 동기화합니다.
 
+    배치 모드일 때는 현재 배치의 vlm.json을 사용하고 batch 폴더에 저장합니다.
+
     Returns:
         success: 실행 성공 여부
         segments_units_jsonl: 생성된 파일 경로
@@ -152,6 +226,106 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
 
     force_rerun = tool_context.state.get("force_preprocessing", False)
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+    batch_mode = tool_context.state.get("batch_mode", False)
+
+    # 배치 모드: 현재 배치의 vlm.json으로 sync
+    if batch_mode:
+        batch_ranges = tool_context.state.get("batch_ranges", [])
+        current_batch_index = tool_context.state.get("current_batch_index", 0)
+
+        if current_batch_index >= len(batch_ranges):
+            return {"success": False, "error": f"배치 인덱스 {current_batch_index}가 범위를 벗어났습니다."}
+
+        batch_info = batch_ranges[current_batch_index]
+        start_ms = batch_info.get("start_ms", 0)
+        end_ms = batch_info.get("end_ms", 0)
+
+        # 배치 폴더 경로
+        batch_dir = store.batch_dir(current_batch_index)
+        vlm_path = store.batch_vlm_json(current_batch_index)
+        segments_output = store.batch_segments_units_jsonl(current_batch_index)
+
+        if not vlm_path.exists():
+            return {"success": False, "error": f"배치 {current_batch_index} vlm.json이 없습니다."}
+
+        if segments_output.exists() and not force_rerun:
+            # 스킵 시에도 cumulative_segment_count를 갱신해야 함
+            try:
+                import json
+                with open(segments_output, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    skipped_segments_count = len(lines)
+                cumulative_segment_count = tool_context.state.get("cumulative_segment_count", 0)
+                tool_context.state["cumulative_segment_count"] = cumulative_segment_count + skipped_segments_count
+            except Exception:
+                pass  # 파일 읽기 실패 시 무시
+            
+            return {
+                "success": True,
+                "skipped": True,
+                "segments_units_jsonl": str(segments_output),
+                "message": f"배치 {current_batch_index} segments_units.jsonl이 이미 존재합니다.",
+            }
+
+        try:
+            # 첫 배치에서 fusion config 생성
+            if not store.fusion_config_yaml().exists():
+                from .internal.fusion_config import generate_fusion_config
+                fusion_template = _PROJECT_ROOT / "src" / "fusion" / "config.yaml"
+                generate_fusion_config(
+                    template_config=fusion_template,
+                    output_config=store.fusion_config_yaml(),
+                    repo_root=_PROJECT_ROOT,
+                    stt_json=store.stt_json(),
+                    vlm_json=vlm_path,
+                    manifest_json=store.manifest_json(),
+                    output_root=store.video_root(),
+                )
+
+            # cumulative segment count로 segment_id offset 관리
+            cumulative_segment_count = tool_context.state.get("cumulative_segment_count", 0)
+
+            # sync_config 로드
+            from src.fusion.config import load_config
+            config = load_config(str(store.fusion_config_yaml()))
+            sync_config = {
+                "min_segment_sec": config.raw.sync_engine.min_segment_sec,
+                "max_segment_sec": config.raw.sync_engine.max_segment_sec,
+                "max_transcript_chars": config.raw.sync_engine.max_transcript_chars,
+                "silence_gap_ms": config.raw.sync_engine.silence_gap_ms,
+                "max_visual_items": config.raw.sync_engine.max_visual_items,
+                "max_visual_chars": config.raw.sync_engine.max_visual_chars,
+                "dedup_similarity_threshold": config.raw.sync_engine.dedup_similarity_threshold,
+            }
+
+            # Sync 실행 (배치 범위 지정)
+            from .internal.sync_data import run_batch_sync_engine
+            result = run_batch_sync_engine(
+                stt_json=store.stt_json(),
+                vlm_json=vlm_path,
+                manifest_json=store.manifest_json(),
+                output_dir=batch_dir,
+                time_range=(start_ms, end_ms),
+                sync_config=sync_config,
+                segment_id_offset=cumulative_segment_count,
+            )
+
+            # segment count 누적
+            new_segments_count = result.get("segments_count", 0)
+            tool_context.state["cumulative_segment_count"] = cumulative_segment_count + new_segments_count
+
+            return {
+                "success": True,
+                "skipped": False,
+                "batch_index": current_batch_index,
+                "segments_units_jsonl": str(segments_output),
+                "segments_count": new_segments_count,
+                "message": f"배치 {current_batch_index} Sync 완료 ({new_segments_count}개 세그먼트)",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"배치 Sync 실행 실패: {e}"}
+
+    # 일반 모드: 전체 Sync
     video_root = store.video_root()
 
     # VLM이 먼저 완료되어야 함
@@ -199,3 +373,4 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"Sync 실행 실패: {e}"}
+

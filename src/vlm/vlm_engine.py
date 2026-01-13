@@ -226,6 +226,8 @@ class OpenRouterVlmExtractor:
             if _is_service_unavailable_error(exc):
                 raise RuntimeError(_format_service_unavailable_message(exc)) from exc
             raise
+        if not completion or not completion.choices:
+            raise RuntimeError(f"OpenRouter API returned empty response for batch: {completion}")
         content = completion.choices[0].message.content or ""
         sections = self._split_batch_content(content, len(image_paths))
 
@@ -330,6 +332,8 @@ class OpenRouterVlmExtractor:
                 if _is_service_unavailable_error(exc):
                     raise RuntimeError(_format_service_unavailable_message(exc)) from exc
                 raise
+            if not completion or not completion.choices:
+                raise RuntimeError(f"OpenRouter API returned empty response for single image: {completion}")
             content = completion.choices[0].message.content or ""
             if content.strip():
                 detections = [OcrBox(text=content, bbox=FULL_IMAGE_BBOX)]

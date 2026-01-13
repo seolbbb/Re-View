@@ -45,8 +45,11 @@ def _read_float(value: Any, default: float) -> float:
     return float(value)
 
 
+
 def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
     """요약 품질을 평가하고 PASS/FAIL을 반환합니다.
+
+    배치 모드일 때는 현재 배치의 summaries를 평가합니다.
 
     Returns:
         success: 실행 성공 여부
@@ -59,14 +62,86 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "video_name 미설정"}
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+    batch_mode = tool_context.state.get("batch_mode", False)
 
-    # Summarize가 먼저 완료되어야 함
+    # 배치 모드: 현재 배치 평가
+    if batch_mode:
+        current_batch_index = tool_context.state.get("current_batch_index", 0)
+        batch_dir = store.batch_dir(current_batch_index)
+        batch_summaries = store.batch_segment_summaries_jsonl(current_batch_index)
+        batch_segments = store.batch_segments_units_jsonl(current_batch_index)
+
+        if not batch_summaries.exists():
+            return {"success": False, "error": f"배치 {current_batch_index} segment_summaries.jsonl이 없습니다."}
+        if not batch_segments.exists():
+            return {"success": False, "error": f"배치 {current_batch_index} segments_units.jsonl이 없습니다."}
+
+        batch_judge_json = batch_dir / "judge.json"
+
+        # 이미 존재하면 스킵
+        if batch_judge_json.exists():
+            import json
+            with open(batch_judge_json, "r", encoding="utf-8") as f:
+                existing_result = json.load(f)
+            passed = existing_result.get("pass", True)
+            final_score = float(existing_result.get("final_score", 0.0))
+            score = round(final_score / 10.0, 4)
+            return {
+                "success": True,
+                "skipped": True,
+                "batch_index": current_batch_index,
+                "result": "PASS" if passed else "FAIL",
+                "score": score,
+                "judge_json": str(batch_judge_json),
+            }
+
+        try:
+            min_score = _read_float(tool_context.state.get("judge_min_score"), 7.0)
+            include_segments = _read_bool(
+                tool_context.state.get("judge_include_segments"), False
+            )
+
+            from .internal.judge_gemini import run_judge_gemini
+            result = run_judge_gemini(
+                fusion_config_path=store.fusion_config_yaml(),
+                fusion_dir=batch_dir,
+                segments_units_path=batch_segments,
+                segment_summaries_path=batch_summaries,
+                batch_size=3,
+                workers=1,
+                json_repair_attempts=1,
+                limit=None,
+                verbose=False,
+                min_score=min_score,
+                include_segments=include_segments,
+            )
+
+            final_score = float(result.get("final_score", 0.0))
+            score = round(final_score / 10.0, 4)
+            passed = result.get("pass", True)
+
+            current_rerun = tool_context.state.get("batch_rerun_count", 0)
+            max_reruns = tool_context.state.get("max_reruns", 2)
+            can_rerun = not passed and current_rerun < max_reruns
+
+            return {
+                "success": True,
+                "batch_index": current_batch_index,
+                "result": "PASS" if passed else "FAIL",
+                "score": score,
+                "can_rerun": can_rerun,
+                "judge_json": str(batch_judge_json),
+            }
+        except Exception as e:
+            return {"success": False, "error": f"배치 Judge 실행 실패: {e}"}
+
+    # 일반 모드: 전체 평가
     if not store.segment_summaries_jsonl().exists():
-        return {"success": False, "error": "segment_summaries.jsonl이 없습니다. Summarize를 먼저 실행하세요."}
+        return {"success": False, "error": "segment_summaries.jsonl이 없습니다."}
     if not store.segments_units_jsonl().exists():
-        return {"success": False, "error": "segments_units.jsonl이 없습니다. Preprocessing을 먼저 실행하세요."}
+        return {"success": False, "error": "segments_units.jsonl이 없습니다."}
     if not store.fusion_config_yaml().exists():
-        return {"success": False, "error": "config.yaml이 없습니다. Preprocessing을 먼저 실행하세요."}
+        return {"success": False, "error": "config.yaml이 없습니다."}
 
     try:
         batch_size = _read_int(tool_context.state.get("judge_batch_size"), 3)
@@ -100,7 +175,6 @@ def evaluate_summary(tool_context: ToolContext) -> Dict[str, Any]:
         final_score = float(result.get("final_score", 0.0))
         score = round(final_score / 10.0, 4)
 
-        # 재실행 가능 여부 확인
         current_rerun = tool_context.state.get("current_rerun", 1)
         max_reruns = tool_context.state.get("max_reruns", 2)
         passed = result.get("pass", True)

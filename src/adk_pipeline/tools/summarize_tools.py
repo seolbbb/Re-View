@@ -2,7 +2,9 @@
 
 Summarize Agent가 사용하는 도구:
 - run_summarizer: 세그먼트별 요약 생성
+- run_batch_summarizer: 배치별 세그먼트 요약 생성
 - render_md: 마크다운 변환
+- render_batch_md: 배치별 마크다운 변환
 - write_final_summary: 최종 요약 생성
 """
 
@@ -28,6 +30,9 @@ _OUTPUT_BASE = _PROJECT_ROOT / DEFAULT_OUTPUT_BASE
 def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
     """Gemini로 세그먼트별 요약을 생성합니다.
 
+    배치 모드일 때는 현재 배치의 segments를 요약하고,
+    batch 폴더와 fusion 폴더에 모두 저장합니다 (fusion은 append).
+
     Returns:
         success: 실행 성공 여부
         segment_summaries_jsonl: 생성된 파일 경로
@@ -37,7 +42,62 @@ def run_summarizer(tool_context: ToolContext) -> Dict[str, Any]:
         return {"success": False, "error": "video_name 미설정"}
 
     store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+    batch_mode = tool_context.state.get("batch_mode", False)
 
+    # 배치 모드: 현재 배치의 segments만 요약
+    if batch_mode:
+        current_batch_index = tool_context.state.get("current_batch_index", 0)
+        batch_ranges = tool_context.state.get("batch_ranges", [])
+        previous_context = tool_context.state.get("previous_context", "")
+
+        if current_batch_index >= len(batch_ranges):
+            return {"success": False, "error": f"배치 인덱스 {current_batch_index}가 범위를 벗어났습니다."}
+
+        # 배치 폴더 경로
+        batch_dir = store.batch_dir(current_batch_index)
+        segments_path = store.batch_segments_units_jsonl(current_batch_index)
+        summaries_output = store.batch_segment_summaries_jsonl(current_batch_index)
+
+        if not segments_path.exists():
+            return {"success": False, "error": f"배치 {current_batch_index} segments_units.jsonl이 없습니다."}
+
+        try:
+            from src.fusion.summarizer import run_batch_summarizer
+            from src.fusion.config import load_config
+            config = load_config(str(store.fusion_config_yaml()))
+            result = run_batch_summarizer(
+                segments_units_jsonl=segments_path,
+                output_dir=summaries_output.parent,
+                config=config,
+                previous_context=previous_context,
+            )
+
+            # fusion 폴더에도 append (누적 저장)
+            fusion_summaries = store.segment_summaries_jsonl()
+            fusion_summaries.parent.mkdir(parents=True, exist_ok=True)  # fusion 폴더 생성
+            if summaries_output.exists():
+                with open(summaries_output, "r", encoding="utf-8") as f:
+                    batch_content = f.read()
+                with open(fusion_summaries, "a", encoding="utf-8") as f:
+                    f.write(batch_content)
+
+            # 다음 배치를 위한 context 업데이트
+            context_max = tool_context.state.get("context_max_chars", 500)
+            new_context = result.get("context", "")
+            if new_context:
+                tool_context.state["previous_context"] = new_context[:context_max]
+
+            return {
+                "success": True,
+                "batch_index": current_batch_index,
+                "segment_summaries_jsonl": str(summaries_output),
+                "segments_count": result.get("segments_count", 0),
+                "message": f"배치 {current_batch_index} 요약 완료 ({result.get('segments_count', 0)}개 세그먼트)",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"배치 Summarizer 실행 실패: {e}"}
+
+    # 일반 모드: 전체 요약
     # Preprocessing이 먼저 완료되어야 함
     if not store.segments_units_jsonl().exists():
         return {"success": False, "error": "segments_units.jsonl이 없습니다. Preprocessing을 먼저 실행하세요."}
@@ -106,6 +166,61 @@ def render_md(tool_context: ToolContext) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"MD 렌더링 실패: {e}"}
+
+
+def render_batch_md(tool_context: ToolContext) -> Dict[str, Any]:
+    """현재 배치의 요약을 마크다운으로 변환합니다.
+
+    배치 완료 후 사용자에게 보여줄 수 있는 MD 파일을 생성합니다.
+
+    Returns:
+        success: 실행 성공 여부
+        batch_index: 렌더링한 배치 인덱스
+        batch_summaries_md: 생성된 파일 경로
+    """
+    video_name = tool_context.state.get("video_name")
+    if not video_name:
+        return {"success": False, "error": "video_name 미설정"}
+
+    batch_mode = tool_context.state.get("batch_mode", False)
+    if not batch_mode:
+        return {"success": False, "error": "배치 모드가 비활성화 상태입니다."}
+
+    current_batch_index = tool_context.state.get("current_batch_index", 0)
+    store = VideoStore(output_base=_OUTPUT_BASE, video_name=video_name)
+
+    # 배치 summaries JSONL 확인
+    batch_summaries_path = store.batch_segment_summaries_jsonl(current_batch_index)
+    if not batch_summaries_path.exists():
+        return {
+            "success": False,
+            "error": f"배치 {current_batch_index} segment_summaries.jsonl이 없습니다."
+        }
+
+    batch_md_output = store.batch_segment_summaries_md(current_batch_index)
+
+    try:
+        from src.fusion.config import load_config
+        config = load_config(str(store.fusion_config_yaml()))
+
+        from .internal.render_md import render_md as _render_md
+        _render_md(
+            summaries_jsonl=batch_summaries_path,
+            output_md=batch_md_output,
+            include_sources=config.raw.render.include_sources,
+            sources_jsonl=store.batch_segments_units_jsonl(current_batch_index),
+            md_wrap_width=config.raw.render.md_wrap_width,
+            limit=None,
+        )
+
+        return {
+            "success": True,
+            "batch_index": current_batch_index,
+            "batch_summaries_md": str(batch_md_output),
+            "message": f"배치 {current_batch_index} MD 렌더링 완료",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"배치 MD 렌더링 실패: {e}"}
 
 
 def write_final_summary(tool_context: ToolContext) -> Dict[str, Any]:

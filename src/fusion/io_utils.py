@@ -69,9 +69,10 @@ def format_ms(ms: int) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def compute_run_id(config_path: Path, stt_path: Path, vlm_path: Path, manifest_path: Optional[Path]) -> str:
+def compute_run_id(config_path: Optional[Path], stt_path: Path, vlm_path: Path, manifest_path: Optional[Path]) -> str:
     hasher = hashlib.sha256()
-    hasher.update(config_path.read_bytes())
+    if config_path and config_path.exists():
+        hasher.update(config_path.read_bytes())
     hasher.update(stt_path.read_bytes())
     hasher.update(vlm_path.read_bytes())
     if manifest_path and manifest_path.exists():
