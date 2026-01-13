@@ -164,7 +164,71 @@ def _build_response_schema() -> Dict[str, Any]:
     }
 
 
+
 def _build_batch_prompt(
+    segments: List[Dict[str, Any]],
+    claim_max_chars: int,
+    bullets_min: int,
+    bullets_max: int,
+    previous_context: Optional[str] = None,
+) -> str:
+    """간소화된 배치 프롬프트 생성 (속도 최적화)"""
+    prompt = f"""당신은 강의 요약 전문가입니다. 아래 제공되는 세그먼트 정보(transcript, visual summary)를 바탕으로 각 세그먼트의 핵심 내용을 요약하세요.
+
+반드시 다음 JSON 배열 형식으로 출력해야 합니다:
+[
+  {{
+    "segment_id": 1,
+    "summary": {{
+      "bullets": [
+        {{
+          "claim": "핵심 내용 한 문장 ({claim_max_chars}자 내외)",
+          "source_type": "direct", 
+          "evidence_refs": ["t1"],
+          "confidence": "high",
+          "notes": "추가 설명 (선택)"
+        }}
+      ],
+      "definitions": [
+        {{
+          "term": "용어",
+          "definition": "정의",
+          "source_type": "direct",
+          "evidence_refs": [],
+          "confidence": "high"
+        }}
+      ],
+      "explanations": [
+         {{
+           "point": "상세 설명 (4~8문장)",
+           "source_type": "inferred",
+           "evidence_refs": [],
+           "confidence": "high",
+           "notes": ""
+         }}
+      ],
+      "open_questions": []
+    }}
+  }}
+]
+
+규칙:
+- bullets는 세그먼트당 {bullets_min}~{bullets_max}개 작성
+- claim은 {claim_max_chars}자 내외로 간결하게
+- source_type: direct(직접인용), inferred(추론), background(배경지식) 중 하나
+- evidence_refs: 근거가 되는 transcript unit_id (t*) 또는 visual unit_id (v*) 리스트
+- 한국어로 작성하세요.
+
+세그먼트 데이터:
+"""
+    for seg in segments:
+        prompt += f"\\n--- Segment {seg.get('segment_id')} ---\\n"
+        prompt += json.dumps(seg, ensure_ascii=False)
+    
+    return prompt
+
+
+def _build_batch_prompt_legacy(
     segments: List[Dict[str, Any]],
     claim_max_chars: int,
     bullets_min: int,
