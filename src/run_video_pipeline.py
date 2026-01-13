@@ -465,6 +465,7 @@ def _run_fusion_pipeline(
             limit=limit,
             write_outputs=True,
             verbose=True,
+            write_outputs=True,
         )
         fusion_info["timings"]["judge_sec"] = judge_elapsed
     
