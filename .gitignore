@@ -54,4 +54,4 @@ src/data/output/grid_search
 
 # capture benchmark
 temp_bench/
-src/db
+.gemini/

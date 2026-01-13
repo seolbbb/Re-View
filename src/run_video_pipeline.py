@@ -21,6 +21,7 @@ run_video_pipeline.py - 비디오 파이프라인 벤치마크 도구
 from __future__ import annotations
 
 import argparse
+from dotenv import load_dotenv
 import json
 import os
 import re
@@ -38,6 +39,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
+load_dotenv()
+
 
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
@@ -50,6 +53,7 @@ from src.fusion.sync_engine import run_sync_engine
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
 from src.judge.judge import run_judge
+from src.db import sync_pipeline_results_to_db
 
 
 # ============================================================
@@ -465,7 +469,6 @@ def _run_fusion_pipeline(
             limit=limit,
             write_outputs=True,
             verbose=True,
-            write_outputs=True,
         )
         fusion_info["timings"]["judge_sec"] = judge_elapsed
     
@@ -1056,9 +1059,23 @@ def main() -> None:
         run_meta["status"] = "ok"
         _write_json(run_meta_path, run_meta)
 
-        print(f"✅ Pipeline completed successfully!")
+        print(f"\n✅ Pipeline completed successfully!")
         print(f"   Outputs: {video_root}")
         print(f"   Benchmark: {report_path}")
+        
+        # DB 동기화
+        print(f"\n📤 Syncing results to Supabase...")
+        db_success = sync_pipeline_results_to_db(
+            video_path=video_path,
+            video_root=video_root,
+            run_meta=run_meta,
+            duration_sec=video_info.get("duration_sec"),
+            provider=args.stt_backend,
+        )
+        if db_success:
+            print(f"✅ Database sync completed!")
+        else:
+            print(f"⚠️ Database sync skipped or failed (check logs above)")
         
     except Exception as exc:
         timer.end_total()
