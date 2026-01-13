@@ -865,7 +865,7 @@ def main() -> None:
         raise FileNotFoundError(f"비디오 파일을 찾을 수 없습니다: {video_path}")
 
     repo_root = ROOT
-    output_base = (repo_root / Path(args.output_base)).resolve()
+    output_base = (repo_root / Path(output_base)).resolve()
     video_name = _sanitize_video_name(video_path.stem)
     video_root = output_base / video_name
     video_root.mkdir(parents=True, exist_ok=True)
@@ -881,6 +881,19 @@ def main() -> None:
 
     # 메타데이터 초기화
     run_meta_path = video_root / "pipeline_run.json"
+    run_args = {
+        "video": str(video_path),
+        "output_base": str(output_base),
+        "stt_backend": stt_backend,
+        "parallel": parallel,
+        "capture_threshold": capture_threshold,
+        "capture_dedupe_threshold": capture_dedupe_threshold,
+        "capture_min_interval": capture_min_interval,
+        "capture_verbose": capture_verbose,
+        "vlm_batch_size": vlm_batch_size,
+        "limit": limit,
+        "dry_run": dry_run,
+    }
     run_meta: Dict[str, Any] = {
         "schema_version": 2,
         "video_path": str(video_path),
@@ -889,7 +902,7 @@ def main() -> None:
         "output_base": str(output_base),
         "video_root": str(video_root),
         "started_at_utc": _utc_now_iso(),
-        "args": vars(args),
+        "args": run_args,
         "durations_sec": {},
         "benchmark": {},
         "status": "running",
@@ -1069,6 +1082,23 @@ def main() -> None:
         _write_json(run_meta_path, run_meta)
         print(f"\n❌ Pipeline failed: {exc}")
         raise
+
+
+def main() -> None:
+    args = parse_args()
+    run_pipeline(
+        video=args.video,
+        output_base=args.output_base,
+        stt_backend=args.stt_backend,
+        parallel=args.parallel,
+        capture_threshold=args.capture_threshold,
+        capture_dedupe_threshold=args.capture_dedupe_threshold,
+        capture_min_interval=args.capture_min_interval,
+        capture_verbose=args.capture_verbose,
+        vlm_batch_size=args.vlm_batch_size,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":
