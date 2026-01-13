@@ -49,6 +49,13 @@ def sync_pipeline_results_to_db(
         # 로컬 파일 생성까지만 하고 종료하는 시나리오를 위해 False 반환하지만 에러는 아님.
         return False
         
+    # 데이터 타입 정규화 (DB의 duration_sec는 INTEGER임)
+    if duration_sec is not None:
+        try:
+            duration_sec = int(float(str(duration_sec)))
+        except (ValueError, TypeError):
+            duration_sec = None
+            
     try:
         print(f"[DB] Starting Supabase synchronization for {video_path.name}...")
         

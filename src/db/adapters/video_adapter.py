@@ -71,7 +71,7 @@ class VideoAdapterMixin:
             "original_filename": original_filename,
             "storage_path": storage_path,
             "duration_sec": duration_sec,
-            "status": "uploading",  # 초기 상태는 업로드 중으로 설정
+            "status": "uploaded",  # 초기 상태 (유효값: uploaded, processing, completed, completed_with_errors, failed)
         }
         if user_id:
             data["user_id"] = user_id
