@@ -249,6 +249,17 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
             return {"success": False, "error": f"배치 {current_batch_index} vlm.json이 없습니다."}
 
         if segments_output.exists() and not force_rerun:
+            # 스킵 시에도 cumulative_segment_count를 갱신해야 함
+            try:
+                import json
+                with open(segments_output, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    skipped_segments_count = len(lines)
+                cumulative_segment_count = tool_context.state.get("cumulative_segment_count", 0)
+                tool_context.state["cumulative_segment_count"] = cumulative_segment_count + skipped_segments_count
+            except Exception:
+                pass  # 파일 읽기 실패 시 무시
+            
             return {
                 "success": True,
                 "skipped": True,

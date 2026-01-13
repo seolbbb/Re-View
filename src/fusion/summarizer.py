@@ -173,7 +173,23 @@ def _build_batch_prompt(
     previous_context: Optional[str] = None,
 ) -> str:
     """간소화된 배치 프롬프트 생성 (속도 최적화)"""
-    prompt = f"""당신은 강의 요약 전문가입니다. 아래 제공되는 세그먼트 정보(transcript, visual summary)를 바탕으로 각 세그먼트의 핵심 내용을 요약하세요.
+    # 이전 배치 context 섹션
+    context_section = ""
+    if previous_context:
+        context_section = f"""
+========================
+이전 배치 요약 (맥락 유지용)
+========================
+{previous_context}
+
+위 내용은 이전 배치에서 다룬 핵심 내용입니다.
+- 현재 배치 요약 시 위 내용과 일관성을 유지하세요.
+- 동일한 용어/개념은 같은 방식으로 설명하세요.
+========================
+
+"""
+
+    prompt = f"""{context_section}당신은 강의 요약 전문가입니다. 아래 제공되는 세그먼트 정보(transcript, visual summary)를 바탕으로 각 세그먼트의 핵심 내용을 요약하세요.
 
 반드시 다음 JSON 배열 형식으로 출력해야 합니다:
 [
