@@ -5,26 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 
-def _read_json(path: Path) -> Any:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def _normalize_manifest_entries(manifest: Any) -> List[Dict[str, Any]]:
-    if not isinstance(manifest, list):
+def build_fusion_vlm_payload(
+    *,
+    manifest_payload: Any,
+    vlm_raw_payload: Any,
+) -> Dict[str, Any]:
+    if not isinstance(manifest_payload, list):
         raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
 
-    normalized: List[Dict[str, Any]] = []
-    for item in manifest:
+    manifest_entries: List[Dict[str, Any]] = []
+    for item in manifest_payload:
         if not isinstance(item, dict):
             continue
         if "start_ms" not in item or "file_name" not in item:
@@ -36,57 +29,39 @@ def _normalize_manifest_entries(manifest: Any) -> List[Dict[str, Any]]:
         file_name = str(item["file_name"]).strip()
         if not file_name:
             continue
-        normalized.append({"timestamp_ms": start_ms, "file_name": file_name})
+        manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name})
 
-    if not normalized:
+    if not manifest_entries:
         raise ValueError("manifest.json에서 유효한 항목을 찾을 수 없습니다.")
-    normalized.sort(key=lambda x: (int(x["timestamp_ms"]), str(x["file_name"])))
-    return normalized
+    manifest_entries.sort(key=lambda x: (int(x["timestamp_ms"]), str(x["file_name"])))
 
-
-def _extract_text_from_raw_results(raw_results: Any) -> str:
-    if not isinstance(raw_results, list):
-        return ""
-    parts: List[str] = []
-    for box in raw_results:
-        if not isinstance(box, dict):
-            continue
-        text = box.get("text")
-        if not isinstance(text, str):
-            continue
-        text = text.strip()
-        if not text:
-            continue
-        parts.append(text)
-    return "\n\n".join(parts).strip()
-
-
-def _build_image_text_map(vlm_raw: Any) -> Dict[str, str]:
-    if not isinstance(vlm_raw, list):
+    if not isinstance(vlm_raw_payload, list):
         raise ValueError("vlm_raw.json 형식이 올바르지 않습니다(배열이어야 함).")
 
-    mapping: Dict[str, str] = {}
-    for item in vlm_raw:
+    image_text: Dict[str, str] = {}
+    for item in vlm_raw_payload:
         if not isinstance(item, dict):
             continue
         image_path = item.get("image_path")
         if not isinstance(image_path, str) or not image_path.strip():
             continue
-        file_name = Path(image_path).name
-        extracted_text = _extract_text_from_raw_results(item.get("raw_results"))
-        mapping[file_name] = extracted_text
-    if not mapping:
+        raw_results = item.get("raw_results")
+        parts: List[str] = []
+        if isinstance(raw_results, list):
+            for box in raw_results:
+                if not isinstance(box, dict):
+                    continue
+                text = box.get("text")
+                if not isinstance(text, str):
+                    continue
+                text = text.strip()
+                if not text:
+                    continue
+                parts.append(text)
+        image_text[Path(image_path).name] = "\n\n".join(parts).strip()
+
+    if not image_text:
         raise ValueError("vlm_raw.json에서 유효한 image_path를 찾을 수 없습니다.")
-    return mapping
-
-
-def build_fusion_vlm_payload(
-    *,
-    manifest_payload: Any,
-    vlm_raw_payload: Any,
-) -> Tuple[Dict[str, Any], List[str]]:
-    manifest_entries = _normalize_manifest_entries(manifest_payload)
-    image_text = _build_image_text_map(vlm_raw_payload)
 
     missing: List[str] = []
     items: List[Dict[str, Any]] = []
@@ -103,7 +78,7 @@ def build_fusion_vlm_payload(
         raise ValueError(
             f"manifest.json과 vlm_raw.json 조인 실패: {len(missing)}개 이미지가 누락되었습니다. 예: {preview}"
         )
-    return {"schema_version": 1, "items": items}, [str(e["file_name"]) for e in manifest_entries]
+    return {"schema_version": 1, "items": items}
 
 
 def convert_vlm_raw_to_fusion_vlm(
@@ -112,13 +87,17 @@ def convert_vlm_raw_to_fusion_vlm(
     vlm_raw_json: Path,
     output_vlm_json: Path,
 ) -> None:
-    manifest_payload = _read_json(manifest_json)
-    vlm_raw_payload = _read_json(vlm_raw_json)
-    fusion_payload, _ = build_fusion_vlm_payload(
+    manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+    vlm_raw_payload = json.loads(vlm_raw_json.read_text(encoding="utf-8"))
+    fusion_payload = build_fusion_vlm_payload(
         manifest_payload=manifest_payload,
         vlm_raw_payload=vlm_raw_payload,
     )
-    _write_json(output_vlm_json, fusion_payload)
+    output_vlm_json.parent.mkdir(parents=True, exist_ok=True)
+    output_vlm_json.write_text(
+        json.dumps(fusion_payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -141,4 +120,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
