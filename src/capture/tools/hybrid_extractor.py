@@ -1,121 +1,5 @@
 """
-================================================================================
-HybridSlideExtractor - 강의 영상 슬라이드 캡처 엔진 (V2 Delayed Save)
-================================================================================
-
-[목적]
-    강의 영상에서 슬라이드 전환을 감지하고, 마우스/사람 등의 노이즈가 제거된
-    깨끗한 슬라이드 이미지를 추출합니다.
-
-[V2 최적화 - Delayed Save 패턴]
-    - 슬라이드를 즉시 저장하지 않고, 다음 슬라이드 감지 시까지 버퍼링
-    - 다음 슬라이드의 start_ms = 이전 슬라이드의 end_ms로 확정
-    - 확정된 시점에 최종 파일명으로 한 번만 저장
-    - 후처리 rename 루프 제거 → I/O 오버헤드 감소
-
-[핵심 알고리즘]
-    1. 픽셀 차이 분석 (Pixel Difference)
-       - 연속 프레임 간 픽셀 변화량 측정
-       - 임계값 초과 시 장면 전환으로 판단
-    
-    2. ORB 구조 유사도 (Structural Similarity)
-       - ORB(Oriented FAST and Rotated BRIEF) 특징점 매칭
-       - 슬라이드의 구조적 변화 감지
-    
-    3. 스마트 버퍼링 (2.5초)
-       - 장면 전환 후 2.5초간 프레임 수집
-       - Median 기반으로 노이즈(마우스, 사람) 제거
-       - 가장 깨끗한 프레임 선택
-    
-    4. RANSAC 중복 제거
-       - 기하학적 일관성 검사
-       - 사람이 가려도 동일 슬라이드 인식
-
-[파이프라인 흐름]
-    입력 비디오
-         │
-         ▼
-    ┌─────────────────────────────────────┐
-    │  1. 프레임 읽기 + 스킵 최적화       │
-    │     (IDLE 상태에서 0.5초 단위 샘플링) │
-    └─────────────────────────────────────┘
-         │
-         ▼
-    ┌─────────────────────────────────────┐
-    │  2. 장면 전환 감지                   │
-    │     - Pixel Diff > threshold        │
-    │     - ORB Similarity < threshold    │
-    └─────────────────────────────────────┘
-         │
-         ▼
-    ┌─────────────────────────────────────┐
-    │  3. 안정화 대기                      │
-    │     - 변화량이 낮아지면 캡처 시작    │
-    │     - 최대 2.5초 타임아웃           │
-    └─────────────────────────────────────┘
-         │
-         ▼
-    ┌─────────────────────────────────────┐
-    │  4. 스마트 버퍼링 (2.5초)           │
-    │     - 프레임 수집                   │
-    │     - Median으로 노이즈 제거        │
-    │     - 최적 프레임 선택              │
-    └─────────────────────────────────────┘
-         │
-         ▼
-    ┌─────────────────────────────────────┐
-    │  5. [V2] Delayed Save               │
-    │     - 다음 슬라이드 감지 시 저장    │
-    │     - end_ms 확정 후 최종 파일명으로 저장 │
-    └─────────────────────────────────────┘
-         │
-         ▼
-    ┌─────────────────────────────────────┐
-    │  6. 중복 제거 (Deduplication)       │
-    │     - Pixel + ORB + RANSAC 검사     │
-    │     - 중복이면 Dropped              │
-    └─────────────────────────────────────┘
-         │
-         ▼
-    출력: captures/{video}_{idx}_{start_ms}_{end_ms}.jpg
-
-[임계값 설명]
-    - sensitivity_diff (기본 3.0)
-      픽셀 차이 민감도. 낮을수록 민감하게 감지.
-      2.0~5.0 범위 권장.
-    
-    - sensitivity_sim (기본 0.8)
-      ORB 구조 유사도. 높을수록 엄격한 중복 제거.
-      0.6~0.9 범위 권장.
-    
-    - min_interval (기본 0.5초)
-      캡처 최소 간격. 너무 빠른 연속 캡처 방지.
-
-[사용 예시]
-    from src.capture.tools import HybridSlideExtractor
-    
-    extractor = HybridSlideExtractor(
-        video_path="input.mp4",
-        output_dir="captures/",
-        sensitivity_diff=3.0,
-        sensitivity_sim=0.8,
-        min_interval=0.5
-    )
-    slides = extractor.process(video_name="lecture")
-    # slides = [{"file_name": "lecture_001_1000_5000.jpg", "start_ms": 1000, "end_ms": 5000}, ...]
-
-[출력 구조]
-    output_dir/
-    ├── video_001_1000_5000.jpg           # 캡처된 슬라이드 (V2 파일명)
-    ├── video_002_5000_30000.jpg
-    ├── ...
-    └── capture_log.txt                   # 처리 로그
-
-[성능]
-    - 단일 패스 처리 (1-Pass)
-    - IDLE 상태에서 프레임 스킵으로 속도 최적화
-    - V2 Delayed Save로 I/O 오버헤드 제거
-    - 5분 영상 기준 약 15~25초 처리 (CPU 의존)
+강의 영상에서 슬라이드를 캡처하는 HybridSlideExtractor 구현.
 """
 
 import cv2
@@ -126,39 +10,21 @@ import logging
 
 class HybridSlideExtractor:
     """
-    Hybrid 방식 슬라이드 추출기 (V2 Delayed Save).
-    
-    픽셀 차이(Pixel Difference)와 ORB 특징점 매칭을 결합하여
-    강의 영상에서 슬라이드 전환을 감지하고 깨끗한 이미지를 추출합니다.
-    
-    V2에서는 Delayed Save 패턴을 사용하여 파일을 한 번만 저장합니다.
-    
-    Attributes:
-        video_path (str): 입력 비디오 파일 경로
-        output_dir (str): 캡처 이미지 저장 디렉토리
-        sensitivity_diff (float): 픽셀 차이 민감도 (낮을수록 민감)
-        sensitivity_sim (float): ORB 유사도 임계값 (높을수록 엄격)
-        min_interval (float): 캡처 최소 간격 (초)
-        orb: OpenCV ORB 특징점 검출기
-        bf: Brute-Force 특징점 매처
-        logger: 로깅 객체
+    픽셀 차이와 ORB 유사도를 결합해 슬라이드 전환을 감지하는 캡처 엔진.
+
+    전환 이후 일정 시간 버퍼를 모아 노이즈가 적은 프레임을 선택하고,
+    지연 저장 방식으로 end_ms가 확정된 뒤 한 번만 저장한다.
     """
     
     def __init__(self, video_path, output_dir, sensitivity_diff=3.0, sensitivity_sim=0.8, min_interval=0.5):
         """
-        HybridSlideExtractor 초기화.
-        
-        Args:
-            video_path (str): 처리할 비디오 파일의 경로
-            output_dir (str): 캡처된 슬라이드를 저장할 디렉토리
-            sensitivity_diff (float): 픽셀 차이 민감도
-                - 낮은 값(2.0): 작은 변화도 감지 → 더 많은 캡처
-                - 높은 값(5.0): 큰 변화만 감지 → 적은 캡처
-            sensitivity_sim (float): ORB 구조 유사도 임계값
-                - 높은 값(0.9): 거의 동일해야 중복 판정 → 더 많은 캡처
-                - 낮은 값(0.6): 비슷해도 중복 판정 → 적은 캡처
-            min_interval (float): 연속 캡처 최소 간격 (초)
-                - 너무 빠른 연속 캡처 방지
+        캡처 엔진을 초기화한다.
+
+        video_path: 입력 비디오 파일 경로.
+        output_dir: 캡처 이미지를 저장할 디렉터리.
+        sensitivity_diff: 픽셀 차이 민감도(낮을수록 민감).
+        sensitivity_sim: ORB 유사도 임계값(높을수록 엄격).
+        min_interval: 연속 캡처 최소 간격(초).
         """
         self.video_path = video_path
         self.output_dir = output_dir
@@ -201,19 +67,13 @@ class HybridSlideExtractor:
 
     def process(self, video_name="video"):
         """
-        비디오를 처리하여 슬라이드를 추출합니다.
-        
-        V2에서는 Delayed Save 패턴을 사용:
-        - 슬라이드를 즉시 저장하지 않고 pending_slide에 보관
-        - 다음 슬라이드 감지 시 이전 슬라이드의 end_ms를 확정하여 저장
-        - 마지막 슬라이드는 비디오 종료 시 저장
-        
-        Args:
-            video_name (str): 출력 파일명 접두사
-            
-        Returns:
-            list: 추출된 슬라이드 메타데이터 리스트
-                  [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
+        비디오를 순회하며 슬라이드를 추출한다.
+
+        전환 감지 후 버퍼링한 프레임 중 최적 프레임을 선택하고,
+        다음 슬라이드가 감지될 때까지 저장을 지연한다.
+
+        video_name: 출력 파일명 접두사.
+        반환: [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
         """
         cap = cv2.VideoCapture(self.video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -382,20 +242,10 @@ class HybridSlideExtractor:
 
     def _select_best_frame_and_check_duplicate(self, pending, curr_kp, curr_des):
         """
-        버퍼에서 최적 프레임을 선택하고 중복 여부를 확인합니다.
-        
-        2.5초 동안 수집된 프레임 중에서 Median에 가장 가까운 프레임을 선택하여
-        마우스 포인터나 사람 등의 노이즈가 가장 적은 프레임을 반환합니다.
-        
-        Args:
-            pending (dict): 버퍼링 데이터 {"buffer": [...], ...}
-            curr_kp: 현재 프레임의 키포인트 (미사용)
-            curr_des: 현재 프레임의 디스크립터 (미사용)
-            
-        Returns:
-            tuple: (best_frame, should_save)
-                - best_frame: 선택된 최적 프레임
-                - should_save: 저장 여부 (중복이면 False)
+        버퍼에서 최적 프레임을 고르고 중복 여부를 판단한다.
+
+        pending: 버퍼링 데이터({"buffer": [...], ...}).
+        반환: (best_frame, should_save) 튜플.
         """
         if not pending['buffer']:
             return None, False
@@ -475,16 +325,9 @@ class HybridSlideExtractor:
 
     def _save_slide(self, video_name, idx, slide_data, end_ms, extracted_slides):
         """
-        슬라이드를 파일로 저장합니다.
-        
-        V2 파일명 형식: {video_name}_{idx:03d}_{start_ms}_{end_ms}.jpg
-        
-        Args:
-            video_name (str): 비디오 이름
-            idx (int): 슬라이드 인덱스 (1-based)
-            slide_data (dict): {"frame": ..., "start_ms": ...}
-            end_ms (int): 슬라이드 종료 시간 (ms)
-            extracted_slides (list): 결과 리스트에 추가
+        슬라이드 이미지를 저장하고 메타데이터 리스트에 추가한다.
+
+        파일명 형식: {video_name}_{idx:03d}_{start_ms}_{end_ms}.jpg
         """
         start_ms = slide_data['start_ms']
         frame = slide_data['frame']

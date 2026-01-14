@@ -607,7 +607,6 @@ def run_judge(
 
         segment_reports.append(
             {
-                "schema_version": 2,
                 "segment_id": seg_id,
                 "scores": {
                     "groundedness": groundedness,
@@ -637,7 +636,6 @@ def run_judge(
     avg_final = round(sum(final_scores) / len(final_scores), 2)
 
     report: Dict[str, Any] = {
-        "schema_version": 2,
         "score_scale": {"min": 0, "max": MAX_SCORE},
         "scores": {
             "groundedness": avg_groundedness,

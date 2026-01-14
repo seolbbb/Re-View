@@ -162,7 +162,7 @@ def run_vlm_for_batch(
 
     if not image_paths:
         # 이미지가 없으면 빈 vlm.json 생성
-        empty_vlm = {"schema_version": 1, "items": [], "duration_ms": 0}
+        empty_vlm = {"items": [], "duration_ms": 0}
         vlm_json_path = output_dir / "vlm.json"
         vlm_json_path.write_text(json.dumps(empty_vlm, ensure_ascii=False, indent=2), encoding="utf-8")
         return {
@@ -205,4 +205,3 @@ def run_vlm_for_batch(
         "vlm_json": str(vlm_json_path),
         "image_count": len(image_paths),
     }
-

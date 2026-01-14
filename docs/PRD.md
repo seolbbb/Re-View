@@ -280,7 +280,6 @@
 
 ```json
 {
-  "schema_version": 1,
   "segments": [
     { "start_ms": 0, "end_ms": 5000, "text": "안녕하세요", "confidence": 0.95 }
   ]
@@ -312,7 +311,6 @@
 
 ```json
 {
-  "schema_version": 1,
   "items": [
     {
       "timestamp_ms": 1000,
@@ -444,7 +442,6 @@
 
 ```json
 {
-  "schema_version": 1,
   "pass": true,
   "final_score": 8.5,
   "threshold": 7.0,

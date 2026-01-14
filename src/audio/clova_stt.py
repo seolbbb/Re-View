@@ -1,70 +1,21 @@
-# 사용:
-# from src.audio.clova_stt import ClovaSpeechClient
-#
-# client = ClovaSpeechClient()
-# client.transcribe(
-#     "src/data/input/screentime-mvp-video.mp4",
-#     include_confidence=True, 문장 단위 신뢰도 포함 (기본 True)
-#     include_raw_response=True, segments 외에 전체 응답 포함
-#     word_alignment=True, 추가적으로 단어 단위 타임스탬프 포함
-#     full_text=True, include_raw_response가 True일 경우에 사용가능, 전체 텍스트 포함
-#     completion="sync", "sync" 기본. "async"는 결과 폴링 로직이 없어 segments가 비어 저장될 수 있음.
-#     language="ko-KR", 예: ko-KR, en-US, enko, ja-JP, zh-CN, zh-TW (Clova 문서 기준)
-#     timeout=120, 지정 초 내 응답 없으면 요청이 Timeout 예외로 종료됨 (긴 파일은 늘리거나 async 권장)
-#     output_path="src/data/output/screentime-mvp-video/stt.json",
-# )
-#
-# CLI사용: python src/audio/clova_stt.py --media-path src/data/input/screentime-mvp-video.mp4
-# 출력: {schema_version: 1, segments: [{start_ms, end_ms, text, confidence?}], ...(옵션)}
-# 옵션: include_confidence(기본 True, 세그먼트별), include_raw_response, word_alignment, full_text, completion, language, timeout, output_path
-# .env: Screentime-MVP/.env 우선 로드, 없으면 기본 load_dotenv().
-"""
-Clova Speech API client (recognizer/upload).
-
-Inputs:
-    - media_path: Path to a local audio/video file.
-Outputs:
-    - dict matching stt.json schema.
-"""
-
 from __future__ import annotations
 
 import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv
 
+from src.audio.settings import load_audio_settings
+
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
-def load_env() -> None:
-    if ENV_PATH.exists():
-        load_dotenv(ENV_PATH)
-    else:
-        load_dotenv()
-
-
-def build_url(base_url: str) -> str:
-    base = base_url.rstrip("/")
-    if base.endswith("/recognizer/upload"):
-        return base
-    if base.endswith("/recognizer"):
-        return f"{base}/upload"
-    return f"{base}/recognizer/upload"
-
-
-def _coerce_ms(value: object) -> int:
-    try:
-        return int(round(float(value)))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[Dict[str, Any]]:
+    """Clova 응답에서 세그먼트 목록을 추출해 표준 형태로 정리한다."""
     segments_out: List[Dict[str, Any]] = []
     for segment in raw.get("segments", []):
         if not isinstance(segment, dict):
@@ -75,9 +26,17 @@ def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[
         text = text.strip()
         if not text:
             continue
+        try:
+            start_ms = int(round(float(segment.get("start"))))
+        except (TypeError, ValueError):
+            start_ms = 0
+        try:
+            end_ms = int(round(float(segment.get("end"))))
+        except (TypeError, ValueError):
+            end_ms = 0
         item = {
-            "start_ms": _coerce_ms(segment.get("start")),
-            "end_ms": _coerce_ms(segment.get("end")),
+            "start_ms": start_ms,
+            "end_ms": end_ms,
             "text": text,
         }
         if include_confidence:
@@ -90,14 +49,18 @@ def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[
 
 
 class ClovaSpeechClient:
-    """Lightweight wrapper around the Naver Clova Speech API."""
+    """Clova Speech API에 대한 간단한 클라이언트 래퍼."""
 
     def __init__(
         self,
         api_url: str | None = None,
         api_key: str | None = None,
     ) -> None:
-        load_env()
+        """API URL/키를 준비하고 .env를 우선 로드한다."""
+        if ENV_PATH.exists():
+            load_dotenv(ENV_PATH)
+        else:
+            load_dotenv()
         self.api_url = api_url or os.getenv("CLOVA_SPEECH_URL")
         self.api_key = api_key or os.getenv("CLOVA_SPEECH_API_KEY") or os.getenv("CLOVA_SPEECH_SECRET")
 
@@ -109,17 +72,37 @@ class ClovaSpeechClient:
         media_path: str | Path,
         output_path: str | Path | None = None,
         *,
-        include_confidence: bool = True,
-        include_raw_response: bool = False,
-        word_alignment: bool = False,
-        full_text: bool = False,
-        completion: str = "sync",
-        language: str = "ko-KR",
-        timeout: int = 60,
+        include_confidence: Optional[bool] = None,
+        include_raw_response: Optional[bool] = None,
+        word_alignment: Optional[bool] = None,
+        full_text: Optional[bool] = None,
+        completion: Optional[str] = None,
+        language: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        Run speech-to-text on a media file and emit stt.json schema.
-        """
+        """로컬 미디어 파일을 STT로 처리해 stt.json 구조를 만든다."""
+        settings = load_audio_settings()
+        stt_settings = settings.get("stt", {})
+        if not isinstance(stt_settings, dict):
+            raise ValueError("stt 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        clova_defaults = stt_settings.get("clova", {})
+        if not isinstance(clova_defaults, dict):
+            raise ValueError("stt.clova 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        if include_confidence is None:
+            include_confidence = bool(clova_defaults.get("include_confidence", True))
+        if include_raw_response is None:
+            include_raw_response = bool(clova_defaults.get("include_raw_response", False))
+        if word_alignment is None:
+            word_alignment = bool(clova_defaults.get("word_alignment", False))
+        if full_text is None:
+            full_text = bool(clova_defaults.get("full_text", False))
+        if completion is None:
+            completion = str(clova_defaults.get("completion", "sync"))
+        if language is None:
+            language = str(clova_defaults.get("language", "ko-KR"))
+        if timeout is None:
+            timeout = int(clova_defaults.get("timeout", 60))
+
         media_path = Path(media_path).expanduser()
         if not media_path.exists():
             raise FileNotFoundError(f"Media file not found: {media_path}")
@@ -141,7 +124,13 @@ class ClovaSpeechClient:
             payload["fullText"] = True
 
         headers = {"Accept": "application/json;UTF-8", "X-CLOVASPEECH-API-KEY": self.api_key}
-        url = build_url(self.api_url)
+        base_url = self.api_url.rstrip("/")
+        if base_url.endswith("/recognizer/upload"):
+            url = base_url
+        elif base_url.endswith("/recognizer"):
+            url = f"{base_url}/upload"
+        else:
+            url = f"{base_url}/recognizer/upload"
         params_payload = json.dumps(payload, ensure_ascii=False)
 
         with media_path.open("rb") as media_file:
@@ -154,7 +143,6 @@ class ClovaSpeechClient:
         raw = response.json()
 
         stt_data: Dict[str, Any] = {
-            "schema_version": 1,
             "segments": _extract_segments(raw, include_confidence=include_confidence),
         }
 
@@ -167,6 +155,15 @@ class ClovaSpeechClient:
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱한다."""
+    settings = load_audio_settings()
+    stt_settings = settings.get("stt", {})
+    if not isinstance(stt_settings, dict):
+        raise ValueError("stt 설정 형식이 올바르지 않습니다(맵이어야 함).")
+    clova_defaults = stt_settings.get("clova", {})
+    if not isinstance(clova_defaults, dict):
+        raise ValueError("stt.clova 설정 형식이 올바르지 않습니다(맵이어야 함).")
+
     parser = argparse.ArgumentParser(description="Clova Speech STT client.")
     parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
     parser.add_argument("--output-path", help="Override default stt.json output path.")
@@ -174,19 +171,48 @@ def parse_args() -> argparse.Namespace:
         "--confidence",
         dest="include_confidence",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=bool(clova_defaults.get("include_confidence", True)),
         help="Include average confidence field.",
     )
-    parser.add_argument("--include-raw-response", action="store_true", help="Attach raw provider response.")
-    parser.add_argument("--word-alignment", action="store_true", help="Request word-level timestamps.")
-    parser.add_argument("--full-text", action="store_true", help="Request fullText output if supported.")
-    parser.add_argument("--completion", default="sync", help="sync or async (async not polled here).")
-    parser.add_argument("--language", default="ko-KR", help="Language code (e.g., ko-KR, en-US, enko).")
-    parser.add_argument("--timeout", type=int, default=60, help="Request timeout in seconds.")
+    parser.add_argument(
+        "--include-raw-response",
+        action=argparse.BooleanOptionalAction,
+        default=bool(clova_defaults.get("include_raw_response", False)),
+        help="Attach raw provider response.",
+    )
+    parser.add_argument(
+        "--word-alignment",
+        action=argparse.BooleanOptionalAction,
+        default=bool(clova_defaults.get("word_alignment", False)),
+        help="Request word-level timestamps.",
+    )
+    parser.add_argument(
+        "--full-text",
+        action=argparse.BooleanOptionalAction,
+        default=bool(clova_defaults.get("full_text", False)),
+        help="Request fullText output if supported.",
+    )
+    parser.add_argument(
+        "--completion",
+        default=str(clova_defaults.get("completion", "sync")),
+        help="sync or async (async not polled here).",
+    )
+    parser.add_argument(
+        "--language",
+        default=str(clova_defaults.get("language", "ko-KR")),
+        help="Language code (e.g., ko-KR, en-US, enko).",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=int(clova_defaults.get("timeout", 60)),
+        help="Request timeout in seconds.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    """CLI 진입점."""
     args = parse_args()
     client = ClovaSpeechClient()
     client.transcribe(

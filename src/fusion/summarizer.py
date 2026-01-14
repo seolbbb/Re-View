@@ -8,6 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 from .config import ConfigBundle
 from .io_utils import ensure_output_root, print_jsonl_head, read_jsonl, update_token_usage
@@ -950,7 +951,6 @@ def run_summarizer(
                         "end_ms": segment.get("end_ms"),
                         "summary": summary,
                         "version": {
-                            "schema_version": 1,
                             "prompt_version": PROMPT_VERSION,
                             "llm_model_id": config.raw.llm_gemini.model,
                             "temperature": config.raw.summarizer.temperature,
@@ -1108,7 +1108,6 @@ def run_batch_summarizer(
                         "end_ms": segment.get("end_ms"),
                         "summary": summary,
                         "version": {
-                            "schema_version": 1,
                             "prompt_version": PROMPT_VERSION,
                             "llm_model_id": config.raw.llm_gemini.model,
                             "temperature": config.raw.summarizer.temperature,

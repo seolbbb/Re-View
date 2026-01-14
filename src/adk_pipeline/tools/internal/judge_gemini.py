@@ -57,7 +57,6 @@ def run_judge_gemini(
         if item.get("segment_id") is not None
     ]
     payload: Dict[str, Any] = {
-        "schema_version": 2,
         "model": str(report.get("meta", {}).get("model", "")),
         "pass": passed,
         "final_score": final_score,

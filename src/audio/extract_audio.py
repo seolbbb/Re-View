@@ -12,6 +12,9 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
+from typing import Optional
+
+from src.audio.settings import load_audio_settings
 
 
 def default_output_path(media_path: Path) -> Path:
@@ -22,11 +25,25 @@ def extract_audio(
     media_path: str | Path,
     output_path: str | Path | None = None,
     *,
-    sample_rate: int = 16000,
-    channels: int = 1,
-    codec: str = "pcm_s16le",
-    mono_method: str = "auto",
+    sample_rate: Optional[int] = None,
+    channels: Optional[int] = None,
+    codec: Optional[str] = None,
+    mono_method: Optional[str] = None,
 ) -> Path:
+    settings = load_audio_settings()
+    extract_settings = settings.get("extract", {})
+    if not isinstance(extract_settings, dict):
+        raise ValueError("extract 설정 형식이 올바르지 않습니다(맵이어야 함).")
+
+    if sample_rate is None:
+        sample_rate = int(extract_settings.get("sample_rate", 16000))
+    if channels is None:
+        channels = int(extract_settings.get("channels", 1))
+    if codec is None:
+        codec = str(extract_settings.get("codec", "pcm_s16le"))
+    if mono_method is None:
+        mono_method = str(extract_settings.get("mono_method", "auto"))
+
     media_path = Path(media_path).expanduser()
     if not media_path.exists():
         raise FileNotFoundError(f"Media file not found: {media_path}")
@@ -151,15 +168,34 @@ def _measure_mean_volume(
 
 
 def parse_args() -> argparse.Namespace:
+    settings = load_audio_settings()
+    extract_settings = settings.get("extract", {})
+    if not isinstance(extract_settings, dict):
+        raise ValueError("extract 설정 형식이 올바르지 않습니다(맵이어야 함).")
+
     parser = argparse.ArgumentParser(description="Extract audio from a media file.")
     parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
     parser.add_argument("--output-path", help="Output audio file path.")
-    parser.add_argument("--sample-rate", type=int, default=16000, help="Sample rate (Hz).")
-    parser.add_argument("--channels", type=int, default=1, help="Audio channels.")
-    parser.add_argument("--codec", default="pcm_s16le", help="Audio codec (ffmpeg).")
+    parser.add_argument(
+        "--sample-rate",
+        type=int,
+        default=int(extract_settings.get("sample_rate", 16000)),
+        help="Sample rate (Hz).",
+    )
+    parser.add_argument(
+        "--channels",
+        type=int,
+        default=int(extract_settings.get("channels", 1)),
+        help="Audio channels.",
+    )
+    parser.add_argument(
+        "--codec",
+        default=str(extract_settings.get("codec", "pcm_s16le")),
+        help="Audio codec (ffmpeg).",
+    )
     parser.add_argument(
         "--mono-method",
-        default="auto",
+        default=str(extract_settings.get("mono_method", "auto")),
         choices=("downmix", "left", "right", "phase-fix", "auto"),
         help="Mono creation method (downmix or channel select/phase-fix/auto).",
     )

@@ -76,7 +76,6 @@ def run_pre_adk_pipeline(
     store = VideoStore(output_base=output_base, video_name=video_name)
     meta_path = store.pipeline_run_json()
     meta_payload = {
-        "schema_version": 1,
         "stage": "pre_adk",
         "status": "ok",
         "video_name": video_name,

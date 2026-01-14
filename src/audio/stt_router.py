@@ -36,20 +36,47 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.audio.clova_stt import ClovaSpeechClient
 from src.audio.extract_audio import extract_audio
+from src.audio.settings import load_audio_settings
 from src.audio.whisper_stt import WhisperSTTClient
 
 DEFAULT_PROVIDER = "clova"
 
 
+def _merge_defaults(defaults: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(defaults)
+    for key, value in overrides.items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _coerce_mapping(value: Any, label: str) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} 설정 형식이 올바르지 않습니다(맵이어야 함).")
+    return value
+
+
 class STTRouter:
     """Routes STT calls to the configured provider."""
 
-    def __init__(self, provider: str | None = None) -> None:
-        self.provider = (provider or os.getenv("STT_PROVIDER", DEFAULT_PROVIDER)).lower()
+    def __init__(self, provider: str | None = None, *, settings_path: Optional[Path] = None) -> None:
+        settings = load_audio_settings(settings_path=settings_path)
+        stt_settings = _coerce_mapping(settings.get("stt"), "stt")
+        extract_settings = _coerce_mapping(settings.get("extract"), "extract")
+
+        default_provider = stt_settings.get("default_provider", DEFAULT_PROVIDER)
+        if not isinstance(default_provider, str) or not default_provider.strip():
+            default_provider = DEFAULT_PROVIDER
+        env_provider = os.getenv("STT_PROVIDER")
+        self.provider = (provider or env_provider or default_provider).lower()
+        self._stt_settings = stt_settings
+        self._extract_settings = extract_settings
 
     def transcribe(
         self,
@@ -59,6 +86,11 @@ class STTRouter:
         **kwargs: Any,
     ) -> Dict[str, Any]:
         provider_name = (provider or self.provider).lower()
+        provider_defaults = _coerce_mapping(
+            self._stt_settings.get(provider_name),
+            f"stt.{provider_name}",
+        )
+        kwargs = _merge_defaults(provider_defaults, kwargs)
 
         if provider_name == "clova":
             return ClovaSpeechClient().transcribe(media_path, **kwargs)
@@ -77,15 +109,24 @@ class STTRouter:
         *,
         provider: str | None = None,
         audio_output_path: str | Path | None = None,
-        mono_method: str = "auto",
-        sample_rate: int = 16000,
-        channels: int = 1,
-        codec: str = "pcm_s16le",
+        mono_method: Optional[str] = None,
+        sample_rate: Optional[int] = None,
+        channels: Optional[int] = None,
+        codec: Optional[str] = None,
         **stt_kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Extract audio first, then run STT using the selected provider.
         """
+        extract_defaults = self._extract_settings
+        if sample_rate is None:
+            sample_rate = int(extract_defaults.get("sample_rate", 16000))
+        if channels is None:
+            channels = int(extract_defaults.get("channels", 1))
+        if codec is None:
+            codec = str(extract_defaults.get("codec", "pcm_s16le"))
+        if mono_method is None:
+            mono_method = str(extract_defaults.get("mono_method", "auto"))
         audio_path = extract_audio(
             media_path,
             output_path=audio_output_path,
@@ -98,11 +139,18 @@ class STTRouter:
 
 
 def parse_args() -> argparse.Namespace:
+    settings = load_audio_settings()
+    stt_settings = _coerce_mapping(settings.get("stt"), "stt")
+    extract_settings = _coerce_mapping(settings.get("extract"), "extract")
+    default_provider = stt_settings.get("default_provider", DEFAULT_PROVIDER)
+    if not isinstance(default_provider, str) or not default_provider.strip():
+        default_provider = DEFAULT_PROVIDER
+
     parser = argparse.ArgumentParser(description="STT router (clova/whisper).")
     parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
     parser.add_argument(
         "--provider",
-        default=DEFAULT_PROVIDER,
+        default=default_provider,
         choices=("clova", "whisper"),
         help="STT provider.",
     )
@@ -113,12 +161,26 @@ def parse_args() -> argparse.Namespace:
         help="Skip audio extraction and call provider directly.",
     )
     parser.add_argument("--audio-output-path", help="Output audio path when extracting.")
-    parser.add_argument("--sample-rate", type=int, default=16000, help="Sample rate for extraction (Hz).")
-    parser.add_argument("--channels", type=int, default=1, help="Audio channels for extraction.")
-    parser.add_argument("--codec", default="pcm_s16le", help="Audio codec for extraction.")
+    parser.add_argument(
+        "--sample-rate",
+        type=int,
+        default=int(extract_settings.get("sample_rate", 16000)),
+        help="Sample rate for extraction (Hz).",
+    )
+    parser.add_argument(
+        "--channels",
+        type=int,
+        default=int(extract_settings.get("channels", 1)),
+        help="Audio channels for extraction.",
+    )
+    parser.add_argument(
+        "--codec",
+        default=str(extract_settings.get("codec", "pcm_s16le")),
+        help="Audio codec for extraction.",
+    )
     parser.add_argument(
         "--mono-method",
-        default="auto",
+        default=str(extract_settings.get("mono_method", "auto")),
         choices=("downmix", "left", "right", "phase-fix", "auto"),
         help="Mono creation method for extraction.",
     )

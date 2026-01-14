@@ -898,7 +898,6 @@ def main() -> None:
         "dry_run": dry_run,
     }
     run_meta: Dict[str, Any] = {
-        "schema_version": 2,
         "video_path": str(video_path),
         "video_name": video_name,
         "video_info": video_info,

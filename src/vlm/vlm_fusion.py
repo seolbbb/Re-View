@@ -79,7 +79,7 @@ def build_fusion_vlm_payload(
         raise ValueError(
             f"manifest.json과 vlm_raw.json 조인 실패: {len(missing)}개 이미지가 누락되었습니다. 예: {preview}"
         )
-    return {"schema_version": 1, "items": items}
+    return {"items": items}
 
 
 def convert_vlm_raw_to_fusion_vlm(

@@ -15,7 +15,7 @@
 # CLI:
 # python src/audio/whisper_stt.py --audio-path src/data/input/test2.wav --model-size base
 #
-# 출력: {schema_version: 1, segments: [{start_ms, end_ms, text, confidence?}], ...(옵션)}
+# 출력: {segments: [{start_ms, end_ms, text, confidence?}], ...(옵션)}
 # 옵션: include_confidence, include_raw_response, model_size, device, language, task, temperature, output_path
 # 참고: pip install -U openai-whisper torch
 # 주의: confidence는 avg_logprob 기반으로 계산한 근사값(정확한 확률 아님)
@@ -27,7 +27,9 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from src.audio.settings import load_audio_settings
 
 
 def _segment_confidence(segment: Dict[str, Any]) -> float | None:
@@ -61,12 +63,30 @@ class WhisperSTTClient:
         audio_path: str | Path,
         output_path: str | Path | None = None,
         *,
-        include_confidence: bool = False,
-        include_raw_response: bool = False,
-        language: str = "ko",
-        task: str = "transcribe",
-        temperature: float = 0.0,
+        include_confidence: Optional[bool] = None,
+        include_raw_response: Optional[bool] = None,
+        language: Optional[str] = None,
+        task: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
+        settings = load_audio_settings()
+        stt_settings = settings.get("stt", {})
+        if not isinstance(stt_settings, dict):
+            raise ValueError("stt 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        whisper_defaults = stt_settings.get("whisper", {})
+        if not isinstance(whisper_defaults, dict):
+            raise ValueError("stt.whisper 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        if include_confidence is None:
+            include_confidence = bool(whisper_defaults.get("include_confidence", False))
+        if include_raw_response is None:
+            include_raw_response = bool(whisper_defaults.get("include_raw_response", False))
+        if language is None:
+            language = str(whisper_defaults.get("language", "ko"))
+        if task is None:
+            task = str(whisper_defaults.get("task", "transcribe"))
+        if temperature is None:
+            temperature = float(whisper_defaults.get("temperature", 0.0))
+
         audio_path = Path(audio_path).expanduser()
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -97,7 +117,6 @@ class WhisperSTTClient:
             segments_out.append(item)
 
         stt_data: Dict[str, Any] = {
-            "schema_version": 1,
             "segments": segments_out,
         }
 
@@ -115,16 +134,50 @@ class WhisperSTTClient:
 
 
 def parse_args() -> argparse.Namespace:
+    settings = load_audio_settings()
+    stt_settings = settings.get("stt", {})
+    if not isinstance(stt_settings, dict):
+        raise ValueError("stt 설정 형식이 올바르지 않습니다(맵이어야 함).")
+    whisper_defaults = stt_settings.get("whisper", {})
+    if not isinstance(whisper_defaults, dict):
+        raise ValueError("stt.whisper 설정 형식이 올바르지 않습니다(맵이어야 함).")
+
     parser = argparse.ArgumentParser(description="Whisper STT (audio input).")
     parser.add_argument("--audio-path", required=True, help="Path to local audio file.")
     parser.add_argument("--output-path", help="Output stt.json path.")
-    parser.add_argument("--model-size", default="base", help="Whisper model size (e.g., tiny/base/small).")
-    parser.add_argument("--device", help="Override device (cuda/cpu).")
-    parser.add_argument("--language", default="ko", help="Language code (e.g., ko, en).")
-    parser.add_argument("--task", default="transcribe", choices=("transcribe", "translate"))
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--include-confidence", action="store_true", help="Add confidence per segment.")
-    parser.add_argument("--include-raw-response", action="store_true", help="Attach raw provider response.")
+    parser.add_argument(
+        "--model-size",
+        default=str(whisper_defaults.get("model_size", "base")),
+        help="Whisper model size (e.g., tiny/base/small).",
+    )
+    parser.add_argument("--device", default=whisper_defaults.get("device"), help="Override device (cuda/cpu).")
+    parser.add_argument(
+        "--language",
+        default=str(whisper_defaults.get("language", "ko")),
+        help="Language code (e.g., ko, en).",
+    )
+    parser.add_argument(
+        "--task",
+        default=str(whisper_defaults.get("task", "transcribe")),
+        choices=("transcribe", "translate"),
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=float(whisper_defaults.get("temperature", 0.0)),
+    )
+    parser.add_argument(
+        "--include-confidence",
+        action=argparse.BooleanOptionalAction,
+        default=bool(whisper_defaults.get("include_confidence", False)),
+        help="Add confidence per segment.",
+    )
+    parser.add_argument(
+        "--include-raw-response",
+        action=argparse.BooleanOptionalAction,
+        default=bool(whisper_defaults.get("include_raw_response", False)),
+        help="Attach raw provider response.",
+    )
     return parser.parse_args()
 
 

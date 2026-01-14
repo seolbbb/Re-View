@@ -86,7 +86,7 @@ def merge_all_batches(tool_context: ToolContext) -> Dict[str, Any]:
         if vlm_path.exists():
             with open(vlm_path, "r", encoding="utf-8") as f:
                 vlm_data = json.load(f)
-                # schema_version/items 형식
+                # items 형식
                 if isinstance(vlm_data, dict):
                     items = vlm_data.get("items", [])
                     all_vlm_data.extend(items)
@@ -119,12 +119,12 @@ def merge_all_batches(tool_context: ToolContext) -> Dict[str, Any]:
 
     merged_files = []
 
-    # VLM 병합 결과 저장 (schema_version/items 형식)
+    # VLM 병합 결과 저장 (items 형식)
     if all_vlm_data:
         vlm_output = store.vlm_json()
         vlm_output.parent.mkdir(parents=True, exist_ok=True)
         with open(vlm_output, "w", encoding="utf-8") as f:
-            json.dump({"schema_version": 1, "items": all_vlm_data}, f, ensure_ascii=False, indent=2)
+            json.dump({"items": all_vlm_data}, f, ensure_ascii=False, indent=2)
         merged_files.append(str(vlm_output))
 
     # Segments 병합 결과 저장

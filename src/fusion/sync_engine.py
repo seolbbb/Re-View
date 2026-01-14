@@ -19,8 +19,6 @@ class SegmentWindow:
 
 def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]:
     payload = read_json(path, "stt.json")
-    if payload.get("schema_version") != 1:
-        raise ValueError(f"stt.json schema_version이 1이 아닙니다: {path}")
     segments = payload.get("segments", [])
     if not isinstance(segments, list):
         raise ValueError(f"stt.json segments 형식이 올바르지 않습니다: {path}")
@@ -46,8 +44,6 @@ def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[in
 
 def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]:
     payload = read_json(path, "vlm.json")
-    if payload.get("schema_version") != 1:
-        raise ValueError(f"vlm.json schema_version이 1이 아닙니다: {path}")
     items = payload.get("items", [])
     if not isinstance(items, list):
         raise ValueError(f"vlm.json items 형식이 올바르지 않습니다: {path}")
@@ -414,7 +410,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
         print(f"[DRY RUN] segments={len(sync_segments)} (출력 미생성)")
         return
 
-    write_json(output_dir / "sync.json", {"schema_version": 1, "segments": sync_segments})
+    write_json(output_dir / "sync.json", {"segments": sync_segments})
     write_json(output_dir / "trace_map.json", {"run_id": run_id, "segments": trace_map_segments})
 
     print_jsonl_head(output_dir / "segments.jsonl", max_lines=2)

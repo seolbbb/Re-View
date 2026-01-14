@@ -42,7 +42,7 @@ python src/audio/clova_stt.py --media-path src/data/input/sample.mp4
 
 기본 출력:
 - `src/data/output/<입력파일명>/stt.json`
-- 형식: `{ "schema_version": 1, "segments": [{ "start_ms", "end_ms", "text", "confidence?" }] }`
+- 형식: `{ "segments": [{ "start_ms", "end_ms", "text", "confidence?" }] }`
 
 옵션 요약:
 - `include_confidence`: 세그먼트별 confidence 포함(기본 True)

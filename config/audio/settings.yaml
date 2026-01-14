@@ -1,0 +1,23 @@
+stt:
+  default_provider: clova
+  clova:
+    include_confidence: true
+    include_raw_response: false
+    word_alignment: false
+    full_text: false
+    completion: sync
+    language: ko-KR
+    timeout: 60
+  whisper:
+    include_confidence: false
+    include_raw_response: false
+    model_size: base
+    device: null
+    language: ko
+    task: transcribe
+    temperature: 0.0
+extract:
+  sample_rate: 16000
+  channels: 1
+  codec: pcm_s16le
+  mono_method: auto
