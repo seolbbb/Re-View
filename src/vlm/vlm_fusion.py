@@ -1,4 +1,4 @@
-"""VLM 원시 결과(vlm_raw.json) + capture manifest를 fusion 입력 vlm.json으로 변환."""
+"""VLM 원시 결과(vlm_raw.json)를 fusion 입력(vlm.json)으로 변환한다."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ def build_fusion_vlm_payload(
     manifest_payload: Any,
     vlm_raw_payload: Any,
 ) -> Dict[str, Any]:
+    """manifest와 vlm_raw를 조인해 fusion 입력 구조를 만든다."""
     if not isinstance(manifest_payload, list):
         raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
 
@@ -87,6 +88,7 @@ def convert_vlm_raw_to_fusion_vlm(
     vlm_raw_json: Path,
     output_vlm_json: Path,
 ) -> None:
+    """파일 경로를 받아 vlm_raw.json을 vlm.json으로 변환한다."""
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     vlm_raw_payload = json.loads(vlm_raw_json.read_text(encoding="utf-8"))
     fusion_payload = build_fusion_vlm_payload(
@@ -101,6 +103,7 @@ def convert_vlm_raw_to_fusion_vlm(
 
 
 def _parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱한다."""
     parser = argparse.ArgumentParser(description="vlm_raw.json + manifest.json → fusion 입력 vlm.json 변환")
     parser.add_argument("--manifest", required=True, help="capture manifest.json 경로")
     parser.add_argument("--vlm-raw", required=True, help="VLM 원시 결과(vlm_raw.json) 경로")
@@ -109,6 +112,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI에서 호출되는 엔트리포인트."""
     args = _parse_args()
     convert_vlm_raw_to_fusion_vlm(
         manifest_json=Path(args.manifest),

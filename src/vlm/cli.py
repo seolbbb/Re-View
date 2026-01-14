@@ -1,3 +1,5 @@
+"""VLM 단독 실행을 위한 CLI 엔트리포인트."""
+
 from __future__ import annotations
 
 import argparse
@@ -12,6 +14,7 @@ from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱한다."""
     parser = argparse.ArgumentParser(description="OpenRouter VLM 실행 (이미지 → Markdown 텍스트)")
     parser.add_argument(
         "--image",
@@ -59,6 +62,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI에서 전달된 인자로 VLM 추출을 실행한다."""
     args = parse_args()
 
     prompt_path = Path(args.prompt_path) if args.prompt_path else None

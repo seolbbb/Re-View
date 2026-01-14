@@ -1,3 +1,5 @@
+"""VLM 추출 엔진과 OpenRouter 연동 로직."""
+
 from __future__ import annotations
 
 import base64
@@ -25,6 +27,7 @@ DEFAULT_MODEL_NAME = "qwen/qwen3-vl-32b-instruct"
 
 
 def _extract_status_code(exc: Exception) -> Optional[int]:
+    """예외 객체에서 HTTP 상태 코드를 추출한다."""
     for attr in ("status_code", "http_status", "status"):
         value = getattr(exc, attr, None)
         if isinstance(value, int):
@@ -40,6 +43,7 @@ def _extract_status_code(exc: Exception) -> Optional[int]:
 
 
 def _extract_provider_name(message: str) -> Optional[str]:
+    """에러 메시지에서 제공자 이름을 추출한다."""
     match = PROVIDER_NAME_RE.search(message)
     if match:
         return match.group(1)
@@ -47,6 +51,7 @@ def _extract_provider_name(message: str) -> Optional[str]:
 
 
 def _is_service_unavailable_error(exc: Exception) -> bool:
+    """서비스 불가(503) 오류인지 판별한다."""
     status_code = _extract_status_code(exc)
     if status_code == 503:
         return True
@@ -55,6 +60,7 @@ def _is_service_unavailable_error(exc: Exception) -> bool:
 
 
 def _format_service_unavailable_message(exc: Exception) -> str:
+    """503 오류 메시지를 사용자 친화적으로 정리한다."""
     provider = _extract_provider_name(str(exc))
     if provider:
         return (
@@ -72,7 +78,7 @@ def load_prompt_bundle(
     prompt_version: Optional[str] = None,
     prompt_path: Optional[Path] = None,
 ) -> Tuple[str, str]:
-    """Load prompt text so the VLM engine can be updated without code changes."""
+    """프롬프트 설정 파일에서 시스템/사용자 프롬프트를 읽는다."""
     version_id = prompt_version or DEFAULT_PROMPT_VERSION
     path = prompt_path or PROMPT_CONFIG_PATH
     if not path.exists():
@@ -93,7 +99,7 @@ def load_prompt_bundle(
 
 
 def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load VLM settings from YAML so runtime behavior is configured in one place."""
+    """VLM 설정 YAML을 로드한다."""
     path = settings_path or SETTINGS_CONFIG_PATH
     if not path.exists():
         raise FileNotFoundError(f"VLM 설정 파일을 찾을 수 없습니다: {path}")
@@ -102,8 +108,9 @@ def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]
         raise ValueError("VLM 설정 형식이 올바르지 않습니다(맵이어야 함).")
     return payload
 
+
 class OpenRouterVlmExtractor:
-    """Vision-capable OpenRouter 모델로 이미지 텍스트/수식 힌트를 추출한다."""
+    """OpenRouter 기반 VLM으로 이미지 텍스트를 추출한다."""
 
     def __init__(
         self,
@@ -150,6 +157,7 @@ class OpenRouterVlmExtractor:
         self.output_root = Path(output_root)
 
     def _build_batch_user_prompt(self, image_count: int) -> str:
+        """배치 처리용 사용자 프롬프트를 구성한다."""
         return (
             "여러 이미지를 순서대로 제공한다. "
             f"이미지는 총 {image_count}장이다. "
@@ -160,11 +168,13 @@ class OpenRouterVlmExtractor:
         )
 
     def get_output_path(self) -> Path:
+        """vlm_raw.json이 저장될 경로를 반환한다."""
         if not self.video_name:
             raise ValueError("video_name is required to build the output path.")
         return self.output_root / self.video_name / "vlm_raw.json"
 
     def _build_image_part(self, image_path: str) -> dict:
+        """이미지 파일을 data URL 형태로 변환한다."""
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Image not found: {image_path}")
         mime_type, _ = mimetypes.guess_type(image_path)
@@ -177,6 +187,7 @@ class OpenRouterVlmExtractor:
         return {"type": "image_url", "image_url": {"url": url}}
 
     def _build_single_messages(self, image_path: str) -> List[Dict[str, Any]]:
+        """단일 이미지 요청에 사용할 메시지를 구성한다."""
         return [
             {"role": "system", "content": self.system_prompt},
             {
@@ -189,6 +200,7 @@ class OpenRouterVlmExtractor:
         ]
 
     def _build_batch_messages(self, image_paths: List[str]) -> List[Dict[str, Any]]:
+        """배치 요청에 사용할 메시지를 구성한다."""
         content_parts = [{"type": "text", "text": self._build_batch_user_prompt(len(image_paths))}]
         for idx, image_path in enumerate(image_paths, start=1):
             content_parts.append({"type": "text", "text": f"Image {idx}:"})
@@ -205,6 +217,7 @@ class OpenRouterVlmExtractor:
         label: str,
         request_params: Dict[str, Any],
     ) -> str:
+        """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다."""
         try:
             completion = self.client.chat.completions.create(
                 model=self.model_name,
@@ -220,6 +233,7 @@ class OpenRouterVlmExtractor:
         return completion.choices[0].message.content or ""
 
     def _build_result(self, image_path: str, content: str) -> Dict[str, Any]:
+        """VLM 응답을 vlm_raw.json 형식의 결과로 변환한다."""
         text = content.strip()
         detections = [{"text": text}] if text else []
         return {"image_path": image_path, "raw_results": detections}
@@ -231,6 +245,7 @@ class OpenRouterVlmExtractor:
         label: str,
         request_params: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
+        """배치 요청을 실행하고 이미지별 결과를 반환한다."""
         messages = self._build_batch_messages(batch_paths)
         content = self._request_completion(messages, label=label, request_params=request_params)
         sections = self._split_batch_content(content, len(batch_paths))
@@ -246,11 +261,13 @@ class OpenRouterVlmExtractor:
         label: str,
         request_params: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """단일 이미지 요청을 실행하고 결과를 반환한다."""
         messages = self._build_single_messages(image_path)
         content = self._request_completion(messages, label=label, request_params=request_params)
         return self._build_result(image_path, content)
 
     def _split_batch_content(self, content: str, image_count: int) -> List[str]:
+        """배치 응답을 이미지 수에 맞춰 섹션별로 분리한다."""
         if image_count < 1:
             return []
         matches = list(BATCH_SECTION_RE.finditer(content))
@@ -273,7 +290,7 @@ class OpenRouterVlmExtractor:
         show_progress: bool = False,
         concurrency: int = 1,
     ) -> List[Dict[str, Any]]:
-        """Run VLM extraction while keeping orchestration here for traceable flow."""
+        """이미지 목록을 VLM에 전달해 결과를 순서대로 반환한다."""
         if not image_paths:
             return []
         if batch_size is None:
@@ -388,6 +405,7 @@ class OpenRouterVlmExtractor:
 
 
 def write_vlm_raw_json(results: List[Dict[str, Any]], output_path: Path) -> None:
+    """VLM 결과를 vlm_raw.json 형태로 저장한다."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 

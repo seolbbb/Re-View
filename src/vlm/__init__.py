@@ -1,1 +1,1 @@
-"""VLM-based slide text extraction module."""
+"""VLM 기반 슬라이드 텍스트 추출 모듈."""
