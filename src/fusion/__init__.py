@@ -7,8 +7,7 @@ Modules:
     - io_utils: I/O 유틸리티 (read_json, write_json, read_jsonl 등)
     - sync_engine: STT/VLM 동기화 및 세그먼트 생성 (run_sync_engine)
     - summarizer: Gemini 기반 세그먼트 요약 (run_summarizer)
-    - renderer: 요약 마크다운 렌더링 (render_segment_summaries_md)
-    - final_summary_composer: 최종 요약 생성 (compose_final_summaries)
+    - renderer: 요약 마크다운/최종 요약 렌더링 (render_segment_summaries_md, compose_final_summaries)
 
 Usage:
     ADK 파이프라인에서 사용됩니다.

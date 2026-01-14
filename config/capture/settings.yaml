@@ -1,0 +1,8 @@
+input_dir: src/data/input
+output_dir: src/data/output
+sensitivity_diff: 3.0
+sensitivity_sim: 0.8
+min_interval: 0.5
+sample_interval_sec: 0.5
+buffer_duration_sec: 2.5
+transition_timeout_sec: 2.5

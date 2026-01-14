@@ -2,18 +2,19 @@
 하이브리드 캡처 파이프라인의 실행 진입점.
 
 프로젝트 루트 경로를 계산해 import 경로로 추가하고,
-입력/출력 경로와 캡처 임계값을 이 모듈에서 정의한다.
+캡처 설정은 config/capture/settings.yaml에서 로드한다.
 
 상세 설명은 src/capture/README.md를 참고한다.
 """
 
-import os
-import sys
 import glob
-import time
-import shutil
 import json
+import os
+import shutil
+import sys
+import time
 from pathlib import Path
+from typing import Optional
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(current_dir)
@@ -22,14 +23,8 @@ project_root = os.path.dirname(src_dir)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
+from src.capture.settings import get_capture_settings
 from src.capture.tools.hybrid_extractor import HybridSlideExtractor
-
-INPUT_DIR = os.path.join(src_dir, "data", "input")
-OUTPUT_DIR = os.path.join(src_dir, "data", "output")
-
-SENSITIVITY_DIFF = 3.0
-SENSITIVITY_SIM = 0.8
-MIN_INTERVAL = 0.5
 
 
 def print_summary_table(title: str, metrics: dict) -> None:
@@ -54,6 +49,9 @@ def _process_video_core(
     scene_threshold: float,
     sensitivity_sim: float,
     min_interval: float,
+    sample_interval_sec: float,
+    buffer_duration_sec: float,
+    transition_timeout_sec: float,
     is_standalone: bool = False
 ) -> list:
     """
@@ -69,6 +67,9 @@ def _process_video_core(
     scene_threshold: 장면 전환 감지 임계값(픽셀 차이).
     sensitivity_sim: ORB 유사도 임계값.
     min_interval: 최소 캡처 간격(초).
+    sample_interval_sec: 유휴 상태 샘플링 간격(초).
+    buffer_duration_sec: 버퍼링 지속 시간(초).
+    transition_timeout_sec: 전환 상태 최대 대기 시간(초).
     is_standalone: 독립 실행 모드 여부.
 
     반환: [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
@@ -96,7 +97,10 @@ def _process_video_core(
         output_dir=captures_dir,
         sensitivity_diff=scene_threshold,
         sensitivity_sim=sensitivity_sim,
-        min_interval=min_interval
+        min_interval=min_interval,
+        sample_interval_sec=sample_interval_sec,
+        buffer_duration_sec=buffer_duration_sec,
+        transition_timeout_sec=transition_timeout_sec,
     )
     
     start_time = time.time()
@@ -125,9 +129,9 @@ def _process_video_core(
 def process_single_video_capture(
     video_path: str,
     output_base: str,
-    scene_threshold: float = 3.0,
-    dedupe_threshold: float = 3.0,
-    min_interval: float = 0.5
+    scene_threshold: Optional[float] = None,
+    dedupe_threshold: Optional[float] = None,
+    min_interval: Optional[float] = None,
 ) -> list:
     """
     run_video_pipeline.py에서 호출되는 캡처 인터페이스.
@@ -136,19 +140,25 @@ def process_single_video_capture(
 
     video_path: 처리할 비디오 파일 경로.
     output_base: 출력 기본 디렉터리.
-    scene_threshold: 장면 전환 감지 임계값.
+    scene_threshold: 장면 전환 감지 임계값(None이면 설정값 사용).
     dedupe_threshold: 미사용 파라미터(호환 유지용).
-    min_interval: 최소 캡처 간격(초).
+    min_interval: 최소 캡처 간격(None이면 설정값 사용).
 
     반환: 추출된 슬라이드 메타데이터 리스트.
     """
+    settings = get_capture_settings()
+    resolved_scene_threshold = settings.sensitivity_diff if scene_threshold is None else scene_threshold
+    resolved_min_interval = settings.min_interval if min_interval is None else min_interval
     return _process_video_core(
         video_path=video_path,
         output_base=output_base,
-        scene_threshold=scene_threshold,
-        sensitivity_sim=SENSITIVITY_SIM,
-        min_interval=min_interval,
-        is_standalone=False
+        scene_threshold=resolved_scene_threshold,
+        sensitivity_sim=settings.sensitivity_sim,
+        min_interval=resolved_min_interval,
+        sample_interval_sec=settings.sample_interval_sec,
+        buffer_duration_sec=settings.buffer_duration_sec,
+        transition_timeout_sec=settings.transition_timeout_sec,
+        is_standalone=False,
     )
 
 
@@ -159,12 +169,16 @@ def process_single_video_standalone(video_path: str, output_root: str) -> None:
     커맨드 라인에서 직접 실행할 때 사용하며,
     결과 요약 테이블을 출력한다.
     """
+    settings = get_capture_settings()
     _process_video_core(
         video_path=video_path,
         output_base=output_root,
-        scene_threshold=SENSITIVITY_DIFF,
-        sensitivity_sim=SENSITIVITY_SIM,
-        min_interval=MIN_INTERVAL,
+        scene_threshold=settings.sensitivity_diff,
+        sensitivity_sim=settings.sensitivity_sim,
+        min_interval=settings.min_interval,
+        sample_interval_sec=settings.sample_interval_sec,
+        buffer_duration_sec=settings.buffer_duration_sec,
+        transition_timeout_sec=settings.transition_timeout_sec,
         is_standalone=True
     )
 
@@ -186,8 +200,12 @@ def main() -> None:
     
     args = parser.parse_args()
 
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
+    settings = get_capture_settings()
+    output_dir = settings.output_dir
+    input_dir = settings.input_dir
+
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
     
     video_files = []
     
@@ -198,7 +216,7 @@ def main() -> None:
             return
         video_files.append(target_path)
     else:
-        video_files = glob.glob(os.path.join(INPUT_DIR, "*.mp4"))
+        video_files = glob.glob(str(input_dir / "*.mp4"))
 
     if not video_files:
         print("Warning: No video files to process.")
@@ -209,7 +227,7 @@ def main() -> None:
     print(f"============================================================")
     
     for video_path in video_files:
-        process_single_video_standalone(video_path, OUTPUT_DIR)
+        process_single_video_standalone(video_path, str(output_dir))
         
     print(f"============================================================")
     print(f"Capture Pipeline V2 Completed")

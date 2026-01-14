@@ -1,35 +1,4 @@
-# 사용:
-# from src.audio.stt_router import STTRouter
-#
-# router = STTRouter(provider="clova")  # 기본값은 clova, provider로 clova/whisper 선택 가능
-# router.transcribe_media(
-#     "src/data/input/screentime-mvp-video.mp4",
-#     provider="clova",
-#     include_confidence=True,  # 문장 단위 신뢰도 포함
-#     include_raw_response=True,  # segments 외에 전체 응답 포함
-#     word_alignment=True,  # 추가적으로 단어 단위 타임스탬프 포함
-#     full_text=True,  # include_raw_response가 True일 경우에만 의미 있음
-#     completion="sync",  # "sync" 기본. "async"는 폴링 미구현으로 결과 비어 있을 수 있음
-#     language="ko-KR",  # 예: ko-KR, en-US, enko, ja-JP, zh-CN, zh-TW
-#     timeout=120,  # 지정 초 내 응답 없으면 Timeout 예외
-#     mono_method="auto",  # 오디오 추출 모드 (downmix|left|right|phase-fix|auto)
-#     output_path="src/data/output/screentime-mvp-video/stt.json",
-# )
-# router.transcribe(
-#     "src/data/input/sample.wav",
-#     provider="whisper",
-#     model_size="base",
-#     language="ko",
-#     task="transcribe",
-#     temperature=0.0,
-# )
-#
-# CLI:
-# python src/audio/stt_router.py --media-path src/data/input/sample.mp4 --provider clova
-# python src/audio/stt_router.py --media-path src/data/input/sample.wav --provider whisper --no-extract --model-size base
-#
-# 현재 지원: clova, whisper (향후 google 추가 예정)
-"""STT router that dispatches to provider-specific clients."""
+"""STT 요청을 제공자(clova/whisper)로 분기하는 라우터."""
 
 from __future__ import annotations
 
@@ -47,6 +16,7 @@ DEFAULT_PROVIDER = "clova"
 
 
 def _merge_defaults(defaults: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """None이 아닌 값만 기본값 위에 덮어쓴다."""
     merged = dict(defaults)
     for key, value in overrides.items():
         if value is not None:
@@ -55,6 +25,7 @@ def _merge_defaults(defaults: Dict[str, Any], overrides: Dict[str, Any]) -> Dict
 
 
 def _coerce_mapping(value: Any, label: str) -> Dict[str, Any]:
+    """설정 값이 매핑인지 확인하고, 없으면 빈 딕셔너리를 돌려준다."""
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -63,9 +34,10 @@ def _coerce_mapping(value: Any, label: str) -> Dict[str, Any]:
 
 
 class STTRouter:
-    """Routes STT calls to the configured provider."""
+    """STT 호출을 설정된 제공자에 맞게 라우팅한다."""
 
     def __init__(self, provider: str | None = None, *, settings_path: Optional[Path] = None) -> None:
+        """설정 파일을 로드하고 기본 제공자를 결정한다."""
         settings = load_audio_settings(settings_path=settings_path)
         stt_settings = _coerce_mapping(settings.get("stt"), "stt")
         extract_settings = _coerce_mapping(settings.get("extract"), "extract")
@@ -85,6 +57,7 @@ class STTRouter:
         provider: str | None = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        """지정된 제공자로 STT를 실행한다."""
         provider_name = (provider or self.provider).lower()
         provider_defaults = _coerce_mapping(
             self._stt_settings.get(provider_name),
@@ -115,9 +88,7 @@ class STTRouter:
         codec: Optional[str] = None,
         **stt_kwargs: Any,
     ) -> Dict[str, Any]:
-        """
-        Extract audio first, then run STT using the selected provider.
-        """
+        """오디오를 추출한 뒤 선택된 제공자로 STT를 실행한다."""
         extract_defaults = self._extract_settings
         if sample_rate is None:
             sample_rate = int(extract_defaults.get("sample_rate", 16000))
@@ -139,6 +110,7 @@ class STTRouter:
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱한다."""
     settings = load_audio_settings()
     stt_settings = _coerce_mapping(settings.get("stt"), "stt")
     extract_settings = _coerce_mapping(settings.get("extract"), "extract")
@@ -213,6 +185,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _build_stt_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
+    """CLI 인자를 제공자별 STT 인자로 변환한다."""
     stt_kwargs: Dict[str, Any] = {}
 
     if args.output_path:
@@ -247,6 +220,7 @@ def _build_stt_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def _resolve_output_path(args: argparse.Namespace) -> Path:
+    """출력 파일 경로를 규칙에 따라 계산한다."""
     if args.output_path:
         return Path(args.output_path)
     if args.no_extract:
@@ -260,6 +234,7 @@ def _resolve_output_path(args: argparse.Namespace) -> Path:
 
 
 def main() -> None:
+    """CLI 진입점."""
     args = parse_args()
     router = STTRouter(provider=args.provider)
     stt_kwargs = _build_stt_kwargs(args)

@@ -4,12 +4,10 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import requests
 from dotenv import load_dotenv
-
-from src.audio.settings import load_audio_settings
 
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
@@ -72,36 +70,15 @@ class ClovaSpeechClient:
         media_path: str | Path,
         output_path: str | Path | None = None,
         *,
-        include_confidence: Optional[bool] = None,
-        include_raw_response: Optional[bool] = None,
-        word_alignment: Optional[bool] = None,
-        full_text: Optional[bool] = None,
-        completion: Optional[str] = None,
-        language: Optional[str] = None,
-        timeout: Optional[int] = None,
+        include_confidence: bool = True,
+        include_raw_response: bool = False,
+        word_alignment: bool = False,
+        full_text: bool = False,
+        completion: str = "sync",
+        language: str = "ko-KR",
+        timeout: int = 60,
     ) -> Dict[str, Any]:
         """로컬 미디어 파일을 STT로 처리해 stt.json 구조를 만든다."""
-        settings = load_audio_settings()
-        stt_settings = settings.get("stt", {})
-        if not isinstance(stt_settings, dict):
-            raise ValueError("stt 설정 형식이 올바르지 않습니다(맵이어야 함).")
-        clova_defaults = stt_settings.get("clova", {})
-        if not isinstance(clova_defaults, dict):
-            raise ValueError("stt.clova 설정 형식이 올바르지 않습니다(맵이어야 함).")
-        if include_confidence is None:
-            include_confidence = bool(clova_defaults.get("include_confidence", True))
-        if include_raw_response is None:
-            include_raw_response = bool(clova_defaults.get("include_raw_response", False))
-        if word_alignment is None:
-            word_alignment = bool(clova_defaults.get("word_alignment", False))
-        if full_text is None:
-            full_text = bool(clova_defaults.get("full_text", False))
-        if completion is None:
-            completion = str(clova_defaults.get("completion", "sync"))
-        if language is None:
-            language = str(clova_defaults.get("language", "ko-KR"))
-        if timeout is None:
-            timeout = int(clova_defaults.get("timeout", 60))
 
         media_path = Path(media_path).expanduser()
         if not media_path.exists():
@@ -156,14 +133,6 @@ class ClovaSpeechClient:
 
 def parse_args() -> argparse.Namespace:
     """CLI 인자를 파싱한다."""
-    settings = load_audio_settings()
-    stt_settings = settings.get("stt", {})
-    if not isinstance(stt_settings, dict):
-        raise ValueError("stt 설정 형식이 올바르지 않습니다(맵이어야 함).")
-    clova_defaults = stt_settings.get("clova", {})
-    if not isinstance(clova_defaults, dict):
-        raise ValueError("stt.clova 설정 형식이 올바르지 않습니다(맵이어야 함).")
-
     parser = argparse.ArgumentParser(description="Clova Speech STT client.")
     parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
     parser.add_argument("--output-path", help="Override default stt.json output path.")
@@ -171,41 +140,41 @@ def parse_args() -> argparse.Namespace:
         "--confidence",
         dest="include_confidence",
         action=argparse.BooleanOptionalAction,
-        default=bool(clova_defaults.get("include_confidence", True)),
+        default=True,
         help="Include average confidence field.",
     )
     parser.add_argument(
         "--include-raw-response",
         action=argparse.BooleanOptionalAction,
-        default=bool(clova_defaults.get("include_raw_response", False)),
+        default=False,
         help="Attach raw provider response.",
     )
     parser.add_argument(
         "--word-alignment",
         action=argparse.BooleanOptionalAction,
-        default=bool(clova_defaults.get("word_alignment", False)),
+        default=False,
         help="Request word-level timestamps.",
     )
     parser.add_argument(
         "--full-text",
         action=argparse.BooleanOptionalAction,
-        default=bool(clova_defaults.get("full_text", False)),
+        default=False,
         help="Request fullText output if supported.",
     )
     parser.add_argument(
         "--completion",
-        default=str(clova_defaults.get("completion", "sync")),
+        default="sync",
         help="sync or async (async not polled here).",
     )
     parser.add_argument(
         "--language",
-        default=str(clova_defaults.get("language", "ko-KR")),
+        default="ko-KR",
         help="Language code (e.g., ko-KR, en-US, enko).",
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=int(clova_defaults.get("timeout", 60)),
+        default=60,
         help="Request timeout in seconds.",
     )
     return parser.parse_args()

@@ -16,7 +16,17 @@ class HybridSlideExtractor:
     지연 저장 방식으로 end_ms가 확정된 뒤 한 번만 저장한다.
     """
     
-    def __init__(self, video_path, output_dir, sensitivity_diff=3.0, sensitivity_sim=0.8, min_interval=0.5):
+    def __init__(
+        self,
+        video_path,
+        output_dir,
+        sensitivity_diff=3.0,
+        sensitivity_sim=0.8,
+        min_interval=0.5,
+        sample_interval_sec=0.5,
+        buffer_duration_sec=2.5,
+        transition_timeout_sec=2.5,
+    ):
         """
         캡처 엔진을 초기화한다.
 
@@ -25,12 +35,24 @@ class HybridSlideExtractor:
         sensitivity_diff: 픽셀 차이 민감도(낮을수록 민감).
         sensitivity_sim: ORB 유사도 임계값(높을수록 엄격).
         min_interval: 연속 캡처 최소 간격(초).
+        sample_interval_sec: 유휴 상태에서 프레임을 샘플링하는 간격(초).
+        buffer_duration_sec: 전환 이후 버퍼링 지속 시간(초).
+        transition_timeout_sec: 전환 상태 최대 대기 시간(초).
         """
+        if sample_interval_sec <= 0:
+            raise ValueError("sample_interval_sec must be > 0")
+        if buffer_duration_sec <= 0:
+            raise ValueError("buffer_duration_sec must be > 0")
+        if transition_timeout_sec <= 0:
+            raise ValueError("transition_timeout_sec must be > 0")
         self.video_path = video_path
         self.output_dir = output_dir
         self.sensitivity_diff = sensitivity_diff
         self.sensitivity_sim = sensitivity_sim
         self.min_interval = min_interval
+        self.sample_interval_sec = sample_interval_sec
+        self.buffer_duration_sec = buffer_duration_sec
+        self.transition_timeout_sec = transition_timeout_sec
         
         # ORB 특징점 검출기 (최대 500개 특징점)
         self.orb = cv2.ORB_create(nfeatures=500)
@@ -94,8 +116,8 @@ class HybridSlideExtractor:
         extracted_slides = []
         slide_idx = 0  # 슬라이드 인덱스 (1-based)
         
-        # 체크 간격 (0.5초 단위 샘플링)
-        check_step = int(fps * 0.5)
+        # 체크 간격 (유휴 상태 샘플링)
+        check_step = int(fps * self.sample_interval_sec)
         if check_step < 1:
             check_step = 1
             
@@ -158,7 +180,7 @@ class HybridSlideExtractor:
                     is_stable = (diff_val < (self.sensitivity_diff / 4.0))
                     time_in_transition = current_time - transition_start_time
                     
-                    if is_stable or time_in_transition > 2.5:
+                    if is_stable or time_in_transition > self.transition_timeout_sec:
                         is_in_transition = False
                         if current_pending_capture is None:
                             current_pending_capture = {
@@ -174,7 +196,7 @@ class HybridSlideExtractor:
                     current_pending_capture['buffer'].append(frame.copy())
                     
                 buffer_duration = current_time - current_pending_capture['buffer_start']
-                if buffer_duration >= 2.5 or should_finalize_buffer:
+                if buffer_duration >= self.buffer_duration_sec or should_finalize_buffer:
                     # 버퍼에서 최적 프레임 선택 및 중복 검사
                     best_frame, should_save = self._select_best_frame_and_check_duplicate(
                         current_pending_capture, curr_kp, curr_des

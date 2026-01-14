@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from src.fusion.final_summary_composer import compose_final_summaries
+from src.fusion.renderer import compose_final_summaries
 
 
 def write_final_summaries(

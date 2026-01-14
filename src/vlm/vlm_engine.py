@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import mimetypes
@@ -24,6 +25,8 @@ PROVIDER_NAME_RE = re.compile(r'provider_name["\']?:\s*["\']([^"\']+)')
 ERROR_CODE_RE = re.compile(r"Error code:\s*(\d+)")
 DEFAULT_PROMPT_VERSION = "vlm_v1.1"
 DEFAULT_MODEL_NAME = "qwen/qwen3-vl-32b-instruct"
+DEFAULT_KEY_ENV = "OPENROUTER_API_KEY"
+KEY_LIST_ENV = "OPENROUTER_API_KEYS"
 
 
 def _extract_status_code(exc: Exception) -> Optional[int]:
@@ -57,6 +60,45 @@ def _is_service_unavailable_error(exc: Exception) -> bool:
         return True
     message = str(exc).lower()
     return "service_unavailable" in message or "service unavailable" in message
+
+
+def _extract_error_code(error: Any) -> Optional[int]:
+    if isinstance(error, dict):
+        code = error.get("code")
+        if isinstance(code, int):
+            return code
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _extract_provider_from_error(error: Any) -> Optional[str]:
+    if not isinstance(error, dict):
+        return None
+    metadata = error.get("metadata")
+    if isinstance(metadata, dict):
+        provider = metadata.get("provider_name")
+        if isinstance(provider, str) and provider.strip():
+            return provider
+    return None
+
+
+def _format_openrouter_error(error: Any) -> str:
+    if isinstance(error, dict):
+        message = str(error.get("message", ""))
+        code = error.get("code")
+        provider = _extract_provider_from_error(error)
+        parts = []
+        if message:
+            parts.append(message)
+        if code is not None:
+            parts.append(f"code={code}")
+        if provider:
+            parts.append(f"provider={provider}")
+        return "OpenRouter error: " + ", ".join(parts) if parts else "OpenRouter error"
+    return f"OpenRouter error: {error}"
 
 
 def _format_service_unavailable_message(exc: Exception) -> str:
@@ -109,6 +151,33 @@ def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]
     return payload
 
 
+def _load_openrouter_keys() -> List[str]:
+    keys: List[str] = []
+    list_env = os.getenv(KEY_LIST_ENV, "")
+    if list_env:
+        for item in re.split(r"[,\s]+", list_env):
+            if item.strip():
+                keys.append(item.strip())
+    index = 1
+    while True:
+        key = os.getenv(f"{DEFAULT_KEY_ENV}_{index}")
+        if not key:
+            break
+        keys.append(key.strip())
+        index += 1
+    single_key = os.getenv(DEFAULT_KEY_ENV)
+    if single_key:
+        keys.append(single_key.strip())
+    seen = set()
+    deduped = []
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
+
+
 class OpenRouterVlmExtractor:
     """OpenRouter 기반 VLM으로 이미지 텍스트를 추출한다."""
 
@@ -125,10 +194,12 @@ class OpenRouterVlmExtractor:
             load_dotenv(ENV_PATH)
         else:
             load_dotenv()
-            
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
-        if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY is not set in the environment.")
+
+        self.api_keys = _load_openrouter_keys()
+        if not self.api_keys:
+            raise ValueError(
+                "OPENROUTER_API_KEY(단일) 또는 OPENROUTER_API_KEYS(복수)를 설정해야 합니다."
+            )
 
         self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         settings = load_vlm_settings(settings_path=settings_path)
@@ -136,7 +207,9 @@ class OpenRouterVlmExtractor:
         if not isinstance(model_name, str) or not model_name.strip():
             raise ValueError("VLM 설정의 model_name 형식이 올바르지 않습니다.")
         self.model_name = model_name
-        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        self.clients = [
+            OpenAI(base_url=self.base_url, api_key=api_key) for api_key in self.api_keys
+        ]
         request_params = settings.get("request_params", {})
         if not isinstance(request_params, dict):
             raise ValueError("VLM 설정의 request_params 형식이 올바르지 않습니다(맵이어야 함).")
@@ -218,19 +291,45 @@ class OpenRouterVlmExtractor:
         request_params: Dict[str, Any],
     ) -> str:
         """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다."""
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                **request_params,
-            )
-        except Exception as exc:
-            if _is_service_unavailable_error(exc):
-                raise RuntimeError(_format_service_unavailable_message(exc)) from exc
-            raise
-        if not completion or not completion.choices:
-            raise RuntimeError(f"OpenRouter API returned empty response for {label}: {completion}")
-        return completion.choices[0].message.content or ""
+        last_error: Optional[Exception] = None
+        for idx, client in enumerate(self.clients, start=1):
+            try:
+                completion = client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    **request_params,
+                )
+            except Exception as exc:
+                last_error = exc
+                if idx < len(self.clients):
+                    continue
+                if _is_service_unavailable_error(exc):
+                    raise RuntimeError(_format_service_unavailable_message(exc)) from exc
+                raise
+            error = getattr(completion, "error", None)
+            if error:
+                last_error = RuntimeError(_format_openrouter_error(error))
+                if idx < len(self.clients):
+                    continue
+                code = _extract_error_code(error)
+                if code == 503:
+                    message = _format_service_unavailable_message(
+                        RuntimeError(str(error))
+                    )
+                    raise RuntimeError(message) from last_error
+                raise last_error
+            if not completion or not completion.choices:
+                last_error = RuntimeError(
+                    f"OpenRouter API returned empty response for {label}: {completion}"
+                )
+                if idx < len(self.clients):
+                    continue
+                raise last_error
+            return completion.choices[0].message.content or ""
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"OpenRouter API returned empty response for {label}: none")
 
     def _build_result(self, image_path: str, content: str) -> Dict[str, Any]:
         """VLM 응답을 vlm_raw.json 형식의 결과로 변환한다."""
@@ -410,13 +509,79 @@ def write_vlm_raw_json(results: List[Dict[str, Any]], output_path: Path) -> None
     output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def parse_args() -> argparse.Namespace:
+    """CLI 인자를 파싱한다."""
+    parser = argparse.ArgumentParser(description="OpenRouter VLM 실행 (이미지 → Markdown 텍스트)")
+    parser.add_argument(
+        "--image",
+        action="append",
+        required=True,
+        help="Path to a local image (repeatable).",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Override the OpenRouter model name.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Parallel batch requests (default: 1).",
+    )
+    parser.add_argument(
+        "--video-name",
+        required=True,
+        help="data/outputs/{video_name}/vlm_raw.json 경로를 만들 때 사용할 이름",
+    )
+    parser.add_argument(
+        "--prompt-version",
+        default=None,
+        help="prompts.yaml의 프롬프트 버전 ID (예: vlm_v1.0)",
+    )
+    parser.add_argument(
+        "--prompt-path",
+        default=None,
+        help="prompts.yaml 경로 (기본: config/vlm/prompts.yaml)",
+    )
+    parser.add_argument(
+        "--settings-path",
+        default=None,
+        help="settings.yaml 경로 (기본: config/vlm/settings.yaml)",
+    )
+    parser.add_argument(
+        "--output-root",
+        default="data/outputs",
+        help="원시 결과 출력 베이스 디렉토리 (기본: data/outputs)",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """CLI에서 전달된 인자로 VLM 추출을 실행한다."""
+    args = parse_args()
+
+    prompt_path = Path(args.prompt_path) if args.prompt_path else None
+    settings_path = Path(args.settings_path) if args.settings_path else None
+    extractor = OpenRouterVlmExtractor(
+        video_name=args.video_name,
+        output_root=Path(args.output_root),
+        prompt_version=args.prompt_version,
+        prompt_path=prompt_path,
+        settings_path=settings_path,
+    )
+    if args.model:
+        extractor.model_name = args.model
+
+    results = extractor.extract_features(
+        args.image,
+        show_progress=True,
+        concurrency=args.concurrency,
+    )
+    output_path = extractor.get_output_path()
+    write_vlm_raw_json(results, output_path)
+    print(f"[OK] saved to {output_path}")
+
+
 if __name__ == "__main__":
-    import sys
-
-    root = Path(__file__).resolve().parents[2]
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-
-    from src.vlm.cli import main
-
     main()

@@ -13,8 +13,7 @@ src/fusion/
 ├── io_utils.py              # I/O 유틸리티
 ├── sync_engine.py           # STT/VLM 동기화 (run_sync_engine)
 ├── summarizer.py            # Gemini 요약 (run_summarizer)
-├── renderer.py              # MD 렌더링 (render_segment_summaries_md)
-├── final_summary_composer.py # 최종 요약 (compose_final_summaries)
+├── renderer.py              # MD 렌더링 + 최종 요약 (render_segment_summaries_md, compose_final_summaries)
 └── prompt_versions.md       # 프롬프트 버전 히스토리
 ```
 
@@ -52,7 +51,7 @@ Gemini를 사용하여 세그먼트별 요약을 생성합니다.
 **출력:**
 - `segment_summaries.md`: 읽기 쉬운 마크다운 형식
 
-### final_summary_composer.compose_final_summaries(...)
+### renderer.compose_final_summaries(...)
 세그먼트 요약을 기반으로 최종 요약을 생성합니다.
 
 **출력:**

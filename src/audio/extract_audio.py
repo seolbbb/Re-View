@@ -1,54 +1,27 @@
-# 실행: python src/audio/extract_audio.py --media-path src/data/input/screentime-mvp-video.mp4
-# 옵션: --output-path src/data/input/sample.wav (기본: src/data/input/<입력파일명>.wav)
-# 옵션: --sample-rate 16000 (샘플레이트 Hz, 기본 16000)
-# 옵션: --channels 1 (오디오 채널 수, 기본 1=모노)
-# 옵션: --codec pcm_s16le (오디오 코덱, 기본 WAV용 pcm_s16le)
-# 옵션: --mono-method downmix|left|right|phase-fix|auto (모노 생성 방식, 기본: auto)
-# 참고: ffmpeg 설치 필요
-"""Extract audio track from a media file using ffmpeg."""
+"""ffmpeg로 미디어에서 오디오 트랙을 추출한다."""
 
 from __future__ import annotations
 
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Optional
-
-from src.audio.settings import load_audio_settings
-
-
-def default_output_path(media_path: Path) -> Path:
-    return Path("src/data/input") / f"{media_path.stem}.wav"
 
 
 def extract_audio(
     media_path: str | Path,
     output_path: str | Path | None = None,
     *,
-    sample_rate: Optional[int] = None,
-    channels: Optional[int] = None,
-    codec: Optional[str] = None,
-    mono_method: Optional[str] = None,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    codec: str = "pcm_s16le",
+    mono_method: str = "auto",
 ) -> Path:
-    settings = load_audio_settings()
-    extract_settings = settings.get("extract", {})
-    if not isinstance(extract_settings, dict):
-        raise ValueError("extract 설정 형식이 올바르지 않습니다(맵이어야 함).")
-
-    if sample_rate is None:
-        sample_rate = int(extract_settings.get("sample_rate", 16000))
-    if channels is None:
-        channels = int(extract_settings.get("channels", 1))
-    if codec is None:
-        codec = str(extract_settings.get("codec", "pcm_s16le"))
-    if mono_method is None:
-        mono_method = str(extract_settings.get("mono_method", "auto"))
-
+    """미디어 파일에서 오디오를 추출해 파일로 저장한다."""
     media_path = Path(media_path).expanduser()
     if not media_path.exists():
         raise FileNotFoundError(f"Media file not found: {media_path}")
 
-    output_path = Path(output_path) if output_path else default_output_path(media_path)
+    output_path = Path(output_path) if output_path else Path("src/data/input") / f"{media_path.stem}.wav"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if mono_method in ("left", "right", "phase-fix", "auto") and channels != 1:
@@ -84,6 +57,7 @@ def extract_audio(
 
 
 def _mono_filter_for_method(mono_method: str) -> str | None:
+    """모노 변환 방식에 따른 ffmpeg 필터 문자열을 반환한다."""
     if mono_method == "downmix":
         return "pan=mono|c0=0.5*c0+0.5*c1"
     if mono_method == "left":
@@ -96,6 +70,7 @@ def _mono_filter_for_method(mono_method: str) -> str | None:
 
 
 def _select_best_mono_method(media_path: Path, *, sample_rate: int, probe_seconds: int = 60) -> str:
+    """여러 모노 방식 중 평균 볼륨이 가장 큰 방식을 선택한다."""
     candidates = ["downmix", "left", "right", "phase-fix"]
     volumes: dict[str, float] = {}
     for candidate in candidates:
@@ -123,6 +98,7 @@ def _measure_mean_volume(
     sample_rate: int,
     probe_seconds: int,
 ) -> float | None:
+    """지정된 모노 방식으로 일정 구간의 평균 볼륨을 측정한다."""
     filter_chain = []
     mono_filter = _mono_filter_for_method(mono_method)
     if mono_filter:
@@ -168,34 +144,30 @@ def _measure_mean_volume(
 
 
 def parse_args() -> argparse.Namespace:
-    settings = load_audio_settings()
-    extract_settings = settings.get("extract", {})
-    if not isinstance(extract_settings, dict):
-        raise ValueError("extract 설정 형식이 올바르지 않습니다(맵이어야 함).")
-
+    """CLI 인자를 파싱한다."""
     parser = argparse.ArgumentParser(description="Extract audio from a media file.")
     parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
     parser.add_argument("--output-path", help="Output audio file path.")
     parser.add_argument(
         "--sample-rate",
         type=int,
-        default=int(extract_settings.get("sample_rate", 16000)),
+        default=16000,
         help="Sample rate (Hz).",
     )
     parser.add_argument(
         "--channels",
         type=int,
-        default=int(extract_settings.get("channels", 1)),
+        default=1,
         help="Audio channels.",
     )
     parser.add_argument(
         "--codec",
-        default=str(extract_settings.get("codec", "pcm_s16le")),
+        default="pcm_s16le",
         help="Audio codec (ffmpeg).",
     )
     parser.add_argument(
         "--mono-method",
-        default=str(extract_settings.get("mono_method", "auto")),
+        default="auto",
         choices=("downmix", "left", "right", "phase-fix", "auto"),
         help="Mono creation method (downmix or channel select/phase-fix/auto).",
     )
@@ -203,6 +175,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI 진입점."""
     args = parse_args()
     output_path = extract_audio(
         args.media_path,

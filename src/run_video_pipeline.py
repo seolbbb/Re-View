@@ -45,7 +45,7 @@ load_dotenv()
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
-from src.fusion.final_summary_composer import compose_final_summaries
+from src.fusion.renderer import compose_final_summaries
 from src.fusion.io_utils import ensure_output_root
 from src.fusion.renderer import render_segment_summaries_md
 from src.fusion.summarizer import run_summarizer
@@ -859,11 +859,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    """메인 실행 함수."""
-    args = parse_args()
-
-    video_path = Path(args.video).expanduser().resolve()
+def run_pipeline(
+    *,
+    video: str,
+    output_base: str,
+    stt_backend: str,
+    parallel: bool,
+    capture_threshold: float,
+    capture_dedupe_threshold: float,
+    capture_min_interval: float,
+    capture_verbose: bool,
+    vlm_batch_size: int,
+    vlm_concurrency: int,
+    vlm_show_progress: bool,
+    limit: Optional[int],
+    dry_run: bool,
+    batch_mode: bool,
+    batch_size: int,
+) -> None:
+    """비디오 파이프라인을 실행하고 벤치마크 리포트를 생성한다."""
+    video_path = Path(video).expanduser().resolve()
     if not video_path.exists():
         raise FileNotFoundError(f"비디오 파일을 찾을 수 없습니다: {video_path}")
 
@@ -894,8 +909,12 @@ def main() -> None:
         "capture_min_interval": capture_min_interval,
         "capture_verbose": capture_verbose,
         "vlm_batch_size": vlm_batch_size,
+        "vlm_concurrency": vlm_concurrency,
+        "vlm_show_progress": vlm_show_progress,
         "limit": limit,
         "dry_run": dry_run,
+        "batch_mode": batch_mode,
+        "batch_size": batch_size,
     }
     run_meta: Dict[str, Any] = {
         "video_path": str(video_path),
@@ -920,28 +939,28 @@ def main() -> None:
         captures_dir = video_root / "captures"
         manifest_json = video_root / "manifest.json"
 
-        print(f"\n🚀 Starting pipeline (parallel={args.parallel})...")
+        print(f"\n🚀 Starting pipeline (parallel={parallel})...")
         print("-" * 50)
 
         stt_elapsed = 0.0
         capture_elapsed = 0.0
 
-        if args.parallel:
+        if parallel:
             # 병렬 실행
             with ThreadPoolExecutor(max_workers=2) as executor:
                 def run_stt_timed():
                     start = time.perf_counter()
-                    _run_stt(video_path, stt_json, backend=args.stt_backend)
+                    _run_stt(video_path, stt_json, backend=stt_backend)
                     return time.perf_counter() - start
                 
                 def run_capture_timed():
                     start = time.perf_counter()
                     result = _run_capture(
                         video_path, output_base,
-                        threshold=args.capture_threshold,
-                        dedupe_threshold=args.capture_dedupe_threshold,
-                        min_interval=args.capture_min_interval,
-                        verbose=args.capture_verbose,
+                        threshold=capture_threshold,
+                        dedupe_threshold=capture_dedupe_threshold,
+                        min_interval=capture_min_interval,
+                        verbose=capture_verbose,
                         video_name=video_name,
                     )
                     elapsed = time.perf_counter() - start
@@ -962,20 +981,20 @@ def main() -> None:
         else:
             # 순차 실행
             _, stt_elapsed = timer.time_stage(
-                "stt", _run_stt, video_path, stt_json, backend=args.stt_backend
+                "stt", _run_stt, video_path, stt_json, backend=stt_backend
             )
             capture_result, capture_elapsed = timer.time_stage(
                 "capture", _run_capture, video_path, output_base,
-                threshold=args.capture_threshold,
-                dedupe_threshold=args.capture_dedupe_threshold,
-                min_interval=args.capture_min_interval,
-                verbose=args.capture_verbose,
+                threshold=capture_threshold,
+                dedupe_threshold=capture_dedupe_threshold,
+                min_interval=capture_min_interval,
+                verbose=capture_verbose,
                 video_name=video_name,
             )
             capture_count = len(capture_result) if capture_result else 0
 
         # 배치 모드 vs 일반 모드 분기
-        if args.batch_mode:
+        if batch_mode:
             # 배치 모드: VLM → Sync → Summarize → Judge를 배치 단위로 반복
             vlm_elapsed = 0.0  # 배치에서 내부적으로 측정
             fusion_info = _run_batch_fusion_pipeline(
@@ -984,13 +1003,13 @@ def main() -> None:
                 manifest_json=manifest_json,
                 stt_json=stt_json,
                 video_name=video_name,
-                batch_size=args.batch_size,
+                batch_size=batch_size,
                 timer=timer,
-                vlm_batch_size=args.vlm_batch_size,
-                vlm_concurrency=args.vlm_concurrency,
-                vlm_show_progress=args.vlm_show_progress,
-                limit=args.limit,
-                dry_run=args.dry_run,
+                vlm_batch_size=vlm_batch_size,
+                vlm_concurrency=vlm_concurrency,
+                vlm_show_progress=vlm_show_progress,
+                limit=limit,
+                dry_run=dry_run,
                 repo_root=repo_root,
             )
             segment_count = fusion_info.get("segment_count", 0)
@@ -1004,9 +1023,9 @@ def main() -> None:
                 manifest_json=manifest_json,
                 video_name=video_name,
                 output_base=output_base,
-                batch_size=args.vlm_batch_size,
-                concurrency=args.vlm_concurrency,
-                show_progress=args.vlm_show_progress,
+                batch_size=vlm_batch_size,
+                concurrency=vlm_concurrency,
+                show_progress=vlm_show_progress,
             )
 
             # Fusion config 생성
@@ -1028,8 +1047,8 @@ def main() -> None:
             # Fusion 파이프라인 실행
             fusion_info = _run_fusion_pipeline(
                 fusion_config_path, 
-                limit=args.limit, 
-                dry_run=args.dry_run,
+                limit=limit,
+                dry_run=dry_run,
                 timer=timer
             )
             segment_count = fusion_info.get("segment_count", 0)
@@ -1044,7 +1063,7 @@ def main() -> None:
             segment_count=segment_count,
             video_path=video_path,
             output_root=video_root,
-            parallel=args.parallel
+            parallel=parallel
         )
         
         # 마크다운 리포트 저장
@@ -1082,7 +1101,7 @@ def main() -> None:
             video_root=video_root,
             run_meta=run_meta,
             duration_sec=video_info.get("duration_sec"),
-            provider=args.stt_backend,
+            provider=stt_backend,
         )
         if db_success:
             print(f"✅ Database sync completed!")
@@ -1101,6 +1120,7 @@ def main() -> None:
 
 
 def main() -> None:
+    """CLI 진입점."""
     args = parse_args()
     run_pipeline(
         video=args.video,
@@ -1112,8 +1132,12 @@ def main() -> None:
         capture_min_interval=args.capture_min_interval,
         capture_verbose=args.capture_verbose,
         vlm_batch_size=args.vlm_batch_size,
+        vlm_concurrency=args.vlm_concurrency,
+        vlm_show_progress=args.vlm_show_progress,
         limit=args.limit,
         dry_run=args.dry_run,
+        batch_mode=args.batch_mode,
+        batch_size=args.batch_size,
     )
 
 

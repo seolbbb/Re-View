@@ -28,14 +28,25 @@
 5. 지연 저장으로 end_ms 확정 후 저장
 6. 중복 슬라이드 제거
 
-**임계값**
-- `SENSITIVITY_DIFF`: 픽셀 차이 민감도(낮을수록 민감, 권장 2.0~5.0)
-- `SENSITIVITY_SIM`: ORB 유사도 임계값(높을수록 엄격, 권장 0.7~0.9)
-- `MIN_INTERVAL`: 최소 캡처 간격(초)
+**설정**
+- 설정 파일: `config/capture/settings.yaml`
+- `input_dir` / `output_dir`: 입력/출력 경로
+- `sensitivity_diff`: 픽셀 차이 민감도(낮을수록 민감, 권장 2.0~5.0)
+- `sensitivity_sim`: ORB 유사도 임계값(높을수록 엄격, 권장 0.7~0.9)
+- `min_interval`: 최소 캡처 간격(초)
+- `sample_interval_sec`: 유휴 상태 샘플링 간격(초)
+- `buffer_duration_sec`: 버퍼링 지속 시간(초)
+- `transition_timeout_sec`: 전환 상태 최대 대기 시간(초)
 
 **연동**
 - 단독 실행: `python src/capture/process_content.py`
 - 파이프라인 호출: `run_video_pipeline.py` → `process_single_video_capture`
+
+## settings.py
+
+**역할**
+- `config/capture/settings.yaml`을 읽어 캡처 설정을 구성합니다.
+- 경로는 프로젝트 루트 기준 상대 경로도 허용합니다.
 
 ## tools/hybrid_extractor.py
 
@@ -47,7 +58,7 @@
 **핵심 알고리즘**
 1. 픽셀 차이 분석: 연속 프레임 변화량으로 전환 감지
 2. ORB 구조 유사도: 슬라이드의 구조적 변화 감지
-3. 스마트 버퍼링(약 2.5초): 중앙값 기반 노이즈 제거 후 최적 프레임 선택
+3. 스마트 버퍼링(설정값 기준): 중앙값 기반 노이즈 제거 후 최적 프레임 선택
 4. RANSAC 기반 중복 제거: 기하학적 일관성으로 중복 판별
 
 **출력 형식**
