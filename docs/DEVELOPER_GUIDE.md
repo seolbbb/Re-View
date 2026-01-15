@@ -166,15 +166,25 @@ ADK의 `ToolContext`를 통해 세션 상태를 공유합니다.
 
 가장 권장되는 실행 방식입니다. 벤치마크 리포트까지 자동으로 생성합니다.
 
-| 옵션                         | 기본값  | 설명                              |
-| ---------------------------- | ------- | --------------------------------- |
-| `--video`                    | (필수)  | 입력 비디오 경로                  |
-| `--stt-backend`              | `clova` | STT 백엔드 (clova/whisper)        |
-| `--capture-threshold`        | `3.0`   | 장면 전환 감지 임계값 (dHash)     |
-| `--capture-dedupe-threshold` | `3.0`   | 중복 제거 임계값 (ORB)            |
-| `--vlm-batch-size`           | `1`     | VLM 배치 크기                     |
-| `--vlm-concurrency`          | `4`     | VLM 동시 요청 수 (AsyncIO)        |
-| `--parallel`                 | `True`  | STT와 캡처를 병렬로 실행할지 여부 |
+| 옵션              | 기본값  | 설명                              |
+| ----------------- | ------- | --------------------------------- |
+| `--video`         | (필수)  | 입력 비디오 경로                  |
+| `--output-base`   | `data/outputs` | 출력 베이스 디렉토리         |
+| `--stt-backend`   | `clova` | STT 백엔드                        |
+| `--parallel`      | `True`  | STT와 캡처를 병렬로 실행할지 여부 |
+| `--capture-verbose` | `False` | 캡처 상세 로그 출력 여부        |
+| `--limit`         | 없음    | fusion 단계에서 처리할 segment 수 제한 |
+| `--batch-mode`    | `False` | 캡처를 배치로 분할 처리           |
+
+아래 런타임 파라미터는 `config/pipeline/settings.yaml`에서 관리합니다:
+
+- `capture_threshold`
+- `capture_dedupe_threshold`
+- `capture_min_interval`
+- `vlm_batch_size`
+- `vlm_concurrency`
+- `vlm_show_progress`
+- `batch_size`
 
 ### 5.2 Pre-ADK 실행 (`pre_adk_pipeline.py`)
 

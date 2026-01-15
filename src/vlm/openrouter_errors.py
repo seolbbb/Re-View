@@ -69,12 +69,12 @@ def format_service_unavailable_message(
     code_label = f"{code} " if code else ""
     if provider:
         return (
-            f"VLM 제공자({provider})에서 {code_label}오류가 발생했습니다. "
-            "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
+            f"VLM provider ({provider}) error {code_label}occurred. "
+            "Please try again in a moment. Reducing batch size and concurrency may help."
         )
     return (
-        f"VLM 제공자에서 {code_label}오류가 발생했습니다. "
-        "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
+        f"VLM provider error {code_label}occurred. "
+        "Please try again in a moment. Reducing batch size and concurrency may help."
     )
 
 

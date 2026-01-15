@@ -1,4 +1,4 @@
-"""VLM 원시 결과(vlm_raw.json)를 fusion 입력(vlm.json)으로 변환한다."""
+"""VLM raw 결과(vlm_raw.json)를 fusion 입력(vlm.json)으로 변환한다."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ def build_fusion_vlm_payload(
     manifest_payload: Any,
     vlm_raw_payload: Any,
 ) -> Dict[str, Any]:
-    """manifest와 vlm_raw를 조인해 fusion 입력 구조를 만든다."""
+    """manifest와 vlm_raw를 join해 fusion 입력 구조를 만든다."""
     if not isinstance(manifest_payload, list):
-        raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
+        raise ValueError("Invalid manifest.json format (must be a list).")
 
     manifest_entries: List[Dict[str, Any]] = []
     for item in manifest_payload:
@@ -32,11 +32,11 @@ def build_fusion_vlm_payload(
         manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name})
 
     if not manifest_entries:
-        raise ValueError("manifest.json에서 유효한 항목을 찾을 수 없습니다.")
+        raise ValueError("No valid entries found in manifest.json.")
     manifest_entries.sort(key=lambda x: (int(x["timestamp_ms"]), str(x["file_name"])))
 
     if not isinstance(vlm_raw_payload, list):
-        raise ValueError("vlm_raw.json 형식이 올바르지 않습니다(배열이어야 함).")
+        raise ValueError("Invalid vlm_raw.json format (must be a list).")
 
     image_text: Dict[str, str] = {}
     for item in vlm_raw_payload:
@@ -61,7 +61,7 @@ def build_fusion_vlm_payload(
         image_text[Path(image_path).name] = "\n\n".join(parts).strip()
 
     if not image_text:
-        raise ValueError("vlm_raw.json에서 유효한 image_path를 찾을 수 없습니다.")
+        raise ValueError("No valid image_path found in vlm_raw.json.")
 
     missing: List[str] = []
     items: List[Dict[str, Any]] = []
@@ -76,7 +76,7 @@ def build_fusion_vlm_payload(
     if missing:
         preview = ", ".join(missing[:10])
         raise ValueError(
-            f"manifest.json과 vlm_raw.json 조인 실패: {len(missing)}개 이미지가 누락되었습니다. 예: {preview}"
+            f"Failed to join manifest.json and vlm_raw.json: {len(missing)} images are missing. Example: {preview}"
         )
     return {"items": items}
 

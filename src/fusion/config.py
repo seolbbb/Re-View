@@ -49,6 +49,11 @@ class JudgeConfig(BaseModel):
 
     min_score: float = Field(7.0, ge=0.0, le=10.0)
     include_segments: bool = False
+    batch_size: int = Field(3, ge=1)
+    workers: int = Field(1, ge=1)
+    json_repair_attempts: int = Field(1, ge=0)
+    verbose: bool = False
+    prompt_version: Optional[str] = None
 
 
 class DeveloperApiConfig(BaseModel):
@@ -108,7 +113,6 @@ class FusionConfig(BaseModel):
     paths: PathsConfig
     sync_engine: SyncEngineConfig
     summarizer: SummarizerConfig
-    judge: JudgeConfig = Field(default_factory=JudgeConfig)
     llm_gemini: LlmGeminiConfig
     render: RenderConfig
     final_summary: FinalSummaryConfig
@@ -128,6 +132,7 @@ class ConfigBundle:
     config_path: Path
     repo_root: Path
     paths: ResolvedPaths
+    judge: JudgeConfig
 
 
 def _find_repo_root(config_path: Path) -> Path:
@@ -158,10 +163,23 @@ def load_config(config_path: str) -> ConfigBundle:
     repo_root = _find_repo_root(config_file)
     load_dotenv(dotenv_path=repo_root / ".env")
 
+    judge_config_path = repo_root / "config" / "judge" / "settings.yaml"
+    if not judge_config_path.exists():
+        raise FileNotFoundError(f"judge settings 파일을 찾을 수 없습니다: {judge_config_path}")
+    with judge_config_path.open("r", encoding="utf-8") as handle:
+        judge_payload = yaml.safe_load(handle) or {}
+    judge_config = JudgeConfig.model_validate(judge_payload)
+
     resolved_paths = ResolvedPaths(
         stt_json=_resolve_path(config.paths.stt_json, repo_root),
         vlm_json=_resolve_path(config.paths.vlm_json, repo_root),
         captures_manifest_json=_resolve_path(config.paths.captures_manifest_json, repo_root),
         output_root=_resolve_path(config.paths.output_root, repo_root),
     )
-    return ConfigBundle(raw=config, config_path=config_file, repo_root=repo_root, paths=resolved_paths)
+    return ConfigBundle(
+        raw=config,
+        config_path=config_file,
+        repo_root=repo_root,
+        paths=resolved_paths,
+        judge=judge_config,
+    )

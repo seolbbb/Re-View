@@ -421,7 +421,7 @@ def run_judge(
         )
 
     response_schema = _build_response_schema()
-    prompt_version, prompt_template = _load_prompt_template(None)
+    prompt_version, prompt_template = _load_prompt_template(config.judge.prompt_version)
 
     # Count input tokens for all payloads and save to token_usage.json
     try:

@@ -293,7 +293,7 @@ def _build_transcript_units(
     return transcript_units, transcript_text
 
 
-def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: bool = False) -> None:
+def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
     paths = config.paths
     ensure_output_root(paths.output_root)
 
@@ -328,14 +328,10 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
 
     sync_segments: List[Dict[str, object]] = []
     trace_map_segments: List[Dict[str, object]] = []
-    segments_handle = None
-    segments_units_handle = None
+    segments_handle = (output_dir / "segments.jsonl").open("w", encoding="utf-8")
+    segments_units_handle = (output_dir / "segments_units.jsonl").open("w", encoding="utf-8")
 
     try:
-        if not dry_run:
-            segments_handle = (output_dir / "segments.jsonl").open("w", encoding="utf-8")
-            segments_units_handle = (output_dir / "segments_units.jsonl").open("w", encoding="utf-8")
-
         for idx, segment in enumerate(refined_segments, start=1):
             transcript_units, transcript_text = _build_transcript_units(
                 stt_segments, segment.start_ms, segment.end_ms
@@ -369,46 +365,39 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
                 }
             )
 
-            if not dry_run:
-                segments_handle.write(
-                    json.dumps(
-                        {
-                            "run_id": run_id,
-                            "segment_id": idx,
-                            "start_ms": segment.start_ms,
-                            "end_ms": segment.end_ms,
-                            "transcript_text": transcript_text,
-                            "visual_text": visual_text,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
+            segments_handle.write(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "segment_id": idx,
+                        "start_ms": segment.start_ms,
+                        "end_ms": segment.end_ms,
+                        "transcript_text": transcript_text,
+                        "visual_text": visual_text,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
                 )
-                segments_units_handle.write(
-                    json.dumps(
-                        {
-                            "run_id": run_id,
-                            "segment_id": idx,
-                            "start_ms": segment.start_ms,
-                            "end_ms": segment.end_ms,
-                            "transcript_units": transcript_units,
-                            "visual_units": visual_units,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
+                + "\n"
+            )
+            segments_units_handle.write(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "segment_id": idx,
+                        "start_ms": segment.start_ms,
+                        "end_ms": segment.end_ms,
+                        "transcript_units": transcript_units,
+                        "visual_units": visual_units,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
                 )
+                + "\n"
+            )
     finally:
-        if segments_handle:
-            segments_handle.close()
-        if segments_units_handle:
-            segments_units_handle.close()
-
-    if dry_run:
-        print(f"[DRY RUN] segments={len(sync_segments)} (outputs not generated)")
-        return
+        segments_handle.close()
+        segments_units_handle.close()
 
     write_json(output_dir / "sync.json", {"segments": sync_segments})
     write_json(output_dir / "trace_map.json", {"run_id": run_id, "segments": trace_map_segments})

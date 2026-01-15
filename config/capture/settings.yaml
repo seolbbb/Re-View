@@ -1,8 +1,11 @@
-input_dir: src/data/input
-output_dir: src/data/output
-sensitivity_diff: 3.0
-sensitivity_sim: 0.8
-min_interval: 0.5
-sample_interval_sec: 0.5
-buffer_duration_sec: 2.5
-transition_timeout_sec: 2.5
+# 캡처 입력/출력 경로
+input_dir: data/input        # 입력 비디오 디렉토리
+output_dir: data/output      # 출력 디렉토리
+
+# 슬라이드 전환 감지/필터링 설정
+sensitivity_diff: 3.0            # 픽셀 차이 민감도(낮을수록 민감)
+sensitivity_sim: 0.8             # ORB 유사도 임계값(높을수록 엄격)
+min_interval: 0.5                # 연속 캡처 최소 간격(초)
+sample_interval_sec: 0.5         # 유휴 상태 샘플링 간격(초)
+buffer_duration_sec: 2.5         # 전환 후 버퍼링 지속 시간(초)
+transition_timeout_sec: 2.5      # 전환 상태 최대 대기 시간(초)

@@ -604,9 +604,7 @@ def _run_with_retries(
             attempt += 1
 
 
-def run_summarizer(
-    config: ConfigBundle, limit: Optional[int] = None, dry_run: bool = False
-) -> None:
+def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
     paths = config.paths
     ensure_output_root(paths.output_root)
     output_dir = paths.output_root / "fusion"
@@ -636,10 +634,6 @@ def run_summarizer(
         bullets_max,
         prompt_version=prompt_version,
     )
-
-    if dry_run:
-        print(f"[DRY RUN] segments={len(segments)} (LLM not called, outputs not generated)")
-        return
 
     response_schema = _build_response_schema()
     client_bundle = _init_gemini_client(config)

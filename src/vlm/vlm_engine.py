@@ -1,6 +1,6 @@
-"""VLM 추출 엔진과 OpenRouter 연동 로직.
-
-오류 처리 헬퍼는 src/vlm/openrouter_errors.py에 분리되어 있다.
+"""
+VLM 추출 엔진과 OpenRouter 연동 로직
+오류 처리 helper는 src/vlm/openrouter_errors.py에 분리되어 있다.
 """
 
 from __future__ import annotations
@@ -45,19 +45,19 @@ def load_prompt_bundle(
     version_id = prompt_version or DEFAULT_PROMPT_VERSION
     path = prompt_path or PROMPT_CONFIG_PATH
     if not path.exists():
-        raise FileNotFoundError(f"VLM 프롬프트 설정을 찾을 수 없습니다: {path}")
+        raise FileNotFoundError(f"VLM prompt config not found: {path}")
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError("VLM 프롬프트 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        raise ValueError("Invalid VLM prompt config format (must be a map).")
 
     prompt_pair = payload.get(version_id)
     if not isinstance(prompt_pair, dict):
         available = ", ".join(sorted(payload.keys()))
-        raise ValueError(f"프롬프트 버전을 찾을 수 없습니다: {version_id} (가능: {available})")
+        raise ValueError(f"Prompt version not found: {version_id} (available: {available})")
     system = prompt_pair.get("system")
     user = prompt_pair.get("user")
     if not isinstance(system, str) or not isinstance(user, str):
-        raise ValueError(f"프롬프트 블록이 누락되었습니다: {version_id}")
+        raise ValueError(f"Prompt block missing: {version_id}")
     return system.strip(), user.strip()
 
 
@@ -65,10 +65,10 @@ def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]
     """VLM 설정 YAML을 로드한다."""
     path = settings_path or SETTINGS_CONFIG_PATH
     if not path.exists():
-        raise FileNotFoundError(f"VLM 설정 파일을 찾을 수 없습니다: {path}")
+        raise FileNotFoundError(f"VLM settings file not found: {path}")
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError("VLM 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        raise ValueError("Invalid VLM settings format (must be a map).")
     return payload
 
 
@@ -120,25 +120,25 @@ class OpenRouterVlmExtractor:
         self.api_keys = _load_openrouter_keys()
         if not self.api_keys:
             raise ValueError(
-                "OPENROUTER_API_KEY(단일) 또는 OPENROUTER_API_KEYS(복수)를 설정해야 합니다."
+                "OPENROUTER_API_KEY (single) or OPENROUTER_API_KEYS (multiple) must be set."
             )
 
         self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         settings = load_vlm_settings(settings_path=settings_path)
         model_name = settings.get("model_name", DEFAULT_MODEL_NAME)
         if not isinstance(model_name, str) or not model_name.strip():
-            raise ValueError("VLM 설정의 model_name 형식이 올바르지 않습니다.")
+            raise ValueError("Invalid model_name format in VLM settings.")
         self.model_name = model_name
         self.clients = [
             OpenAI(base_url=self.base_url, api_key=api_key) for api_key in self.api_keys
         ]
         request_params = settings.get("request_params", {})
         if not isinstance(request_params, dict):
-            raise ValueError("VLM 설정의 request_params 형식이 올바르지 않습니다(맵이어야 함).")
+            raise ValueError("Invalid request_params format in VLM settings (must be a map).")
         self.request_params = request_params
         settings_prompt_version = settings.get("prompt_version")
         if settings_prompt_version is not None and not isinstance(settings_prompt_version, str):
-            raise ValueError("VLM 설정의 prompt_version 형식이 올바르지 않습니다.")
+            raise ValueError("Invalid prompt_version format in VLM settings.")
         selected_prompt_version = (
             prompt_version
             or settings_prompt_version
@@ -281,7 +281,7 @@ class OpenRouterVlmExtractor:
         raise RuntimeError(f"OpenRouter API returned empty response for {label}: none")
 
     def _build_result(self, image_path: str, content: str) -> Dict[str, Any]:
-        """VLM 응답을 vlm_raw.json 형식의 결과로 변환한다."""
+        """Convert VLM response to vlm_raw.json format result."""
         text = content.strip()
         detections = [{"text": text}] if text else []
         return {"image_path": image_path, "raw_results": detections}

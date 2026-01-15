@@ -33,7 +33,7 @@ def generate_fusion_config(
     manifest_json: Optional[Path],
     output_root: Path,
 ) -> None:
-    """Fusion config.yaml을 템플릿에서 생성한다."""
+    """Fusion settings.yaml을 템플릿에서 생성한다."""
     with template_config.open("r", encoding="utf-8") as handle:
         payload: Dict[str, Any] = yaml.safe_load(handle)
 
@@ -216,7 +216,7 @@ def run_vlm_for_batch(
         image_paths.append(str(captures_dir / file_name))
 
     if not image_paths:
-        empty_vlm = {"schema_version": 1, "items": [], "duration_ms": 0}
+        empty_vlm = {"items": [], "duration_ms": 0}
         vlm_json_path = output_dir / "vlm.json"
         vlm_json_path.write_text(json.dumps(empty_vlm, ensure_ascii=False, indent=2), encoding="utf-8")
         return {
@@ -260,7 +260,6 @@ def run_fusion_pipeline(
     config_path: Path,
     *,
     limit: Optional[int],
-    dry_run: bool,
     timer: BenchmarkTimer,
 ) -> Dict[str, Any]:
     """동기화부터 최종 요약까지 묶어서 실행하고 통계를 반환한다."""
@@ -277,7 +276,6 @@ def run_fusion_pipeline(
         run_sync_engine,
         config,
         limit=limit,
-        dry_run=False,
     )
     fusion_info["timings"]["sync_engine_sec"] = sync_elapsed
 
@@ -286,92 +284,89 @@ def run_fusion_pipeline(
         run_summarizer,
         config,
         limit=limit,
-        dry_run=dry_run,
     )
     fusion_info["timings"]["llm_summarizer_sec"] = llm_elapsed
 
     output_dir = config.paths.output_root / "fusion"
 
-    if not dry_run:
-        _, render_elapsed = timer.time_stage(
-            "fusion.renderer",
-            render_segment_summaries_md,
-            summaries_jsonl=output_dir / "segment_summaries.jsonl",
-            output_md=output_dir / "segment_summaries.md",
-            include_sources=config.raw.render.include_sources,
-            sources_jsonl=output_dir / "segments_units.jsonl",
-            md_wrap_width=config.raw.render.md_wrap_width,
-            limit=limit,
-        )
-        fusion_info["timings"]["renderer_sec"] = render_elapsed
+    _, render_elapsed = timer.time_stage(
+        "fusion.renderer",
+        render_segment_summaries_md,
+        summaries_jsonl=output_dir / "segment_summaries.jsonl",
+        output_md=output_dir / "segment_summaries.md",
+        include_sources=config.raw.render.include_sources,
+        sources_jsonl=output_dir / "segments_units.jsonl",
+        md_wrap_width=config.raw.render.md_wrap_width,
+        limit=limit,
+    )
+    fusion_info["timings"]["renderer_sec"] = render_elapsed
 
-        summaries, final_elapsed = timer.time_stage(
-            "fusion.final_summary",
-            compose_final_summaries,
-            summaries_jsonl=output_dir / "segment_summaries.jsonl",
-            max_chars=config.raw.final_summary.max_chars_per_format,
-            include_timestamps=config.raw.final_summary.style.include_timestamps,
-            limit=limit,
-        )
-        fusion_info["timings"]["final_summary_sec"] = final_elapsed
+    summaries, final_elapsed = timer.time_stage(
+        "fusion.final_summary",
+        compose_final_summaries,
+        summaries_jsonl=output_dir / "segment_summaries.jsonl",
+        max_chars=config.raw.final_summary.max_chars_per_format,
+        include_timestamps=config.raw.final_summary.style.include_timestamps,
+        limit=limit,
+    )
+    fusion_info["timings"]["final_summary_sec"] = final_elapsed
 
-        outputs_dir = output_dir / "outputs"
-        outputs_dir.mkdir(parents=True, exist_ok=True)
-        for fmt in config.raw.final_summary.generate_formats:
-            if fmt in summaries:
-                outputs_dir.joinpath(f"final_summary_{fmt}.md").write_text(
-                    summaries[fmt], encoding="utf-8"
-                )
+    outputs_dir = output_dir / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    for fmt in config.raw.final_summary.generate_formats:
+        if fmt in summaries:
+            outputs_dir.joinpath(f"final_summary_{fmt}.md").write_text(
+                summaries[fmt], encoding="utf-8"
+            )
 
-        judge_output_dir = output_dir / "judge"
-        judge_output_dir.mkdir(parents=True, exist_ok=True)
-        judge_result, judge_elapsed = timer.time_stage(
-            "fusion.judge",
-            run_judge,
-            config=config,
-            segments_units_path=output_dir / "segments_units.jsonl",
-            segment_summaries_path=output_dir / "segment_summaries.jsonl",
-            output_report_path=judge_output_dir / "judge_report.json",
-            output_segments_path=judge_output_dir / "judge_segment_reports.jsonl",
-            batch_size=3,
-            workers=1,
-            json_repair_attempts=1,
-            limit=limit,
-            write_outputs=True,
-            verbose=True,
-        )
-        fusion_info["timings"]["judge_sec"] = judge_elapsed
+    judge_output_dir = output_dir / "judge"
+    judge_output_dir.mkdir(parents=True, exist_ok=True)
+    judge_result, judge_elapsed = timer.time_stage(
+        "fusion.judge",
+        run_judge,
+        config=config,
+        segments_units_path=output_dir / "segments_units.jsonl",
+        segment_summaries_path=output_dir / "segment_summaries.jsonl",
+        output_report_path=judge_output_dir / "judge_report.json",
+        output_segments_path=judge_output_dir / "judge_segment_reports.jsonl",
+        batch_size=config.judge.batch_size,
+        workers=config.judge.workers,
+        json_repair_attempts=config.judge.json_repair_attempts,
+        limit=limit,
+        write_outputs=True,
+        verbose=config.judge.verbose,
+    )
+    fusion_info["timings"]["judge_sec"] = judge_elapsed
 
-        report = judge_result.get("report", {})
-        segment_reports = judge_result.get("segment_reports", []) or []
-        final_score = float(report.get("scores", {}).get("final", 0.0))
-        min_score = float(config.raw.judge.min_score)
-        passed = final_score >= min_score
-        feedback = [
-            {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+    report = judge_result.get("report", {})
+    segment_reports = judge_result.get("segment_reports", []) or []
+    final_score = float(report.get("scores", {}).get("final", 0.0))
+    min_score = float(config.judge.min_score)
+    passed = final_score >= min_score
+    feedback = [
+        {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+        for item in segment_reports
+        if item.get("segment_id") is not None
+    ]
+    payload: Dict[str, Any] = {
+        "model": str(report.get("meta", {}).get("model", "")),
+        "pass": passed,
+        "final_score": final_score,
+        "min_score": min_score,
+        "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
+        "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
+        "feedback": feedback,
+    }
+    if config.judge.include_segments:
+        payload["segments"] = [
+            {
+                "segment_id": int(item.get("segment_id")),
+                "scores": item.get("scores", {}),
+            }
             for item in segment_reports
             if item.get("segment_id") is not None
         ]
-        payload: Dict[str, Any] = {
-            "schema_version": 2,
-            "model": str(report.get("meta", {}).get("model", "")),
-            "pass": passed,
-            "final_score": final_score,
-            "min_score": min_score,
-            "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
-            "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
-            "feedback": feedback,
-        }
-        if config.raw.judge.include_segments:
-            payload["segments"] = [
-                {
-                    "segment_id": int(item.get("segment_id")),
-                    "scores": item.get("scores", {}),
-                }
-                for item in segment_reports
-                if item.get("segment_id") is not None
-            ]
-        write_json(output_dir / "judge.json", payload)
+    write_json(output_dir / "judge.json", payload)
 
     segments_file = output_dir / "segment_summaries.jsonl"
     if segments_file.exists():
@@ -393,7 +388,6 @@ def run_batch_fusion_pipeline(
     vlm_concurrency: int,
     vlm_show_progress: bool,
     limit: Optional[int],
-    dry_run: bool,
     repo_root: Path,
 ) -> Dict[str, Any]:
     """배치 단위로 동기화와 요약을 반복 실행한다."""
@@ -441,7 +435,7 @@ def run_batch_fusion_pipeline(
     fusion_dir = video_root / "fusion"
     fusion_dir.mkdir(parents=True, exist_ok=True)
 
-    template_config = repo_root / "config" / "fusion" / "config.yaml"
+    template_config = repo_root / "config" / "fusion" / "settings.yaml"
     fusion_config_path = video_root / "config.yaml"
 
     fusion_info: Dict[str, Any] = {
@@ -522,81 +516,79 @@ def run_batch_fusion_pipeline(
         batch_segments_path = batch_dir / "segments_units.jsonl"
         batch_summaries_path = batch_dir / "segment_summaries.jsonl"
 
-        if not dry_run:
-            config = load_config(str(fusion_config_path))
-            summarize_result, _ = timer.time_stage(
-                f"pipeline_batch_{batch_idx + 1}.summarize",
-                run_batch_summarizer,
-                segments_units_jsonl=batch_segments_path,
-                output_dir=batch_dir,
-                config=config,
-                previous_context=previous_context,
-                limit=limit,
-            )
+        config = load_config(str(fusion_config_path))
+        summarize_result, _ = timer.time_stage(
+            f"pipeline_batch_{batch_idx + 1}.summarize",
+            run_batch_summarizer,
+            segments_units_jsonl=batch_segments_path,
+            output_dir=batch_dir,
+            config=config,
+            previous_context=previous_context,
+            limit=limit,
+        )
 
-            new_context = summarize_result.get("context", "")
-            if new_context:
-                previous_context = new_context[:500]
+        new_context = summarize_result.get("context", "")
+        if new_context:
+            previous_context = new_context[:500]
 
-            if batch_summaries_path.exists():
-                with batch_summaries_path.open("r", encoding="utf-8") as handle:
-                    batch_content = handle.read()
-                with accumulated_summaries_path.open("a", encoding="utf-8") as handle:
-                    handle.write(batch_content)
+        if batch_summaries_path.exists():
+            with batch_summaries_path.open("r", encoding="utf-8") as handle:
+                batch_content = handle.read()
+            with accumulated_summaries_path.open("a", encoding="utf-8") as handle:
+                handle.write(batch_content)
 
-            batch_judge_dir = batch_dir / "judge"
-            batch_judge_dir.mkdir(parents=True, exist_ok=True)
-            judge_result, _ = timer.time_stage(
-                f"pipeline_batch_{batch_idx + 1}.judge",
-                run_judge,
-                config=config,
-                segments_units_path=batch_segments_path,
-                segment_summaries_path=batch_summaries_path,
-                output_report_path=batch_judge_dir / "judge_report.json",
-                output_segments_path=batch_judge_dir / "judge_segment_reports.jsonl",
-                batch_size=3,
-                workers=1,
-                json_repair_attempts=1,
-                limit=limit,
-                verbose=False,
-                write_outputs=True,
-            )
+        batch_judge_dir = batch_dir / "judge"
+        batch_judge_dir.mkdir(parents=True, exist_ok=True)
+        judge_result, _ = timer.time_stage(
+            f"pipeline_batch_{batch_idx + 1}.judge",
+            run_judge,
+            config=config,
+            segments_units_path=batch_segments_path,
+            segment_summaries_path=batch_summaries_path,
+            output_report_path=batch_judge_dir / "judge_report.json",
+            output_segments_path=batch_judge_dir / "judge_segment_reports.jsonl",
+            batch_size=config.judge.batch_size,
+            workers=config.judge.workers,
+            json_repair_attempts=config.judge.json_repair_attempts,
+            limit=limit,
+            verbose=config.judge.verbose,
+            write_outputs=True,
+        )
 
-            report = judge_result.get("report", {})
-            segment_reports = judge_result.get("segment_reports", []) or []
-            final_score = float(report.get("scores", {}).get("final", 0.0))
-            min_score = float(config.raw.judge.min_score)
-            passed = final_score >= min_score
-            feedback = [
-                {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+        report = judge_result.get("report", {})
+        segment_reports = judge_result.get("segment_reports", []) or []
+        final_score = float(report.get("scores", {}).get("final", 0.0))
+        min_score = float(config.judge.min_score)
+        passed = final_score >= min_score
+        feedback = [
+            {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+            for item in segment_reports
+            if item.get("segment_id") is not None
+        ]
+        payload = {
+            "model": str(report.get("meta", {}).get("model", "")),
+            "pass": passed,
+            "final_score": final_score,
+            "min_score": min_score,
+            "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
+            "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
+            "feedback": feedback,
+        }
+        if config.judge.include_segments:
+            payload["segments"] = [
+                {
+                    "segment_id": int(item.get("segment_id")),
+                    "scores": item.get("scores", {}),
+                }
                 for item in segment_reports
                 if item.get("segment_id") is not None
             ]
-            payload = {
-                "schema_version": 2,
-                "model": str(report.get("meta", {}).get("model", "")),
-                "pass": passed,
-                "final_score": final_score,
-                "min_score": min_score,
-                "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
-                "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
-                "feedback": feedback,
-            }
-            if config.raw.judge.include_segments:
-                payload["segments"] = [
-                    {
-                        "segment_id": int(item.get("segment_id")),
-                        "scores": item.get("scores", {}),
-                    }
-                    for item in segment_reports
-                    if item.get("segment_id") is not None
-                ]
-            batch_judge_path = batch_dir / "judge.json"
-            write_json(batch_judge_path, payload)
-            print(
-                f"  📊 Pipeline batch {batch_idx + 1} Judge: {'PASS' if passed else 'FAIL'} "
-                f"(score: {final_score:.1f})"
-            )
+        batch_judge_path = batch_dir / "judge.json"
+        write_json(batch_judge_path, payload)
+        print(
+            f"  📊 Pipeline batch {batch_idx + 1} Judge: {'PASS' if passed else 'FAIL'} "
+            f"(score: {final_score:.1f})"
+        )
 
         fusion_info["batch_results"].append(
             {
@@ -613,7 +605,7 @@ def run_batch_fusion_pipeline(
 
     fusion_info["segment_count"] = cumulative_segment_count
 
-    if not dry_run and accumulated_summaries_path.exists():
+    if accumulated_summaries_path.exists():
         config = load_config(str(fusion_config_path))
         _, render_elapsed = timer.time_stage(
             "fusion.renderer",

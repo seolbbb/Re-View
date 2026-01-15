@@ -37,7 +37,7 @@ adk web src/adk_pipeline
 
 ## 핵심 함수
 
-### sync_engine.run_sync_engine(config, limit, dry_run)
+### sync_engine.run_sync_engine(config, limit)
 STT와 VLM 결과를 동기화하여 세그먼트를 생성합니다.
 
 **출력:**
@@ -45,7 +45,7 @@ STT와 VLM 결과를 동기화하여 세그먼트를 생성합니다.
 - `segments_units.jsonl`: 상세 유닛 정보 포함
 - `sync.json`, `trace_map.json`: 동기화 메타데이터
 
-### summarizer.run_summarizer(config, limit, dry_run)
+### summarizer.run_summarizer(config, limit)
 Gemini를 사용하여 세그먼트별 요약을 생성합니다.
 
 **출력:**
@@ -65,7 +65,7 @@ Gemini를 사용하여 세그먼트별 요약을 생성합니다.
 
 ## 설정 (config.yaml)
 
-템플릿 설정 파일은 `config/fusion/config.yaml`에 있으며, `paths`는 실행 시
+템플릿 설정 파일은 `config/fusion/settings.yaml`에 있으며, `paths`는 실행 시
 생성된 config에서 자동으로 주입됩니다.
 
 ```yaml
@@ -91,7 +91,7 @@ llm_gemini:
 ## Summarizer 프롬프트 버전
 
 - 프롬프트 버전은 `config/fusion/prompts.yaml`에서 관리합니다.
-- 기본 버전은 `config/fusion/config.yaml`의 `summarizer.prompt_version`으로 결정됩니다.
+- 기본 버전은 `config/fusion/settings.yaml`의 `summarizer.prompt_version`으로 결정됩니다.
 - 템플릿 치환 토큰 예시:
   - `{{CLAIM_MAX_CHARS}}`
   - `{{BULLETS_MIN}}`

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -64,7 +65,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """명령줄 인자를 파싱한다."""
+    """명령줄 인자를 parsing한다."""
     parser = argparse.ArgumentParser(
         description="비디오 파이프라인 벤치마크 (STT → Capture → VLM → LLM)"
     )
@@ -74,26 +75,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parallel", action=argparse.BooleanOptionalAction, default=True, help="STT+Capture 병렬 실행"
     )
-    parser.add_argument("--capture-threshold", type=float, default=3.0, help="장면 전환 감지 임계값")
-    parser.add_argument(
-        "--capture-dedupe-threshold", type=float, default=3.0, help="중복 제거 임계값 (2차 정제)"
-    )
-    parser.add_argument("--capture-min-interval", type=float, default=0.5, help="캡처 최소 간격(초)")
     parser.add_argument("--capture-verbose", action="store_true", help="캡처 상세 로그 출력")
-    parser.add_argument("--vlm-batch-size", type=int, default=2, help="VLM 배치 크기(미지정 시 전부 한 번에)")
-    parser.add_argument("--vlm-concurrency", type=int, default=3, help="VLM 병렬 요청 수 (기본: 3)")
-    parser.add_argument(
-        "--vlm-show-progress",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="VLM 진행 로그 출력 여부 (기본: True)",
-    )
     parser.add_argument("--limit", type=int, default=None, help="fusion 단계에서 처리할 segment 수 제한")
-    parser.add_argument("--dry-run", action="store_true", help="summarizer LLM 미호출(출력 미생성)")
     parser.add_argument(
         "--batch-mode", action="store_true", default=False, help="배치 모드 활성화 (캡처를 n장씩 분할 처리)"
     )
-    parser.add_argument("--batch-size", type=int, default=10, help="배치당 캡처 개수 (기본: 10)")
     return parser.parse_args()
 
 
@@ -111,7 +97,6 @@ def run_pipeline(
     vlm_concurrency: int,
     vlm_show_progress: bool,
     limit: Optional[int],
-    dry_run: bool,
     batch_mode: bool,
     batch_size: int,
 ) -> None:
@@ -153,7 +138,6 @@ def run_pipeline(
         "vlm_concurrency": vlm_concurrency,
         "vlm_show_progress": vlm_show_progress,
         "limit": limit,
-        "dry_run": dry_run,
         "batch_mode": batch_mode,
         "batch_size": batch_size,
     }
@@ -254,7 +238,6 @@ def run_pipeline(
                 vlm_concurrency=vlm_concurrency,
                 vlm_show_progress=vlm_show_progress,
                 limit=limit,
-                dry_run=dry_run,
                 repo_root=repo_root,
             )
             segment_count = fusion_info.get("segment_count", 0)
@@ -273,9 +256,9 @@ def run_pipeline(
                 show_progress=vlm_show_progress,
             )
 
-            template_config = repo_root / "config" / "fusion" / "config.yaml"
+            template_config = repo_root / "config" / "fusion" / "settings.yaml"
             if not template_config.exists():
-                raise FileNotFoundError(f"fusion config template을 찾을 수 없습니다: {template_config}")
+                raise FileNotFoundError(f"fusion settings template을 찾을 수 없습니다: {template_config}")
 
             fusion_config_path = video_root / "config.yaml"
             """Fusion 설정 생성."""
@@ -293,7 +276,6 @@ def run_pipeline(
             fusion_info = run_fusion_pipeline(
                 fusion_config_path,
                 limit=limit,
-                dry_run=dry_run,
                 timer=timer,
             )
             segment_count = fusion_info.get("segment_count", 0)
@@ -363,22 +345,56 @@ def run_pipeline(
 def main() -> None:
     """CLI 진입점."""
     args = parse_args()
+    settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
+    if not settings_path.exists():
+        raise FileNotFoundError(f"pipeline settings file not found: {settings_path}")
+    settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    if not isinstance(settings, dict):
+        raise ValueError("pipeline settings must be a mapping.")
+
+    capture_threshold = settings.get("capture_threshold", 3.0)
+    if not isinstance(capture_threshold, (int, float)):
+        raise ValueError("capture_threshold must be a number.")
+
+    capture_dedupe_threshold = settings.get("capture_dedupe_threshold", 3.0)
+    if not isinstance(capture_dedupe_threshold, (int, float)):
+        raise ValueError("capture_dedupe_threshold must be a number.")
+
+    capture_min_interval = settings.get("capture_min_interval", 0.5)
+    if not isinstance(capture_min_interval, (int, float)):
+        raise ValueError("capture_min_interval must be a number.")
+
+    vlm_batch_size = settings.get("vlm_batch_size", 2)
+    if vlm_batch_size is not None and not isinstance(vlm_batch_size, int):
+        raise ValueError("vlm_batch_size must be an int or null.")
+
+    vlm_concurrency = settings.get("vlm_concurrency", 3)
+    if not isinstance(vlm_concurrency, int):
+        raise ValueError("vlm_concurrency must be an int.")
+
+    vlm_show_progress = settings.get("vlm_show_progress", True)
+    if not isinstance(vlm_show_progress, bool):
+        raise ValueError("vlm_show_progress must be a bool.")
+
+    batch_size = settings.get("batch_size", 10)
+    if not isinstance(batch_size, int):
+        raise ValueError("batch_size must be an int.")
+
     run_pipeline(
         video=args.video,
         output_base=args.output_base,
         stt_backend=args.stt_backend,
         parallel=args.parallel,
-        capture_threshold=args.capture_threshold,
-        capture_dedupe_threshold=args.capture_dedupe_threshold,
-        capture_min_interval=args.capture_min_interval,
+        capture_threshold=float(capture_threshold),
+        capture_dedupe_threshold=float(capture_dedupe_threshold),
+        capture_min_interval=float(capture_min_interval),
         capture_verbose=args.capture_verbose,
-        vlm_batch_size=args.vlm_batch_size,
-        vlm_concurrency=args.vlm_concurrency,
-        vlm_show_progress=args.vlm_show_progress,
+        vlm_batch_size=vlm_batch_size,
+        vlm_concurrency=vlm_concurrency,
+        vlm_show_progress=vlm_show_progress,
         limit=args.limit,
-        dry_run=args.dry_run,
         batch_mode=args.batch_mode,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
     )
 
 
