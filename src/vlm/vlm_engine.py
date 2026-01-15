@@ -211,10 +211,14 @@ class OpenRouterVlmExtractor:
         *,
         label: str,
         request_params: Dict[str, Any],
+        show_progress: bool,
     ) -> str:
         """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다."""
         last_error: Optional[Exception] = None
+        total_keys = len(self.clients)
         for idx, client in enumerate(self.clients, start=1):
+            if show_progress:
+                print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
             try:
                 completion = client.chat.completions.create(
                     model=self.model_name,
@@ -223,7 +227,12 @@ class OpenRouterVlmExtractor:
                 )
             except Exception as exc:
                 last_error = exc
-                if idx < len(self.clients):
+                if idx < total_keys:
+                    if show_progress:
+                        print(
+                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            flush=True,
+                        )
                     continue
                 if is_service_unavailable_error(exc):
                     raise RuntimeError(format_service_unavailable_message(exc)) from exc
@@ -231,7 +240,12 @@ class OpenRouterVlmExtractor:
             error = getattr(completion, "error", None)
             if error:
                 last_error = RuntimeError(format_openrouter_error(error))
-                if idx < len(self.clients):
+                if idx < total_keys:
+                    if show_progress:
+                        print(
+                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            flush=True,
+                        )
                     continue
                 code = extract_error_code(error)
                 if code in (502, 503):
@@ -245,7 +259,12 @@ class OpenRouterVlmExtractor:
                 last_error = RuntimeError(
                     f"OpenRouter API returned empty response for {label}: {completion}"
                 )
-                if idx < len(self.clients):
+                if idx < total_keys:
+                    if show_progress:
+                        print(
+                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            flush=True,
+                        )
                     continue
                 raise last_error
             return completion.choices[0].message.content or ""
@@ -266,10 +285,16 @@ class OpenRouterVlmExtractor:
         *,
         label: str,
         request_params: Dict[str, Any],
+        show_progress: bool,
     ) -> List[Dict[str, Any]]:
         """배치 요청을 실행하고 이미지별 결과를 반환한다."""
         messages = self._build_batch_messages(batch_paths)
-        content = self._request_completion(messages, label=label, request_params=request_params)
+        content = self._request_completion(
+            messages,
+            label=label,
+            request_params=request_params,
+            show_progress=show_progress,
+        )
         sections = self._split_batch_content(content, len(batch_paths))
         return [
             self._build_result(image_path, section)
@@ -282,10 +307,16 @@ class OpenRouterVlmExtractor:
         *,
         label: str,
         request_params: Dict[str, Any],
+        show_progress: bool,
     ) -> Dict[str, Any]:
         """단일 이미지 요청을 실행하고 결과를 반환한다."""
         messages = self._build_single_messages(image_path)
-        content = self._request_completion(messages, label=label, request_params=request_params)
+        content = self._request_completion(
+            messages,
+            label=label,
+            request_params=request_params,
+            show_progress=show_progress,
+        )
         return self._build_result(image_path, content)
 
     def _split_batch_content(self, content: str, image_count: int) -> List[str]:
@@ -352,6 +383,7 @@ class OpenRouterVlmExtractor:
                             batch_paths,
                             label=f"batch {batch_index}/{total_batches}",
                             request_params=request_params,
+                            show_progress=show_progress,
                         )
                     )
                     if show_progress:
@@ -373,6 +405,7 @@ class OpenRouterVlmExtractor:
                         batch_paths,
                         label=f"batch {batch_index}/{total_batches}",
                         request_params=request_params,
+                        show_progress=show_progress,
                     )
                     future_map[future] = batch_index
                 for future in as_completed(future_map):
@@ -394,6 +427,7 @@ class OpenRouterVlmExtractor:
                     image_path,
                     label=f"image {idx}/{total_images}",
                     request_params=request_params,
+                    show_progress=show_progress,
                 )
                 if show_progress:
                     print(f"[VLM] done {idx}/{total_images}", flush=True)
@@ -412,6 +446,7 @@ class OpenRouterVlmExtractor:
                     image_path,
                     label=f"image {idx}/{total_images}",
                     request_params=request_params,
+                    show_progress=show_progress,
                 )
                 future_map[future] = idx
             for future in as_completed(future_map):

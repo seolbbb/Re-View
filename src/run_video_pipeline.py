@@ -28,7 +28,6 @@ if ENV_PATH.exists():
 else:
     load_dotenv()
 
-from src.adk_pipeline.tools.internal.fusion_config import generate_fusion_config
 from src.db import sync_pipeline_results_to_db
 from src.pipeline.benchmark import (
     BenchmarkTimer,
@@ -37,6 +36,7 @@ from src.pipeline.benchmark import (
     print_benchmark_report,
 )
 from src.pipeline.stages import (
+    generate_fusion_config,
     run_batch_fusion_pipeline,
     run_capture,
     run_fusion_pipeline,

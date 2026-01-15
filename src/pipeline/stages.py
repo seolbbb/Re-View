@@ -8,7 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.adk_pipeline.tools.internal.fusion_config import generate_fusion_config
+import yaml
+
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
@@ -20,6 +21,43 @@ from src.judge.judge import run_judge
 from src.pipeline.benchmark import BenchmarkTimer
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+
+
+def generate_fusion_config(
+    *,
+    template_config: Path,
+    output_config: Path,
+    repo_root: Path,
+    stt_json: Path,
+    vlm_json: Path,
+    manifest_json: Optional[Path],
+    output_root: Path,
+) -> None:
+    """Fusion config.yaml을 템플릿에서 생성한다."""
+    with template_config.open("r", encoding="utf-8") as handle:
+        payload: Dict[str, Any] = yaml.safe_load(handle)
+
+    def _rel(path: Path) -> str:
+        try:
+            return str(path.relative_to(repo_root)).replace("\\", "/")
+        except ValueError:
+            return str(path)
+
+    paths_payload: Dict[str, Any] = {
+        "stt_json": _rel(stt_json),
+        "vlm_json": _rel(vlm_json),
+        "output_root": _rel(output_root),
+    }
+    if manifest_json is not None:
+        paths_payload["captures_manifest_json"] = _rel(manifest_json)
+
+    payload["paths"] = paths_payload
+
+    output_config.parent.mkdir(parents=True, exist_ok=True)
+    output_config.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def run_stt(video_path: Path, output_stt_json: Path, *, backend: str) -> None:
