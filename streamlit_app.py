@@ -8,12 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 
 from src.adk_pipeline.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
+from src.adk_chatbot.agent import root_agent as chatbot_root_agent
+from src.services.adk_session import AdkSession
 from src.services.pipeline_service import (
-    build_adk_state,
     get_default_output_base,
     run_pre_adk_pipeline,
     send_adk_message,
-    start_adk_session,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -241,8 +241,10 @@ def main() -> None:
         st.session_state.pre_adk_result = None
     if "adk_session" not in st.session_state:
         st.session_state.adk_session = None
-    if "adk_state_signature" not in st.session_state:
-        st.session_state.adk_state_signature = None
+    if "chat_mode" not in st.session_state:
+        st.session_state.chat_mode = "full"
+    if "chat_mode_signature" not in st.session_state:
+        st.session_state.chat_mode_signature = None
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
     if "adk_busy" not in st.session_state:
@@ -251,12 +253,19 @@ def main() -> None:
         st.session_state.selected_output_name = None
     if "preview_video_path" not in st.session_state:
         st.session_state.preview_video_path = None
+    if "selected_source" not in st.session_state:
+        st.session_state.selected_source = None
+    if "chat_session_video_name" not in st.session_state:
+        st.session_state.chat_session_video_name = None
 
     source = st.radio(
         "Video source",
         ["Upload", "Local path", "Existing output"],
         horizontal=True,
     )
+    if st.session_state.selected_source != source:
+        st.session_state.selected_source = source
+        st.session_state.selected_output_name = None
     video_path: Optional[Path] = None
 
     if source == "Upload":
@@ -287,7 +296,7 @@ def main() -> None:
                 options=[""] + available_outputs,
                 index=0,
             )
-            if st.button("Load selected output", disabled=not selected_output):
+            if selected_output and selected_output != st.session_state.selected_output_name:
                 candidate = ADK_OUTPUT_BASE / selected_output
                 if candidate.exists():
                     st.session_state.video_root = str(candidate)
@@ -297,7 +306,7 @@ def main() -> None:
                     st.session_state.pre_adk_signature = None
                     st.session_state.pre_adk_result = None
                     st.session_state.adk_session = None
-                    st.session_state.adk_state_signature = None
+                    st.session_state.chat_mode_signature = None
                     st.session_state.chat_messages = []
                     st.session_state.selected_output_name = selected_output
                     preview_candidate = _find_existing_video(selected_output)
@@ -317,7 +326,7 @@ def main() -> None:
             st.session_state.pre_adk_signature = None
             st.session_state.pre_adk_result = None
             st.session_state.adk_session = None
-            st.session_state.adk_state_signature = None
+            st.session_state.chat_mode_signature = None
             st.session_state.chat_messages = []
         st.session_state.preview_video_path = str(video_path)
 
@@ -339,21 +348,6 @@ def main() -> None:
         rerun_pre_adk = st.button("Rerun Pre-ADK", disabled=video_path is None)
 
         st.markdown("---")
-        st.subheader("ADK options")
-        force_preprocessing = st.checkbox("Force preprocessing (VLM/Sync)", value=False)
-        max_reruns = st.number_input("Max reruns", min_value=0, value=2, step=1)
-        vlm_batch_size: Optional[int] = None
-        if st.checkbox("Set VLM batch size", value=False):
-            vlm_batch_size = int(st.number_input("VLM batch size", min_value=1, value=2, step=1))
-        vlm_concurrency = st.number_input("VLM concurrency", min_value=1, value=3, step=1)
-        vlm_show_progress = st.checkbox("VLM show progress", value=True)
-        judge_min_score = st.number_input("Judge min score", min_value=0.0, max_value=10.0, value=7.0, step=0.1)
-        if st.button("Reset ADK session", disabled=st.session_state.adk_session is None):
-            st.session_state.adk_session = None
-            st.session_state.adk_state_signature = None
-            st.session_state.chat_messages = []
-
-        st.markdown("---")
         st.subheader("Existing outputs")
         if st.button("Load outputs for selected video", disabled=video_path is None):
             if not video_path:
@@ -364,6 +358,9 @@ def main() -> None:
                     st.session_state.video_root = str(candidate)
                     st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
                     st.session_state.pre_adk_status = "done"
+                    st.session_state.adk_session = None
+                    st.session_state.chat_mode_signature = None
+                    st.session_state.chat_messages = []
                     st.session_state.preview_video_path = str(video_path)
                 else:
                     st.warning("No outputs found for selected video.")
@@ -379,6 +376,9 @@ def main() -> None:
                     st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
                     if _has_pre_adk_outputs(candidate):
                         st.session_state.pre_adk_status = "done"
+                    st.session_state.adk_session = None
+                    st.session_state.chat_mode_signature = None
+                    st.session_state.chat_messages = []
                     preview_candidate = _find_existing_video(candidate.name)
                     st.session_state.preview_video_path = (
                         str(preview_candidate) if preview_candidate else None
@@ -388,6 +388,12 @@ def main() -> None:
 
     video_root_value = st.session_state.video_root
     video_name = _resolve_video_name(video_path, video_root_value)
+    if st.session_state.chat_session_video_name != video_name:
+        st.session_state.chat_session_video_name = video_name
+        st.session_state.adk_session = None
+        st.session_state.chat_mode_signature = None
+        st.session_state.chat_messages = []
+        st.session_state.adk_busy = False
 
     if video_path:
         pre_adk_signature: Tuple[str] = (str(video_path),)
@@ -399,7 +405,7 @@ def main() -> None:
             st.session_state.pre_adk_status = "running"
             st.session_state.pre_adk_error = None
             st.session_state.adk_session = None
-            st.session_state.adk_state_signature = None
+            st.session_state.chat_mode_signature = None
             st.session_state.chat_messages = []
             with st.spinner("Running Pre-ADK..."):
                 try:
@@ -431,29 +437,14 @@ def main() -> None:
         st.session_state.pre_adk_status = "done"
 
     if video_name and st.session_state.pre_adk_status == "done":
-        adk_state = build_adk_state(
-            video_name=video_name,
-            force_preprocessing=force_preprocessing,
-            max_reruns=int(max_reruns),
-            vlm_batch_size=vlm_batch_size,
-            vlm_concurrency=int(vlm_concurrency),
-            vlm_show_progress=bool(vlm_show_progress),
-            judge_min_score=float(judge_min_score),
-        )
-        adk_state_signature = (
-            video_name,
-            force_preprocessing,
-            int(max_reruns),
-            vlm_batch_size,
-            int(vlm_concurrency),
-            bool(vlm_show_progress),
-            float(judge_min_score),
-        )
         if st.session_state.adk_session is None:
-            st.session_state.adk_session = start_adk_session(state=adk_state)
-            st.session_state.adk_state_signature = adk_state_signature
-    else:
-        adk_state_signature = None
+            st.session_state.adk_session = AdkSession(
+                root_agent=chatbot_root_agent,
+                app_name="screentime_chatbot",
+                user_id="streamlit",
+                initial_state={"video_name": video_name},
+            )
+            st.session_state.chat_mode_signature = None
 
     if st.session_state.pre_adk_status == "running":
         st.info("Pre-ADK is running. This can take a while for long videos.")
@@ -507,7 +498,7 @@ def main() -> None:
 
     if chat_col:
         with chat_col:
-            st.markdown("### ADK Chat")
+            st.markdown("### Chatbot")
             if not video_name:
                 st.info("Upload a video or load outputs to start.")
                 return
@@ -518,48 +509,59 @@ def main() -> None:
                 st.error("Pre-ADK failed. Fix the error and rerun.")
                 return
             if st.session_state.adk_session is None:
-                st.info("ADK session is not ready yet.")
+                st.info("Chatbot session is not ready yet.")
                 return
-
-            if (
-                adk_state_signature
-                and st.session_state.adk_state_signature
-                and adk_state_signature != st.session_state.adk_state_signature
-            ):
-                st.warning("ADK settings changed. Reset session to apply them.")
-
             if st.session_state.adk_busy:
-                st.info("ADK is running. Please wait for the current run to finish.")
+                st.info("Chatbot is running. Please wait for the current run to finish.")
 
             if st.button(
-                "Run pipeline",
+                "Reset chat session",
                 disabled=st.session_state.adk_session is None or st.session_state.adk_busy,
             ):
-                st.session_state.adk_busy = True
-                message = f"{video_name}로 파이프라인 실행해줘"
-                st.session_state.chat_messages.append({"role": "user", "content": message})
-                try:
-                    with st.spinner("Running ADK pipeline..."):
-                        responses = send_adk_message(st.session_state.adk_session, message)
-                    for response in responses:
+                st.session_state.adk_session = None
+                st.session_state.chat_messages = []
+                st.session_state.chat_mode_signature = None
+                st.rerun()
+
+            chat_mode_label = st.radio(
+                "Chat mode",
+                ["전문 요약", "부분 요약"],
+                horizontal=True,
+            )
+            chat_mode = "full" if chat_mode_label == "전문 요약" else "partial"
+            st.session_state.chat_mode = chat_mode
+            mode_signature = (video_name, chat_mode)
+            if st.session_state.chat_mode_signature != mode_signature:
+                if st.session_state.adk_busy:
+                    st.info("Chatbot is busy. Mode change will apply after it finishes.")
+                else:
+                    st.session_state.chat_messages = []
+                    st.session_state.adk_busy = True
+                    try:
+                        with st.spinner("Setting chat mode..."):
+                            responses = send_adk_message(
+                                st.session_state.adk_session, chat_mode
+                            )
+                        for response in responses:
+                            st.session_state.chat_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "author": response.author,
+                                    "content": response.text,
+                                }
+                            )
+                    except Exception as exc:
                         st.session_state.chat_messages.append(
                             {
                                 "role": "assistant",
-                                "author": response.author,
-                                "content": response.text,
+                                "author": "system",
+                                "content": f"Chatbot error: {exc}",
                             }
                         )
-                except Exception as exc:
-                    st.session_state.chat_messages.append(
-                        {
-                            "role": "assistant",
-                            "author": "system",
-                            "content": f"ADK error: {exc}",
-                        }
-                    )
-                finally:
-                    st.session_state.adk_busy = False
-                st.rerun()
+                    finally:
+                        st.session_state.adk_busy = False
+                        st.session_state.chat_mode_signature = mode_signature
+                    st.rerun()
 
             chat_container = st.container(height=520)
             with chat_container:
@@ -571,12 +573,12 @@ def main() -> None:
                             st.caption(author)
                         st.markdown(message.get("content", ""))
 
-            prompt = st.chat_input("Message ADK", disabled=st.session_state.adk_busy)
+            prompt = st.chat_input("Message chatbot", disabled=st.session_state.adk_busy)
             if prompt and not st.session_state.adk_busy:
                 st.session_state.adk_busy = True
                 st.session_state.chat_messages.append({"role": "user", "content": prompt})
                 try:
-                    with st.spinner("Waiting for ADK..."):
+                    with st.spinner("Waiting for chatbot..."):
                         responses = send_adk_message(st.session_state.adk_session, prompt)
                     for response in responses:
                         st.session_state.chat_messages.append(
@@ -591,7 +593,7 @@ def main() -> None:
                         {
                             "role": "assistant",
                             "author": "system",
-                            "content": f"ADK error: {exc}",
+                            "content": f"Chatbot error: {exc}",
                         }
                     )
                 finally:
