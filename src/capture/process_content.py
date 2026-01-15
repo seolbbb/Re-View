@@ -189,10 +189,6 @@ def main() -> None:
 
     --video가 있으면 해당 파일만 처리하고,
     없으면 입력 폴더의 MP4를 모두 처리한다.
-
-    Usage:
-        python src/capture/process_content.py                      # 모든 비디오 처리
-        python src/capture/process_content.py --video sample1.mp4  # 특정 비디오만 처리
     """
     import argparse
     parser = argparse.ArgumentParser(description="Hybrid Slide Capture Pipeline (V2)")

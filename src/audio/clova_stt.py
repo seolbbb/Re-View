@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
 from pathlib import Path
@@ -130,79 +129,3 @@ class ClovaSpeechClient:
 
         return stt_data
 
-
-def parse_args() -> argparse.Namespace:
-    """CLI 인자를 파싱한다."""
-    parser = argparse.ArgumentParser(description="Clova Speech STT client.")
-    parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
-    parser.add_argument("--output-path", help="Override default stt.json output path.")
-    parser.add_argument(
-        "--confidence",
-        dest="include_confidence",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Include average confidence field.",
-    )
-    parser.add_argument(
-        "--include-raw-response",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Attach raw provider response.",
-    )
-    parser.add_argument(
-        "--word-alignment",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Request word-level timestamps.",
-    )
-    parser.add_argument(
-        "--full-text",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Request fullText output if supported.",
-    )
-    parser.add_argument(
-        "--completion",
-        default="sync",
-        help="sync or async (async not polled here).",
-    )
-    parser.add_argument(
-        "--language",
-        default="ko-KR",
-        help="Language code (e.g., ko-KR, en-US, enko).",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=60,
-        help="Request timeout in seconds.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """CLI 진입점."""
-    args = parse_args()
-    client = ClovaSpeechClient()
-    client.transcribe(
-        args.media_path,
-        output_path=args.output_path,
-        include_confidence=args.include_confidence,
-        include_raw_response=args.include_raw_response,
-        word_alignment=args.word_alignment,
-        full_text=args.full_text,
-        completion=args.completion,
-        language=args.language,
-        timeout=args.timeout,
-    )
-
-    if args.output_path:
-        out_path = Path(args.output_path)
-    else:
-        media_path = Path(args.media_path).expanduser()
-        out_path = Path("src/data/output") / media_path.stem / "stt.json"
-    print(f"[OK] stt.json saved to {out_path.resolve()}")
-
-
-if __name__ == "__main__":
-    main()

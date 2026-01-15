@@ -271,7 +271,7 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
             # 첫 배치에서 fusion config 생성
             if not store.fusion_config_yaml().exists():
                 from .internal.fusion_config import generate_fusion_config
-                fusion_template = _PROJECT_ROOT / "src" / "fusion" / "config.yaml"
+                fusion_template = _PROJECT_ROOT / "config" / "fusion" / "config.yaml"
                 generate_fusion_config(
                     template_config=fusion_template,
                     output_config=store.fusion_config_yaml(),
@@ -350,7 +350,7 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
     try:
         # Fusion config 생성
         from .internal.fusion_config import generate_fusion_config
-        fusion_template = _PROJECT_ROOT / "src" / "fusion" / "config.yaml"
+        fusion_template = _PROJECT_ROOT / "config" / "fusion" / "config.yaml"
         generate_fusion_config(
             template_config=fusion_template,
             output_config=store.fusion_config_yaml(),
@@ -373,4 +373,3 @@ def run_sync(tool_context: ToolContext) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"Sync 실행 실패: {e}"}
-

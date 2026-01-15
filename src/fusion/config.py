@@ -41,6 +41,7 @@ class SummarizerConfig(BaseModel):
     claim_max_chars: int = Field(..., ge=0)
     temperature: float = Field(..., ge=0.0, le=1.0)
     json_repair_attempts: int = Field(..., ge=0)
+    prompt_version: Optional[str] = None
 
 
 class DeveloperApiConfig(BaseModel):

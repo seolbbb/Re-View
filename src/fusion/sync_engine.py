@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ConfigBundle
-from .io_utils import compute_run_id, ensure_output_root, read_json, write_json, print_jsonl_head
+from .io_utils import compute_run_id, ensure_output_root, read_json, write_json
 
 
 @dataclass(frozen=True)
@@ -412,8 +412,6 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
 
     write_json(output_dir / "sync.json", {"segments": sync_segments})
     write_json(output_dir / "trace_map.json", {"run_id": run_id, "segments": trace_map_segments})
-
-    print_jsonl_head(output_dir / "segments.jsonl", max_lines=2)
 
 
 def run_batch_sync_engine(

@@ -14,7 +14,7 @@ from pathlib import Path
 
 DEFAULT_INPUT_DIR = Path("data/inputs")
 DEFAULT_OUTPUT_BASE = Path("data/outputs")
-DEFAULT_FUSION_TEMPLATE_CONFIG = Path("src/fusion/config.yaml")
+DEFAULT_FUSION_TEMPLATE_CONFIG = Path("config/fusion/config.yaml")
 
 
 def sanitize_video_name(stem: str) -> str:

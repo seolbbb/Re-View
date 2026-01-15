@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 from pathlib import Path
 
@@ -142,51 +141,3 @@ def _measure_mean_volume(
                 return None
     return None
 
-
-def parse_args() -> argparse.Namespace:
-    """CLI 인자를 파싱한다."""
-    parser = argparse.ArgumentParser(description="Extract audio from a media file.")
-    parser.add_argument("--media-path", required=True, help="Path to local media file (video/audio).")
-    parser.add_argument("--output-path", help="Output audio file path.")
-    parser.add_argument(
-        "--sample-rate",
-        type=int,
-        default=16000,
-        help="Sample rate (Hz).",
-    )
-    parser.add_argument(
-        "--channels",
-        type=int,
-        default=1,
-        help="Audio channels.",
-    )
-    parser.add_argument(
-        "--codec",
-        default="pcm_s16le",
-        help="Audio codec (ffmpeg).",
-    )
-    parser.add_argument(
-        "--mono-method",
-        default="auto",
-        choices=("downmix", "left", "right", "phase-fix", "auto"),
-        help="Mono creation method (downmix or channel select/phase-fix/auto).",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """CLI 진입점."""
-    args = parse_args()
-    output_path = extract_audio(
-        args.media_path,
-        args.output_path,
-        sample_rate=args.sample_rate,
-        channels=args.channels,
-        codec=args.codec,
-        mono_method=args.mono_method,
-    )
-    print(f"[OK] Audio saved to {output_path.resolve()}")
-
-
-if __name__ == "__main__":
-    main()

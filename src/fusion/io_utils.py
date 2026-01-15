@@ -51,18 +51,6 @@ def ensure_output_root(output_root: Path) -> None:
     test_path.unlink(missing_ok=True)
 
 
-def print_jsonl_head(path: Path, max_lines: int = 2) -> None:
-    lines = []
-    with path.open("r", encoding="utf-8") as handle:
-        for _ in range(max_lines):
-            line = handle.readline()
-            if not line:
-                break
-            lines.append(line.rstrip("\n"))
-    if lines:
-        print("\n".join(lines))
-
-
 def format_ms(ms: int) -> str:
     minutes = max(ms, 0) // 60000
     seconds = (max(ms, 0) // 1000) % 60

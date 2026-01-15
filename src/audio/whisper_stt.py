@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 from pathlib import Path
@@ -94,66 +93,3 @@ class WhisperSTTClient:
 
         return stt_data
 
-
-def parse_args() -> argparse.Namespace:
-    """CLI 인자를 파싱한다."""
-    parser = argparse.ArgumentParser(description="Whisper STT (audio input).")
-    parser.add_argument("--audio-path", required=True, help="Path to local audio file.")
-    parser.add_argument("--output-path", help="Output stt.json path.")
-    parser.add_argument(
-        "--model-size",
-        default="base",
-        help="Whisper model size (e.g., tiny/base/small).",
-    )
-    parser.add_argument("--device", help="Override device (cuda/cpu).")
-    parser.add_argument(
-        "--language",
-        default="ko",
-        help="Language code (e.g., ko, en).",
-    )
-    parser.add_argument(
-        "--task",
-        default="transcribe",
-        choices=("transcribe", "translate"),
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-    )
-    parser.add_argument(
-        "--include-confidence",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Add confidence per segment.",
-    )
-    parser.add_argument(
-        "--include-raw-response",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Attach raw provider response.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """CLI 진입점."""
-    args = parse_args()
-    client = WhisperSTTClient(model_size=args.model_size, device=args.device)
-    client.transcribe(
-        args.audio_path,
-        output_path=args.output_path,
-        include_confidence=args.include_confidence,
-        include_raw_response=args.include_raw_response,
-        language=args.language,
-        task=args.task,
-        temperature=args.temperature,
-    )
-    out_path = Path(args.output_path) if args.output_path else Path("src/data/output") / Path(
-        args.audio_path
-    ).stem / "stt.json"
-    print(f"[OK] stt.json saved to {out_path.resolve()}")
-
-
-if __name__ == "__main__":
-    main()

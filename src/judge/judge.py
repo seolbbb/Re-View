@@ -1,6 +1,6 @@
 # Usage:
-# python src/judge/judge.py --config src/fusion/config.yaml
-# python src/judge/judge.py --config src/fusion/config.yaml --limit 2 --write-outputs
+# python src/judge/judge.py --config config/fusion/config.yaml
+# python src/judge/judge.py --config config/fusion/config.yaml --limit 2 --write-outputs
 #
 # Inputs:
 # - segments_units.jsonl (default: {output_root}/fusion/segments_units.jsonl)
@@ -682,7 +682,7 @@ def _load_config(config_path: str) -> ConfigBundle:
 def main() -> None:
     """CLI entrypoint for the LLM judge."""
     parser = argparse.ArgumentParser(description="LLM judge for segment summaries")
-    parser.add_argument("--config", default="src/fusion/config.yaml", help="fusion config YAML path")
+    parser.add_argument("--config", default="config/fusion/config.yaml", help="fusion config YAML path")
     parser.add_argument("--segments-units", default=None, help="segments_units.jsonl path")
     parser.add_argument("--segment-summaries", default=None, help="segment_summaries.jsonl path")
     parser.add_argument("--output-report", default=None, help="output report path")
