@@ -13,7 +13,7 @@ import yaml
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
-from src.fusion.io_utils import ensure_output_root
+from src.fusion.io_utils import ensure_output_root, write_json
 from src.fusion.renderer import compose_final_summaries, render_segment_summaries_md
 from src.fusion.summarizer import run_summarizer
 from src.fusion.sync_engine import run_sync_engine
@@ -145,6 +145,117 @@ def run_vlm_openrouter(
     return len(image_paths)
 
 
+def _filter_manifest_by_time_range(
+    manifest_payload: List[Dict[str, Any]],
+    start_ms: int,
+    end_ms: int,
+) -> List[Dict[str, Any]]:
+    """manifest에서 특정 시간 범위의 항목만 필터링한다."""
+    filtered = []
+    for item in manifest_payload:
+        timestamp_ms = item.get("timestamp_ms", item.get("start_ms", 0))
+        if timestamp_ms is None:
+            continue
+        timestamp_ms = int(timestamp_ms)
+        if start_ms <= timestamp_ms < end_ms:
+            filtered.append(item)
+    return filtered
+
+
+def run_vlm_for_batch(
+    *,
+    captures_dir: Path,
+    manifest_json: Path,
+    video_name: str,
+    output_dir: Path,
+    start_idx: Optional[int] = None,
+    end_idx: Optional[int] = None,
+    batch_manifest: Optional[List[Dict[str, Any]]] = None,
+    batch_size: Optional[int] = None,
+    concurrency: int = 1,
+    show_progress: bool = False,
+    start_ms: Optional[int] = None,
+    end_ms: Optional[int] = None,
+) -> Dict[str, Any]:
+    """배치 범위만 VLM 처리해 batch 단위의 vlm.json을 생성한다."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_dir)
+    if batch_size is not None and batch_size < 1:
+        raise ValueError("batch_size는 1 이상이어야 합니다.")
+
+    manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+    if not isinstance(manifest_payload, list):
+        raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
+
+    if batch_manifest is not None:
+        filtered_manifest_items = batch_manifest
+    elif start_idx is not None and end_idx is not None:
+        sorted_manifest = sorted(
+            (x for x in manifest_payload if isinstance(x, dict)),
+            key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+        )
+        filtered_manifest_items = sorted_manifest[start_idx:end_idx]
+    elif start_ms is not None and end_ms is not None:
+        filtered_manifest_items = _filter_manifest_by_time_range(
+            manifest_payload,
+            start_ms,
+            end_ms,
+        )
+    else:
+        raise ValueError("batch_manifest, start_idx/end_idx, 또는 start_ms/end_ms 중 하나가 필요합니다.")
+
+    image_paths: List[str] = []
+    for item in sorted(
+        (x for x in filtered_manifest_items if isinstance(x, dict)),
+        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+    ):
+        file_name = str(item.get("file_name", "")).strip()
+        if not file_name:
+            continue
+        image_paths.append(str(captures_dir / file_name))
+
+    if not image_paths:
+        empty_vlm = {"schema_version": 1, "items": [], "duration_ms": 0}
+        vlm_json_path = output_dir / "vlm.json"
+        vlm_json_path.write_text(json.dumps(empty_vlm, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "vlm_raw_json": "",
+            "vlm_json": str(vlm_json_path),
+            "image_count": 0,
+        }
+
+    results = extractor.extract_features(
+        image_paths,
+        batch_size=batch_size,
+        show_progress=show_progress,
+        concurrency=concurrency,
+    )
+
+    raw_path = output_dir / "vlm_raw.json"
+    write_vlm_raw_json(results, raw_path)
+
+    temp_manifest_path = output_dir / "manifest_temp.json"
+    temp_manifest_path.write_text(
+        json.dumps(filtered_manifest_items, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    vlm_json_path = output_dir / "vlm.json"
+    convert_vlm_raw_to_fusion_vlm(
+        manifest_json=temp_manifest_path,
+        vlm_raw_json=raw_path,
+        output_vlm_json=vlm_json_path,
+    )
+    temp_manifest_path.unlink(missing_ok=True)
+
+    return {
+        "vlm_raw_json": str(raw_path),
+        "vlm_json": str(vlm_json_path),
+        "image_count": len(image_paths),
+    }
+
+
 def run_fusion_pipeline(
     config_path: Path,
     *,
@@ -214,7 +325,7 @@ def run_fusion_pipeline(
 
         judge_output_dir = output_dir / "judge"
         judge_output_dir.mkdir(parents=True, exist_ok=True)
-        _, judge_elapsed = timer.time_stage(
+        judge_result, judge_elapsed = timer.time_stage(
             "fusion.judge",
             run_judge,
             config=config,
@@ -230,6 +341,37 @@ def run_fusion_pipeline(
             verbose=True,
         )
         fusion_info["timings"]["judge_sec"] = judge_elapsed
+
+        report = judge_result.get("report", {})
+        segment_reports = judge_result.get("segment_reports", []) or []
+        final_score = float(report.get("scores", {}).get("final", 0.0))
+        min_score = float(config.raw.judge.min_score)
+        passed = final_score >= min_score
+        feedback = [
+            {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+            for item in segment_reports
+            if item.get("segment_id") is not None
+        ]
+        payload: Dict[str, Any] = {
+            "schema_version": 2,
+            "model": str(report.get("meta", {}).get("model", "")),
+            "pass": passed,
+            "final_score": final_score,
+            "min_score": min_score,
+            "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
+            "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
+            "feedback": feedback,
+        }
+        if config.raw.judge.include_segments:
+            payload["segments"] = [
+                {
+                    "segment_id": int(item.get("segment_id")),
+                    "scores": item.get("scores", {}),
+                }
+                for item in segment_reports
+                if item.get("segment_id") is not None
+            ]
+        write_json(output_dir / "judge.json", payload)
 
     segments_file = output_dir / "segment_summaries.jsonl"
     if segments_file.exists():
@@ -257,7 +399,6 @@ def run_batch_fusion_pipeline(
     """배치 단위로 동기화와 요약을 반복 실행한다."""
     from src.fusion.summarizer import run_batch_summarizer
     from src.fusion.sync_engine import run_batch_sync_engine
-    from src.adk_pipeline.tools.internal.vlm_openrouter import run_vlm_for_batch
 
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     sorted_manifest = sorted(
@@ -269,7 +410,8 @@ def run_batch_fusion_pipeline(
     total_batches = max(1, math.ceil(total_captures / batch_size))
 
     print(
-        f"\n📦 배치 모드: {total_captures}장을 {total_batches}개 배치로 처리 (배치당 {batch_size}장)"
+        f"\n📦 Pipeline batches: {total_captures} images across {total_batches} groups "
+        f"(group size: {batch_size})"
     )
 
     batch_ranges = []
@@ -318,13 +460,12 @@ def run_batch_fusion_pipeline(
 
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
-            print("\n⏳ API rate limiting 방지를 위해 5초 대기...")
+            print("\n⏳ Waiting 5s to avoid API rate limiting...")
             time.sleep(5)
 
-        print(f"\n{'='*50}")
-        print(f"🔄 배치 {batch_idx + 1}/{total_batches} 처리 중...")
-        print(f"   캡처 범위: {batch_info['start_idx']} ~ {batch_info['end_idx'] - 1}")
-        print(f"{'='*50}")
+        print(f"\n{'-'*50}")
+        print(f"🔄 Pipeline batch {batch_idx + 1}/{total_batches} in progress...")
+        print(f"   Capture range: {batch_info['start_idx']} ~ {batch_info['end_idx'] - 1}")
 
         batch_dir = batches_dir / f"batch_{batch_idx}"
         batch_dir.mkdir(parents=True, exist_ok=True)
@@ -332,7 +473,7 @@ def run_batch_fusion_pipeline(
         batch_manifest = sorted_manifest[batch_info["start_idx"] : batch_info["end_idx"]]
 
         timer.time_stage(
-            f"batch_{batch_idx}.vlm",
+            f"pipeline_batch_{batch_idx + 1}.vlm",
             run_vlm_for_batch,
             captures_dir=captures_dir,
             manifest_json=manifest_json,
@@ -356,7 +497,7 @@ def run_batch_fusion_pipeline(
             )
 
         sync_result, _ = timer.time_stage(
-            f"batch_{batch_idx}.sync",
+            f"pipeline_batch_{batch_idx + 1}.sync",
             run_batch_sync_engine,
             stt_json=stt_json,
             vlm_json=batch_dir / "vlm.json",
@@ -384,7 +525,7 @@ def run_batch_fusion_pipeline(
         if not dry_run:
             config = load_config(str(fusion_config_path))
             summarize_result, _ = timer.time_stage(
-                f"batch_{batch_idx}.summarize",
+                f"pipeline_batch_{batch_idx + 1}.summarize",
                 run_batch_summarizer,
                 segments_units_jsonl=batch_segments_path,
                 output_dir=batch_dir,
@@ -403,16 +544,16 @@ def run_batch_fusion_pipeline(
                 with accumulated_summaries_path.open("a", encoding="utf-8") as handle:
                     handle.write(batch_content)
 
-            batch_judge_path = batch_dir / "judge.json"
-            config = load_config(str(fusion_config_path))
-            timer.time_stage(
-                f"batch_{batch_idx}.judge",
+            batch_judge_dir = batch_dir / "judge"
+            batch_judge_dir.mkdir(parents=True, exist_ok=True)
+            judge_result, _ = timer.time_stage(
+                f"pipeline_batch_{batch_idx + 1}.judge",
                 run_judge,
                 config=config,
                 segments_units_path=batch_segments_path,
                 segment_summaries_path=batch_summaries_path,
-                output_report_path=batch_judge_path,
-                output_segments_path=batch_dir / "judge_segments.jsonl",
+                output_report_path=batch_judge_dir / "judge_report.json",
+                output_segments_path=batch_judge_dir / "judge_segment_reports.jsonl",
                 batch_size=3,
                 workers=1,
                 json_repair_attempts=1,
@@ -421,13 +562,41 @@ def run_batch_fusion_pipeline(
                 write_outputs=True,
             )
 
-            if batch_judge_path.exists():
-                judge_result = json.loads(batch_judge_path.read_text(encoding="utf-8"))
-                passed = judge_result.get("pass", True)
-                score = judge_result.get("final_score", 0)
-                print(
-                    f"  📊 배치 {batch_idx} Judge: {'PASS' if passed else 'FAIL'} (score: {score:.1f})"
-                )
+            report = judge_result.get("report", {})
+            segment_reports = judge_result.get("segment_reports", []) or []
+            final_score = float(report.get("scores", {}).get("final", 0.0))
+            min_score = float(config.raw.judge.min_score)
+            passed = final_score >= min_score
+            feedback = [
+                {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+                for item in segment_reports
+                if item.get("segment_id") is not None
+            ]
+            payload = {
+                "schema_version": 2,
+                "model": str(report.get("meta", {}).get("model", "")),
+                "pass": passed,
+                "final_score": final_score,
+                "min_score": min_score,
+                "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
+                "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
+                "feedback": feedback,
+            }
+            if config.raw.judge.include_segments:
+                payload["segments"] = [
+                    {
+                        "segment_id": int(item.get("segment_id")),
+                        "scores": item.get("scores", {}),
+                    }
+                    for item in segment_reports
+                    if item.get("segment_id") is not None
+                ]
+            batch_judge_path = batch_dir / "judge.json"
+            write_json(batch_judge_path, payload)
+            print(
+                f"  📊 Pipeline batch {batch_idx + 1} Judge: {'PASS' if passed else 'FAIL'} "
+                f"(score: {final_score:.1f})"
+            )
 
         fusion_info["batch_results"].append(
             {
@@ -437,7 +606,10 @@ def run_batch_fusion_pipeline(
             }
         )
 
-        print(f"  ✅ 배치 {batch_idx + 1} 완료! (세그먼트: {new_segment_count}개)")
+        print(
+            f"  ✅ Pipeline batch {batch_idx + 1} complete "
+            f"(segments: {new_segment_count})"
+        )
 
     fusion_info["segment_count"] = cumulative_segment_count
 

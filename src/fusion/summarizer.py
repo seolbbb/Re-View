@@ -325,14 +325,14 @@ def _generate_content(
             )
 
     # 강제 타임아웃 적용 (SDK timeout이 안 먹힐 경우 대비)
-    print(f"[DEBUG] Gemini API 호출 시작 (timeout={timeout_sec}s)...")
+    print(f"[DEBUG] Gemini API request started (timeout={timeout_sec}s)...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_call_api)
         try:
             response = future.result(timeout=timeout_sec + 10)  # 여유 10초 추가
-            print(f"[DEBUG] Gemini API 호출 완료")
+            print(f"[DEBUG] Gemini API request completed")
         except concurrent.futures.TimeoutError:
-            print(f"[DEBUG] Gemini API 타임아웃!")
+            print(f"[DEBUG] Gemini API request timed out!")
             raise TimeoutError(f"Gemini API 호출이 {timeout_sec + 10}초 후 타임아웃되었습니다.")
 
     return _extract_text_from_response(response)
@@ -638,7 +638,7 @@ def run_summarizer(
     )
 
     if dry_run:
-        print(f"[DRY RUN] segments={len(segments)} (LLM 미호출, 출력 미생성)")
+        print(f"[DRY RUN] segments={len(segments)} (LLM not called, outputs not generated)")
         return
 
     response_schema = _build_response_schema()

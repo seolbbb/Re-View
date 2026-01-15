@@ -16,24 +16,24 @@ env_path = ROOT / ".env"
 if env_path.exists():
     load_dotenv(env_path)
 else:
-    print("[WARN] .env 파일이 없습니다. 환경변수를 직접 설정하세요.")
+    print("[WARN] .env not found. Set environment variables manually.")
 
 
 def test_connection():
     """Supabase 연결 테스트."""
     print("=" * 60)
-    print("1. Supabase 연결 테스트")
+    print("1. Supabase connection test")
     print("=" * 60)
     
     from src.db.supabase_adapter import get_supabase_adapter
     
     db = get_supabase_adapter()
     if db is None:
-        print("[FAIL] Supabase 연결 실패!")
-        print("  - SUPABASE_URL과 SUPABASE_KEY 환경변수를 확인하세요.")
+        print("[FAIL] Supabase connection failed!")
+        print("  - Check SUPABASE_URL and SUPABASE_KEY environment variables.")
         return None
     
-    print(f"[OK] Supabase 연결 성공!")
+    print("[OK] Supabase connection successful!")
     print(f"  - URL: {db.url[:50]}...")
     return db
 
@@ -41,7 +41,7 @@ def test_connection():
 def test_video_insert(db):
     """비디오 테이블 삽입 테스트."""
     print("\n" + "=" * 60)
-    print("2. videos 테이블 삽입 테스트")
+    print("2. videos table insert test")
     print("=" * 60)
     
     try:
@@ -50,20 +50,20 @@ def test_video_insert(db):
             original_filename="test.mp4",
             storage_path="/local/path/test.mp4",
         )
-        print(f"[OK] 비디오 생성 성공!")
+        print("[OK] Video created successfully!")
         print(f"  - ID: {video['id']}")
         print(f"  - Name: {video['name']}")
         print(f"  - Status: {video['status']}")
         return video["id"]
     except Exception as e:
-        print(f"[FAIL] 비디오 생성 실패: {e}")
+        print(f"[FAIL] Video creation failed: {e}")
         return None
 
 
 def test_stt_insert(db, video_id):
     """STT 테이블 삽입 테스트."""
     print("\n" + "=" * 60)
-    print("3. stt_results 테이블 삽입 테스트")
+    print("3. stt_results table insert test")
     print("=" * 60)
     
     try:
@@ -72,18 +72,18 @@ def test_stt_insert(db, video_id):
             {"start_ms": 5000, "end_ms": 10000, "text": "테스트 문장 2", "confidence": 0.92},
         ]
         result = db.save_stt_result(video_id, test_segments, provider="test")
-        print(f"[OK] STT 결과 저장 성공!")
+        print("[OK] STT results saved successfully!")
         print(f"  - ID: {result.get('id')}")
         return True
     except Exception as e:
-        print(f"[FAIL] STT 결과 저장 실패: {e}")
+        print(f"[FAIL] STT results save failed: {e}")
         return False
 
 
 def test_captures_insert(db, video_id):
     """Captures 테이블 삽입 테스트."""
     print("\n" + "=" * 60)
-    print("4. captures 테이블 삽입 테스트")
+    print("4. captures table insert test")
     print("=" * 60)
     
     try:
@@ -92,18 +92,18 @@ def test_captures_insert(db, video_id):
             {"file_name": "frame_002.jpg", "timestamp_ms": 2000, "timestamp_human": "00h00m02s"},
         ]
         results = db.save_captures(video_id, test_captures)
-        print(f"[OK] 캡처 저장 성공!")
-        print(f"  - 저장된 개수: {len(results)}")
+        print("[OK] Captures saved successfully!")
+        print(f"  - Saved count: {len(results)}")
         return True
     except Exception as e:
-        print(f"[FAIL] 캡처 저장 실패: {e}")
+        print(f"[FAIL] Captures save failed: {e}")
         return False
 
 
 def test_segments_insert(db, video_id):
     """Segments 테이블 삽입 테스트."""
     print("\n" + "=" * 60)
-    print("5. segments 테이블 삽입 테스트")
+    print("5. segments table insert test")
     print("=" * 60)
     
     try:
@@ -117,8 +117,8 @@ def test_segments_insert(db, video_id):
             }
         ]
         results = db.save_segments(video_id, test_segments)
-        print(f"[OK] 세그먼트 저장 성공!")
-        print(f"  - 저장된 개수: {len(results)}")
+        print("[OK] Segments saved successfully!")
+        print(f"  - Saved count: {len(results)}")
         
         # UUID 매핑 생성해서 반환
         segment_map = {}
@@ -129,14 +129,14 @@ def test_segments_insert(db, video_id):
                 segment_map[idx] = uid
         return segment_map
     except Exception as e:
-        print(f"[FAIL] 세그먼트 저장 실패: {e}")
+        print(f"[FAIL] Segments save failed: {e}")
         return False
 
 
 def test_summaries_insert(db, video_id, segment_map):
     """Summaries 테이블 삽입 테스트."""
     print("\n" + "=" * 60)
-    print("6. summaries 테이블 삽입 테스트")
+    print("6. summaries table insert test")
     print("=" * 60)
     
     try:
@@ -153,44 +153,44 @@ def test_summaries_insert(db, video_id, segment_map):
             }
         ]
         results = db.save_summaries(video_id, test_summaries, segment_map)
-        print(f"[OK] 요약 저장 성공!")
-        print(f"  - 저장된 개수: {len(results)}")
+        print("[OK] Summaries saved successfully!")
+        print(f"  - Saved count: {len(results)}")
         return True
     except Exception as e:
-        print(f"[FAIL] 요약 저장 실패: {e}")
+        print(f"[FAIL] Summaries save failed: {e}")
         return False
 
 
 def cleanup_test_data(db, video_id):
     """테스트 데이터 정리."""
     print("\n" + "=" * 60)
-    print("7. 테스트 데이터 정리")
+    print("7. Test data cleanup")
     print("=" * 60)
     
     try:
         # CASCADE 설정으로 videos 삭제 시 연관 데이터도 삭제됨
         db.client.table("videos").delete().eq("id", video_id).execute()
-        print(f"[OK] 테스트 데이터 삭제 완료 (video_id: {video_id})")
+        print(f"[OK] Test data deleted (video_id: {video_id})")
         return True
     except Exception as e:
-        print(f"[WARN] 테스트 데이터 삭제 실패: {e}")
+        print(f"[WARN] Test data deletion failed: {e}")
         return False
 
 
 def main():
-    print("\n[START] Supabase 통합 테스트 시작\n")
+    print("\n[START] Supabase integration test\n")
     
     # 1. 연결 테스트
     db = test_connection()
     if not db:
         return
     
-    # 2. 비디오 삽입
+    # 2. Video insert
     video_id = test_video_insert(db)
     if not video_id:
         return
     
-    # 3. 하위 테이블 테스트
+    # 3. Child table tests
     test_stt_insert(db, video_id)
     test_captures_insert(db, video_id)
     segment_map = test_segments_insert(db, video_id)
@@ -199,15 +199,15 @@ def main():
         
     test_summaries_insert(db, video_id, segment_map)
     
-    # 4. 정리 여부 확인
+    # 4. Cleanup prompt
     print("\n" + "=" * 60)
-    cleanup = input("테스트 데이터를 삭제할까요? (y/n): ").strip().lower()
+    cleanup = input("Delete test data? (y/n): ").strip().lower()
     if cleanup == "y":
         cleanup_test_data(db, video_id)
     else:
-        print(f"[INFO] 테스트 데이터 유지됨 (video_id: {video_id})")
+        print(f"[INFO] Test data kept (video_id: {video_id})")
     
-    print("\n[DONE] 테스트 완료!")
+    print("\n[DONE] Test complete!")
 
 
 if __name__ == "__main__":

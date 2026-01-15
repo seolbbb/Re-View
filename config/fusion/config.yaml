@@ -16,6 +16,10 @@ summarizer:
   json_repair_attempts: 2
   prompt_version: "sum_v1.6"
 
+judge:
+  min_score: 7.0
+  include_segments: false
+
 llm_gemini:
   backend: "developer_api"
   model: "gemini-3-flash-preview"

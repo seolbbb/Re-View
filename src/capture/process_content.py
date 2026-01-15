@@ -1,6 +1,5 @@
 """
-캡처 단계에서 비디오 1건을 처리해 슬라이드 캡처와 manifest.json을 만든다.
-
+캡쳐 단계에서 비디오 1건을 처리해 슬라이드 캡쳐와 manifest.json을 만든다.
 run_video_pipeline에서 호출되며 설정은 config/capture/settings.yaml에서 로드한다.
 """
 
@@ -21,9 +20,9 @@ def process_single_video_capture(
     min_interval: Optional[float] = None,
 ) -> list:
     """
-    run_video_pipeline.py에서 호출되는 캡처 인터페이스.
+    run_video_pipeline.py에서 호출되는 캡쳐 인터페이스.
 
-    V2 최적화 로직으로 슬라이드를 추출한다.
+    지연 저장 로직으로 슬라이드를 추출한다.
 
     video_path: 처리할 비디오 파일 경로.
     output_base: 출력 기본 디렉터리.
@@ -41,7 +40,7 @@ def process_single_video_capture(
     captures_dir = output_root / "captures"
     captures_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n[Capture V2] Processing: {video_name}")
+    print(f"\n[Capture] Processing: {video_name}")
 
     extractor = HybridSlideExtractor(
         video_path,
@@ -62,5 +61,5 @@ def process_single_video_capture(
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(slides, handle, ensure_ascii=False, indent=2)
 
-    print(f"[Capture V2] Completed: {len(slides)} slides in {elapsed:.2f}s")
+    print(f"[Capture] Completed: {len(slides)} slides in {elapsed:.2f}s")
     return slides

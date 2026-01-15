@@ -53,7 +53,7 @@ class ClovaSpeechClient:
         api_url: str | None = None,
         api_key: str | None = None,
     ) -> None:
-        """API URL/키를 준비하고 .env를 우선 로드한다."""
+        """API URL/KEY를 준비하고 .env를 우선 로드한다."""
         if ENV_PATH.exists():
             load_dotenv(ENV_PATH)
         else:

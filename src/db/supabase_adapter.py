@@ -148,5 +148,5 @@ def get_supabase_adapter() -> Optional[SupabaseAdapter]:
     try:
         return SupabaseAdapter(url, key)
     except ImportError:
-        print("[WARN] supabase 패키지가 설치되지 않아 DB 기능이 비활성화됩니다.")
+        print("[WARN] supabase package not installed; DB features are disabled.")
         return None

@@ -1,40 +1,12 @@
-# Usage:
-# python src/judge/judge.py --config config/fusion/config.yaml
-# python src/judge/judge.py --config config/fusion/config.yaml --limit 2 --write-outputs
-#
-# Inputs:
-# - segments_units.jsonl (default: {output_root}/fusion/segments_units.jsonl)
-# - segment_summaries.jsonl (default: {output_root}/fusion/segment_summaries.jsonl)
-#
-# Outputs (when --write-outputs):
-# - judge_report.json (default: {output_root}/fusion/judge/judge_report.json)
-# - judge_segment_reports.jsonl (default: {output_root}/fusion/judge/judge_segment_reports.jsonl)
-#
-# Options:
-# --segments-units PATH
-# --segment-summaries PATH
-# --output-report PATH
-# --output-segments PATH
-# --batch-size N
-# --workers N
-# --write-outputs
-# --verbose
-# --limit N
-# --json-repair-attempts N
-#
-"""LLM judge for segment summaries.
+"""세그먼트 요약을 LLM으로 평가하는 Judge 모듈.
 
-This module forwards raw segment JSON and summary JSON to an LLM and collects
-scores. Rule-based logic is intentionally minimal; the LLM decides using
-evidence from the provided inputs.
+파이프라인에서 호출되며 입력/출력 경로는 호출자가 전달한다.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,14 +18,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from src.fusion.config import ConfigBundle
 from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_token_usage
 
 
-PROMPT_VERSION = "judge_v4"
 PROMPTS_PATH = ROOT / "config" / "judge" / "prompts.yaml"
 PROMPT_PAYLOAD_TOKEN = "{{SEGMENTS_JSON}}"
 JUDGE_TEMPERATURE = 0.2
@@ -63,20 +32,15 @@ _THREAD_LOCAL = threading.local()
 
 @dataclass(frozen=True)
 class GeminiClientBundle:
-    """Holds the Gemini client and selected model metadata."""
+    """Gemini 클라이언트와 모델 메타데이터 묶음."""
 
     client: Any
     backend: str
     model: str
 
 
-def _utc_now_iso() -> str:
-    """Return the current UTC time in ISO 8601 format."""
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _load_genai() -> Any:
-    """Import google genai client with a clear error message."""
+    """google genai 모듈을 로드하고 오류를 명확히 알린다."""
     try:
         from google import genai  # type: ignore
     except ImportError as exc:
@@ -85,7 +49,7 @@ def _load_genai() -> Any:
 
 
 def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
-    """Initialize a Gemini client from the fusion config."""
+    """fusion config 기준으로 Gemini 클라이언트를 생성한다."""
     genai = _load_genai()
     llm_cfg = config.raw.llm_gemini
     if llm_cfg.backend == "developer_api":
@@ -117,6 +81,7 @@ def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
 
 
 def _get_thread_client_bundle(config: ConfigBundle) -> GeminiClientBundle:
+    """thread 로컬에 Gemini 클라이언트를 캐시한다."""
     bundle = getattr(_THREAD_LOCAL, "client_bundle", None)
     if bundle is None:
         bundle = _init_gemini_client(config)
@@ -125,7 +90,7 @@ def _get_thread_client_bundle(config: ConfigBundle) -> GeminiClientBundle:
 
 
 def _extract_text_from_response(response: Any) -> str:
-    """Extract the text payload from a Gemini response."""
+    """Gemini 응답에서 텍스트를 추출한다."""
     text = getattr(response, "text", None)
     if text:
         return text
@@ -151,7 +116,7 @@ def _generate_content(
     response_mime_type: str,
     timeout_sec: int,
 ) -> str:
-    """Call Gemini with a response schema and return the text response."""
+    """Gemini 호출 결과의 텍스트를 반환한다."""
     client = client_bundle.client
     config = {
         "temperature": temperature,
@@ -184,7 +149,7 @@ def _run_with_retries(
     max_retries: int,
     backoff_sec: List[int],
 ) -> str:
-    """Retry Gemini calls with backoff if an error occurs."""
+    """오류 시 Gemini 호출을 재시도한다."""
     attempt = 0
     while True:
         try:
@@ -205,7 +170,7 @@ def _run_with_retries(
 
 
 def _strip_code_fences(text: str) -> str:
-    """Strip ``` fences if present in LLM output."""
+    """LLM 출력의 코드 블록 펜스를 제거한다."""
     stripped = text.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
@@ -218,13 +183,13 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _parse_json_response(text: str) -> Any:
-    """Parse the LLM output as JSON."""
+    """LLM 출력을 JSON으로 파싱한다."""
     cleaned = _strip_code_fences(text)
     return json.loads(cleaned)
 
 
 def _repair_prompt(bad_json: str) -> str:
-    """Return a prompt asking the LLM to fix invalid JSON."""
+    """잘못된 JSON을 수정하도록 요청하는 프롬프트를 만든다."""
     return (
         "You returned invalid JSON. Return a valid JSON array only, "
         "matching the required schema. No markdown or extra text.\n\n"
@@ -233,27 +198,33 @@ def _repair_prompt(bad_json: str) -> str:
 
 
 def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
-    """Split a list into fixed-size chunks."""
+    """리스트를 고정 크기의 배치로 분할한다."""
     if size <= 0:
         return [items]
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def _load_prompt_template(prompt_version: str) -> str:
-    """Load the judge prompt template from config/judge/prompts.yaml."""
+def _load_prompt_template(prompt_version: Optional[str]) -> Tuple[str, str]:
+    """config/judge/prompts.yaml에서 프롬프트 템플릿을 로드한다."""
     if not PROMPTS_PATH.exists():
         raise FileNotFoundError(f"Judge prompt config not found: {PROMPTS_PATH}")
     payload = yaml.safe_load(PROMPTS_PATH.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not payload:
         raise ValueError("Judge prompt config must be a mapping.")
-    entry = payload.get(prompt_version)
+    selected_version = prompt_version or next(iter(payload.keys()))
+    entry = payload.get(selected_version)
+    if entry is None:
+        available = ", ".join(payload.keys())
+        raise ValueError(
+            f"Judge prompt template is missing: {selected_version} (available: {available})"
+        )
     if isinstance(entry, dict):
         template = entry.get("template")
     else:
         template = entry
     if not isinstance(template, str) or not template.strip():
-        raise ValueError(f"Judge prompt template is missing: {prompt_version}")
-    return template.strip()
+        raise ValueError(f"Judge prompt template is empty: {selected_version}")
+    return selected_version, template.strip()
 
 
 def _evaluate_batch(
@@ -267,6 +238,7 @@ def _evaluate_batch(
     json_repair_attempts: int,
     verbose: bool,
 ) -> Dict[int, Dict[str, Any]]:
+    """배치 단위로 LLM 평가를 실행하고 결과를 반환한다."""
     seg_ids = [int(item.get("segment_id", -1)) for item in batch]
     if verbose:
         print(f"[JUDGE] batch {batch_index}/{batch_total} start (segments={seg_ids})")
@@ -318,7 +290,7 @@ def _evaluate_batch(
 
 
 def _load_segments_units(path: Path) -> Dict[int, Dict[str, Any]]:
-    """Load segments_units.jsonl into a dict keyed by segment_id."""
+    """segments_units.jsonl을 segment_id 기준 dict로 로드한다."""
     segments: Dict[int, Dict[str, Any]] = {}
     for row in read_jsonl(path):
         segment_id = row.get("segment_id")
@@ -329,7 +301,7 @@ def _load_segments_units(path: Path) -> Dict[int, Dict[str, Any]]:
 
 
 def _load_segment_summaries(path: Path) -> Dict[int, Dict[str, Any]]:
-    """Load segment_summaries.jsonl into a dict keyed by segment_id."""
+    """segment_summaries.jsonl을 segment_id 기준 dict로 로드한다."""
     summaries: Dict[int, Dict[str, Any]] = {}
     for row in read_jsonl(path):
         segment_id = row.get("segment_id")
@@ -343,7 +315,7 @@ def _merge_segments(
     segments_units: Dict[int, Dict[str, Any]],
     segment_summaries: Dict[int, Dict[str, Any]],
 ) -> Tuple[List[int], List[int], List[int]]:
-    """Return matched segment ids and missing ids on either side."""
+    """매칭/누락된 segment_id 목록을 반환한다."""
     unit_ids = set(segments_units.keys())
     summary_ids = set(segment_summaries.keys())
     missing_units = sorted(summary_ids - unit_ids)
@@ -353,7 +325,7 @@ def _merge_segments(
 
 
 def _build_prompt(prompt_template: str, segments_payload: List[Dict[str, Any]]) -> str:
-    """Fill the judge prompt template with the input payload."""
+    """프롬프트 템플릿에 입력 payload를 주입한다."""
     if PROMPT_PAYLOAD_TOKEN not in prompt_template:
         raise ValueError(f"Judge prompt missing token: {PROMPT_PAYLOAD_TOKEN}")
     payload_json = json.dumps(segments_payload, ensure_ascii=False)
@@ -361,7 +333,7 @@ def _build_prompt(prompt_template: str, segments_payload: List[Dict[str, Any]]) 
 
 
 def _build_response_schema() -> Dict[str, Any]:
-    """Return a response schema for Gemini."""
+    """Gemini 응답 스키마를 구성한다."""
     score_schema = {
         "type": "object",
         "required": ["groundedness", "compliance", "note_quality", "multimodal_use"],
@@ -385,7 +357,7 @@ def _build_response_schema() -> Dict[str, Any]:
 
 
 def _clamp_score(value: Any, max_score: int = MAX_SCORE) -> int:
-    """Normalize a score to an int within [0, max_score]."""
+    """점수를 [0, max_score] 범위로 정규화한다."""
     try:
         score = int(value)
     except (TypeError, ValueError):
@@ -394,7 +366,7 @@ def _clamp_score(value: Any, max_score: int = MAX_SCORE) -> int:
 
 
 def _normalize_feedback(value: Any) -> str:
-    """Normalize a feedback string into a single line."""
+    """피드백 문자열을 한 줄로 정리한다."""
     text = str(value or "").strip()
     if not text:
         return ""
@@ -402,7 +374,7 @@ def _normalize_feedback(value: Any) -> str:
 
 
 def _compute_final_score(groundedness: int, compliance: int, note_quality: int) -> float:
-    """Compute the weighted final score."""
+    """가중치 기반 최종 점수를 계산한다."""
     return round(
         0.45 * groundedness + 0.35 * note_quality + 0.20 * compliance,
         2,
@@ -423,12 +395,7 @@ def run_judge(
     verbose: bool,
     write_outputs: bool,
 ) -> Dict[str, Any]:
-    """Run the judge and optionally write JSON outputs.
-
-    Returns:
-        report: aggregate score report
-        segment_reports: per-segment score/feedback list
-    """
+    """Judge를 실행하고 결과를 반환한다."""
     segments_units = _load_segments_units(segments_units_path)
     segment_summaries = _load_segment_summaries(segment_summaries_path)
     matched_ids, missing_units, missing_summaries = _merge_segments(
@@ -454,7 +421,7 @@ def run_judge(
         )
 
     response_schema = _build_response_schema()
-    prompt_template = _load_prompt_template(PROMPT_VERSION)
+    prompt_version, prompt_template = _load_prompt_template(None)
 
     # Count input tokens for all payloads and save to token_usage.json
     try:
@@ -486,14 +453,14 @@ def run_judge(
     if workers == 1 or len(batches) == 1:
         for idx, batch in enumerate(batches, start=1):
             llm_results.update(
-                    _evaluate_batch(
-                        config=config,
-                        response_schema=response_schema,
-                        prompt_template=prompt_template,
-                        batch=batch,
-                        batch_index=idx,
-                        batch_total=len(batches),
-                        json_repair_attempts=json_repair_attempts,
+                _evaluate_batch(
+                    config=config,
+                    response_schema=response_schema,
+                    prompt_template=prompt_template,
+                    batch=batch,
+                    batch_index=idx,
+                    batch_total=len(batches),
+                    json_repair_attempts=json_repair_attempts,
                     verbose=verbose,
                 )
             )
@@ -551,7 +518,7 @@ def run_judge(
                 "feedback": feedback,
                 "meta": {
                     "model": config.raw.llm_gemini.model,
-                    "prompt_version": PROMPT_VERSION,
+                    "prompt_version": prompt_version,
                 },
             }
         )
@@ -584,8 +551,8 @@ def run_judge(
         },
         "meta": {
             "model": config.raw.llm_gemini.model,
-            "prompt_version": PROMPT_VERSION,
-            "generated_at_utc": _utc_now_iso(),
+            "prompt_version": prompt_version,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         },
     }
 
@@ -596,81 +563,3 @@ def run_judge(
         write_json(output_report_path, report)
         write_jsonl(output_segments_path, segment_reports)
     return result
-
-
-def _resolve_path(explicit: Optional[str], fallback: Path) -> Path:
-    """Resolve a path from CLI argument or fallback."""
-    if explicit:
-        return Path(explicit).expanduser().resolve()
-    return fallback.resolve()
-
-
-def _load_config(config_path: str) -> ConfigBundle:
-    """Load the fusion config from YAML."""
-    from src.fusion.config import load_config
-
-    return load_config(config_path)
-
-
-def main() -> None:
-    """CLI entrypoint for the LLM judge."""
-    parser = argparse.ArgumentParser(description="LLM judge for segment summaries")
-    parser.add_argument("--config", default="config/fusion/config.yaml", help="fusion config YAML path")
-    parser.add_argument("--segments-units", default=None, help="segments_units.jsonl path")
-    parser.add_argument("--segment-summaries", default=None, help="segment_summaries.jsonl path")
-    parser.add_argument("--output-report", default=None, help="output report path")
-    parser.add_argument("--output-segments", default=None, help="output segment reports JSONL path")
-    parser.add_argument("--batch-size", type=int, default=3, help="LLM batch size")
-    parser.add_argument("--workers", type=int, default=1, help="parallel LLM requests")
-    parser.add_argument(
-        "--write-outputs",
-        action="store_true",
-        help="write judge_report.json and judge_segment_reports.jsonl",
-    )
-    parser.add_argument("--limit", type=int, default=None, help="limit segment count")
-    parser.add_argument("--json-repair-attempts", type=int, default=1)
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="print batch-level progress logs",
-    )
-    args = parser.parse_args()
-
-    config = _load_config(args.config)
-    output_root = config.paths.output_root
-    default_segments_units = output_root / "fusion" / "segments_units.jsonl"
-    default_segment_summaries = output_root / "fusion" / "segment_summaries.jsonl"
-    default_report = output_root / "fusion" / "judge" / "judge_report.json"
-    default_segments_report = output_root / "fusion" / "judge" / "judge_segment_reports.jsonl"
-
-    segments_units_path = _resolve_path(args.segments_units, default_segments_units)
-    segment_summaries_path = _resolve_path(args.segment_summaries, default_segment_summaries)
-    output_report_path = _resolve_path(args.output_report, default_report)
-    output_segments_path = _resolve_path(args.output_segments, default_segments_report)
-
-    start_time = time.perf_counter()
-    result = run_judge(
-        config=config,
-        segments_units_path=segments_units_path,
-        segment_summaries_path=segment_summaries_path,
-        output_report_path=output_report_path,
-        output_segments_path=output_segments_path,
-        batch_size=args.batch_size,
-        workers=args.workers,
-        json_repair_attempts=args.json_repair_attempts,
-        limit=args.limit,
-        verbose=args.verbose,
-        write_outputs=args.write_outputs,
-    )
-    report = result["report"]
-    elapsed_sec = time.perf_counter() - start_time
-    if args.write_outputs:
-        print(f"[OK] judge report: {output_report_path}")
-    else:
-        print("[OK] judge outputs skipped (write_outputs=false)")
-    print(f"[OK] avg final score: {report['scores']['final']}")
-    print(f"[OK] elapsed: {elapsed_sec:.2f}s")
-
-
-if __name__ == "__main__":
-    main()

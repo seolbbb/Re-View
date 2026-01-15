@@ -118,7 +118,8 @@ class BenchmarkTimer:
 
     def time_stage(self, stage_name: str, func, *args, **kwargs) -> Tuple[Any, float]:
         """함수를 실행하고 경과 시간을 기록한다."""
-        print(f"  ⏳ {stage_name}: 시작...", flush=True)
+        print(f"\n{'-' * 50}")
+        print(f"  ⏳ {stage_name}: Starting...", flush=True)
 
         start = time.perf_counter()
         result = func(*args, **kwargs)
@@ -231,9 +232,9 @@ def print_benchmark_report(
     if "speed_ratio" in report:
         print(f"\n🚀 Speed Ratio: {report['realtime_factor']} (video length)")
         if report["speed_ratio"] < 0.5:
-            print("   ✅ 목표 달성! (6분 영상 기준 3분 이내)")
+            print("   ✅ Target met! (under 3 minutes for a 6-minute video)")
         else:
-            print("   ⚠️  경량화 필요 (목표: 0.5x 이하)")
+            print("   ⚠️  Optimization needed (target: <= 0.5x)")
 
     print(f"\n📁 Output: {output_root}")
     print("=" * 60 + "\n")

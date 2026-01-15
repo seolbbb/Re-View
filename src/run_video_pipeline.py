@@ -63,11 +63,6 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def _utc_now_iso() -> str:
-    """UTC 기준 ISO 형식의 현재 시각을 반환한다."""
-    return datetime.now(timezone.utc).isoformat()
-
-
 def parse_args() -> argparse.Namespace:
     """명령줄 인자를 파싱한다."""
     parser = argparse.ArgumentParser(
@@ -124,6 +119,8 @@ def run_pipeline(
 
     단계: STT → Capture → VLM → Fusion → (옵션) Judge.
     산출물: 출력 폴더에 stt/vlm/manifest/fusion 결과와 벤치마크 리포트 생성.
+    코드 위치: STT(run_stt), Capture(run_capture), VLM(run_vlm_openrouter),
+    Fusion(generate_fusion_config + run_fusion_pipeline) 또는 배치 모드(run_batch_fusion_pipeline).
     """
     video_path = Path(video).expanduser().resolve()
     if not video_path.exists():
@@ -166,7 +163,7 @@ def run_pipeline(
         "video_info": video_info,
         "output_base": str(output_base_path),
         "video_root": str(video_root),
-        "started_at_utc": _utc_now_iso(),
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "args": run_args,
         "durations_sec": {},
         "benchmark": {},
@@ -179,6 +176,7 @@ def run_pipeline(
     segment_count = 0
 
     try:
+        """STT/Capture 입력/출력 경로 준비."""
         stt_json = video_root / "stt.json"
         captures_dir = video_root / "captures"
         manifest_json = video_root / "manifest.json"
@@ -189,14 +187,17 @@ def run_pipeline(
         stt_elapsed = 0.0
         capture_elapsed = 0.0
 
+        """STT + Capture 실행."""
         if parallel:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 def run_stt_timed():
+                    """STT 단계를 타이밍 포함으로 실행한다."""
                     start = time.perf_counter()
                     run_stt(video_path, stt_json, backend=stt_backend)
                     return time.perf_counter() - start
 
                 def run_capture_timed():
+                    """Capture 단계를 타이밍 포함으로 실행한다."""
                     start = time.perf_counter()
                     result = run_capture(
                         video_path,
@@ -219,12 +220,13 @@ def run_pipeline(
 
             timer.record_stage("stt", stt_elapsed)
             timer.record_stage("capture", capture_elapsed)
-            print(f"  ✓ stt: {format_duration(stt_elapsed)} (parallel)")
-            print(f"  ✓ capture: {format_duration(capture_elapsed)} (parallel)")
+            print(f"  ✓ STT done in {format_duration(stt_elapsed)} (parallel)")
+            print(f"  ✓ Capture done in {format_duration(capture_elapsed)} (parallel)")
         else:
-            _, stt_elapsed = timer.time_stage("stt", run_stt, video_path, stt_json, backend=stt_backend)
+            """STT + Capture 순차 실행."""
+            _, stt_elapsed = timer.time_stage("STT", run_stt, video_path, stt_json, backend=stt_backend)
             capture_result, capture_elapsed = timer.time_stage(
-                "capture",
+                "Capture",
                 run_capture,
                 video_path,
                 output_base_path,
@@ -236,7 +238,9 @@ def run_pipeline(
             )
             capture_count = len(capture_result) if capture_result else 0
 
+        """VLM + Fusion 실행."""
         if batch_mode:
+            """배치 모드: VLM/Sync/Summarize를 배치 단위로 반복."""
             vlm_elapsed = 0.0
             fusion_info = run_batch_fusion_pipeline(
                 video_root=video_root,
@@ -256,8 +260,9 @@ def run_pipeline(
             segment_count = fusion_info.get("segment_count", 0)
             vlm_image_count = capture_count
         else:
+            """VLM 단독 실행."""
             vlm_image_count, vlm_elapsed = timer.time_stage(
-                "vlm",
+                "VLM",
                 run_vlm_openrouter,
                 captures_dir=captures_dir,
                 manifest_json=manifest_json,
@@ -273,6 +278,7 @@ def run_pipeline(
                 raise FileNotFoundError(f"fusion config template을 찾을 수 없습니다: {template_config}")
 
             fusion_config_path = video_root / "config.yaml"
+            """Fusion 설정 생성."""
             generate_fusion_config(
                 template_config=template_config,
                 output_config=fusion_config_path,
@@ -283,6 +289,7 @@ def run_pipeline(
                 output_root=video_root,
             )
 
+            """Fusion 파이프라인 실행."""
             fusion_info = run_fusion_pipeline(
                 fusion_config_path,
                 limit=limit,
@@ -321,7 +328,7 @@ def run_pipeline(
             "vlm_image_count": vlm_image_count,
             "segment_count": segment_count,
         }
-        run_meta["ended_at_utc"] = _utc_now_iso()
+        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = "ok"
         _write_json(run_meta_path, run_meta)
 
@@ -344,7 +351,7 @@ def run_pipeline(
 
     except Exception as exc:
         timer.end_total()
-        run_meta["ended_at_utc"] = _utc_now_iso()
+        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = "error"
         run_meta["error"] = str(exc)
         run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)

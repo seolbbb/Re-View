@@ -407,7 +407,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
             segments_units_handle.close()
 
     if dry_run:
-        print(f"[DRY RUN] segments={len(sync_segments)} (출력 미생성)")
+        print(f"[DRY RUN] segments={len(sync_segments)} (outputs not generated)")
         return
 
     write_json(output_dir / "sync.json", {"segments": sync_segments})

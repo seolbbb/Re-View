@@ -77,16 +77,16 @@ def _select_best_mono_method(media_path: Path, *, sample_rate: int, probe_second
             media_path, mono_method=candidate, sample_rate=sample_rate, probe_seconds=probe_seconds
         )
         if volume is None:
-            print(f"[INFO] mono-method candidate={candidate} mean_volume=NA")
+            print(f"[STT]] mono-method candidate={candidate} mean_volume=NA")
             continue
         volumes[candidate] = volume
-        print(f"[INFO] mono-method candidate={candidate} mean_volume={volume} dB")
+        print(f"[STT] mono-method candidate={candidate} mean_volume={volume} dB")
 
     if not volumes:
         return "downmix"
 
     best_method = max(volumes, key=volumes.get)
-    print(f"[INFO] mono-method auto selected: {best_method} (mean_volume={volumes[best_method]} dB)")
+    print(f"[STT] mono-method auto selected: {best_method} (mean_volume={volumes[best_method]} dB)")
     return best_method
 
 

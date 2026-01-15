@@ -213,7 +213,14 @@ class OpenRouterVlmExtractor:
         request_params: Dict[str, Any],
         show_progress: bool,
     ) -> str:
-        """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다."""
+        """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다.
+
+        - 여러 API 키가 있으면 순서대로 시도한다.
+        - show_progress가 켜져 있으면 현재 키 인덱스와 실패 전환을 로그로 남긴다.
+        - 502/503은 서비스 장애로 판단해 사용자 친화 메시지로 변환한다.
+        - 응답이 비어 있거나 오류 payload가 있으면 예외를 던진다.
+        - 정상 응답이면 첫 번째 choice의 content를 반환한다.
+        """
         last_error: Optional[Exception] = None
         total_keys = len(self.clients)
         for idx, client in enumerate(self.clients, start=1):
@@ -374,20 +381,20 @@ class OpenRouterVlmExtractor:
                 for batch_index, batch_paths in enumerate(batches, start=1):
                     if show_progress:
                         print(
-                            f"[VLM] request batch {batch_index}/{total_batches} "
+                            f"[VLM] request group {batch_index}/{total_batches} "
                             f"({len(batch_paths)} images)",
                             flush=True,
                         )
                     results.extend(
                         self._run_batch_request(
                             batch_paths,
-                            label=f"batch {batch_index}/{total_batches}",
+                            label=f"group {batch_index}/{total_batches}",
                             request_params=request_params,
                             show_progress=show_progress,
                         )
                     )
                     if show_progress:
-                        print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
+                        print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
                 return results
 
             results_by_index: dict[int, List[Dict[str, Any]]] = {}
@@ -396,14 +403,14 @@ class OpenRouterVlmExtractor:
                 for batch_index, batch_paths in enumerate(batches, start=1):
                     if show_progress:
                         print(
-                            f"[VLM] request batch {batch_index}/{total_batches} "
+                            f"[VLM] request group {batch_index}/{total_batches} "
                             f"({len(batch_paths)} images)",
                             flush=True,
                         )
                     future = executor.submit(
                         self._run_batch_request,
                         batch_paths,
-                        label=f"batch {batch_index}/{total_batches}",
+                        label=f"group {batch_index}/{total_batches}",
                         request_params=request_params,
                         show_progress=show_progress,
                     )
@@ -412,7 +419,7 @@ class OpenRouterVlmExtractor:
                     batch_index = future_map[future]
                     results_by_index[batch_index] = future.result()
                     if show_progress:
-                        print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
+                        print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
 
             for batch_index in range(1, total_batches + 1):
                 results.extend(results_by_index[batch_index])

@@ -44,6 +44,13 @@ class SummarizerConfig(BaseModel):
     prompt_version: Optional[str] = None
 
 
+class JudgeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_score: float = Field(7.0, ge=0.0, le=10.0)
+    include_segments: bool = False
+
+
 class DeveloperApiConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -101,6 +108,7 @@ class FusionConfig(BaseModel):
     paths: PathsConfig
     sync_engine: SyncEngineConfig
     summarizer: SummarizerConfig
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
     llm_gemini: LlmGeminiConfig
     render: RenderConfig
     final_summary: FinalSummaryConfig

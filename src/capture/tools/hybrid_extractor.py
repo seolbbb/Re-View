@@ -84,7 +84,7 @@ class HybridSlideExtractor:
         self.last_saved_kp = None
         self.last_saved_des = None
         
-        # [V2] Delayed Save를 위한 버퍼
+        # Delayed Save를 위한 버퍼
         self.pending_slide = None  # {"frame": ..., "start_ms": ...}
 
     def process(self, video_name="video"):
@@ -168,13 +168,18 @@ class HybridSlideExtractor:
                 if not is_in_transition:
                     # [인터럽트 로직] 버퍼링 중 새 전환 감지
                     if current_pending_capture is not None and is_significant_change:
-                        self.logger.info(f"새 전환으로 버퍼 인터럽트 at {current_time:.2f}s")
+                        self.logger.info(
+                            f"Buffer interrupted by new transition at {current_time:.2f}s"
+                        )
                         should_finalize_buffer = True
                         
                     if is_significant_change and (current_time - last_capture_time) >= self.min_interval:
                         is_in_transition = True
                         transition_start_time = current_time
-                        self.logger.info(f"전환 시작 at {current_time:.2f}s (Diff:{diff_val:.1f}, Sim:{sim_val:.2f})")
+                        self.logger.info(
+                            f"Transition started at {current_time:.2f}s "
+                            f"(Diff:{diff_val:.1f}, Sim:{sim_val:.2f})"
+                        )
                 else:
                     # 안정성 확인
                     is_stable = (diff_val < (self.sensitivity_diff / 4.0))
@@ -188,7 +193,9 @@ class HybridSlideExtractor:
                                 'buffer': [frame.copy()],
                                 'buffer_start': current_time
                             }
-                            self.logger.info(f"안정 상태 감지 at {current_time:.2f}s. 버퍼링 시작...")
+                            self.logger.info(
+                                f"Stable state detected at {current_time:.2f}s. Buffering starts..."
+                            )
             
             # 5. 스마트 버퍼링 로직
             if current_pending_capture is not None:
@@ -205,7 +212,7 @@ class HybridSlideExtractor:
                     if should_save:
                         new_start_ms = int(current_pending_capture['trigger_time'] * 1000)
                         
-                        # [V2 핵심] Delayed Save: 이전 pending_slide를 저장
+                        # 핵심: Delayed Save로 이전 pending_slide를 저장
                         if self.pending_slide is not None:
                             slide_idx += 1
                             end_ms = new_start_ms
@@ -250,7 +257,7 @@ class HybridSlideExtractor:
                     'start_ms': new_start_ms
                 }
         
-        # [V2] 마지막 pending_slide 저장 (end_ms = duration)
+        # 마지막 pending_slide 저장 (end_ms = duration)
         if self.pending_slide is not None:
             slide_idx += 1
             self._save_slide(video_name, slide_idx, self.pending_slide, duration_ms, extracted_slides)
@@ -286,7 +293,7 @@ class HybridSlideExtractor:
                 best_diff = diff
                 best_frame = frame
         
-        self.logger.info(f"최적 프레임 선택: Median과의 차이 = {best_diff:.2f}")
+        self.logger.info(f"Best frame selected: diff from median = {best_diff:.2f}")
         
         # 중복 검사
         should_save = True
@@ -334,7 +341,10 @@ class HybridSlideExtractor:
                         
                         if inlier_ratio > 0.15 and dedupe_score < 20.0 and sim_score >= 0.5:
                             is_duplicate = True
-                            self.logger.info(f"RANSAC 중복 감지: Inliers={ransac_inliers}, Ratio={inlier_ratio:.2f}")
+                            self.logger.info(
+                                f"RANSAC duplicate detected: Inliers={ransac_inliers}, "
+                                f"Ratio={inlier_ratio:.2f}"
+                            )
             
             if is_duplicate:
                 should_save = False
