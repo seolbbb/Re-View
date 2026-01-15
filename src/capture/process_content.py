@@ -1,129 +1,16 @@
 """
-하이브리드 캡처 파이프라인의 실행 진입점.
+캡처 단계에서 비디오 1건을 처리해 슬라이드 캡처와 manifest.json을 만든다.
 
-프로젝트 루트 경로를 계산해 import 경로로 추가하고,
-캡처 설정은 config/capture/settings.yaml에서 로드한다.
-
-상세 설명은 src/capture/README.md를 참고한다.
+run_video_pipeline에서 호출되며 설정은 config/capture/settings.yaml에서 로드한다.
 """
 
-import glob
 import json
-import os
-import shutil
-import sys
 import time
 from pathlib import Path
 from typing import Optional
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_dir = os.path.dirname(current_dir)
-project_root = os.path.dirname(src_dir)
-
-if project_root not in sys.path:
-    sys.path.append(project_root)
-
 from src.capture.settings import get_capture_settings
 from src.capture.tools.hybrid_extractor import HybridSlideExtractor
-
-
-def print_summary_table(title: str, metrics: dict) -> None:
-    """
-    처리 결과를 정렬된 테이블 형태로 출력합니다.
-    
-    Args:
-        title (str): 테이블 제목
-        metrics (dict): 출력할 메트릭 딕셔너리 {키: 값}
-    """
-    print("\n" + "="*60)
-    print(f"Result: {title}")
-    print("-" * 60)
-    for key, value in metrics.items():
-        print(f"   {key:<20}: {value}")
-    print("="*60)
-
-
-def _process_video_core(
-    video_path: str,
-    output_base: str,
-    scene_threshold: float,
-    sensitivity_sim: float,
-    min_interval: float,
-    sample_interval_sec: float,
-    buffer_duration_sec: float,
-    transition_timeout_sec: float,
-    is_standalone: bool = False
-) -> list:
-    """
-    V2 캡처 처리 핵심 로직.
-
-    지연 저장 방식으로 슬라이드 저장 시점을 조정하고,
-    결과를 manifest.json으로 정리한다.
-
-    standalone 모드일 때는 캡처/로그 폴더를 정리한다.
-
-    video_path: 입력 비디오 파일 경로.
-    output_base: 출력 기본 디렉터리.
-    scene_threshold: 장면 전환 감지 임계값(픽셀 차이).
-    sensitivity_sim: ORB 유사도 임계값.
-    min_interval: 최소 캡처 간격(초).
-    sample_interval_sec: 유휴 상태 샘플링 간격(초).
-    buffer_duration_sec: 버퍼링 지속 시간(초).
-    transition_timeout_sec: 전환 상태 최대 대기 시간(초).
-    is_standalone: 독립 실행 모드 여부.
-
-    반환: [{"file_name": str, "start_ms": int, "end_ms": int}, ...]
-    """
-    video_name = Path(video_path).stem
-    
-    video_output_root = os.path.join(output_base, video_name)
-    captures_dir = os.path.join(video_output_root, "captures")
-    
-    if is_standalone and os.path.exists(captures_dir):
-        shutil.rmtree(captures_dir)
-        
-    os.makedirs(captures_dir, exist_ok=True)
-    
-    if is_standalone:
-        for log_name in ["capture_log.txt"]:
-            log_path = os.path.join(video_output_root, log_name)
-            if os.path.exists(log_path):
-                os.remove(log_path)
-
-    print(f"\n[Capture V2] Processing: {video_name}")
-    
-    extractor = HybridSlideExtractor(
-        video_path,
-        output_dir=captures_dir,
-        sensitivity_diff=scene_threshold,
-        sensitivity_sim=sensitivity_sim,
-        min_interval=min_interval,
-        sample_interval_sec=sample_interval_sec,
-        buffer_duration_sec=buffer_duration_sec,
-        transition_timeout_sec=transition_timeout_sec,
-    )
-    
-    start_time = time.time()
-    slides = extractor.process(video_name=video_name)
-    elapsed = time.time() - start_time
-    
-    manifest_path = os.path.join(video_output_root, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(slides, f, ensure_ascii=False, indent=2)
-    
-    if is_standalone:
-        metrics = {
-            "Total Time": f"{elapsed:.2f}s",
-            "Mode": "Hybrid V2 (Delayed Save)",
-            "Total Slides": len(slides),
-            "Output Path": captures_dir,
-            "Manifest": manifest_path
-        }
-        print_summary_table(f"Capture Result: {video_name}", metrics)
-    else:
-        print(f"[Capture V2] Completed: {len(slides)} slides in {elapsed:.2f}s")
-
-    return slides
 
 
 def process_single_video_capture(
@@ -149,86 +36,31 @@ def process_single_video_capture(
     settings = get_capture_settings()
     resolved_scene_threshold = settings.sensitivity_diff if scene_threshold is None else scene_threshold
     resolved_min_interval = settings.min_interval if min_interval is None else min_interval
-    return _process_video_core(
-        video_path=video_path,
-        output_base=output_base,
-        scene_threshold=resolved_scene_threshold,
+    video_name = Path(video_path).stem
+    output_root = Path(output_base) / video_name
+    captures_dir = output_root / "captures"
+    captures_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n[Capture V2] Processing: {video_name}")
+
+    extractor = HybridSlideExtractor(
+        video_path,
+        output_dir=str(captures_dir),
+        sensitivity_diff=resolved_scene_threshold,
         sensitivity_sim=settings.sensitivity_sim,
         min_interval=resolved_min_interval,
         sample_interval_sec=settings.sample_interval_sec,
         buffer_duration_sec=settings.buffer_duration_sec,
         transition_timeout_sec=settings.transition_timeout_sec,
-        is_standalone=False,
     )
 
+    start_time = time.time()
+    slides = extractor.process(video_name=video_name)
+    elapsed = time.time() - start_time
 
-def process_single_video_standalone(video_path: str, output_root: str) -> None:
-    """
-    독립 실행용 래퍼 함수.
+    manifest_path = output_root / "manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(slides, handle, ensure_ascii=False, indent=2)
 
-    커맨드 라인에서 직접 실행할 때 사용하며,
-    결과 요약 테이블을 출력한다.
-    """
-    settings = get_capture_settings()
-    _process_video_core(
-        video_path=video_path,
-        output_base=output_root,
-        scene_threshold=settings.sensitivity_diff,
-        sensitivity_sim=settings.sensitivity_sim,
-        min_interval=settings.min_interval,
-        sample_interval_sec=settings.sample_interval_sec,
-        buffer_duration_sec=settings.buffer_duration_sec,
-        transition_timeout_sec=settings.transition_timeout_sec,
-        is_standalone=True
-    )
-
-
-def main() -> None:
-    """
-    스크립트의 진입점.
-
-    --video가 있으면 해당 파일만 처리하고,
-    없으면 입력 폴더의 MP4를 모두 처리한다.
-    """
-    import argparse
-    parser = argparse.ArgumentParser(description="Hybrid Slide Capture Pipeline (V2)")
-    parser.add_argument("--video", help="특정 비디오 파일 하나만 처리할 경우 경로 지정", default=None)
-    
-    args = parser.parse_args()
-
-    settings = get_capture_settings()
-    output_dir = settings.output_dir
-    input_dir = settings.input_dir
-
-    if not output_dir.exists():
-        output_dir.mkdir(parents=True, exist_ok=True)
-    
-    video_files = []
-    
-    if args.video:
-        target_path = os.path.abspath(args.video)
-        if not os.path.exists(target_path):
-            print(f"Error: Video file not found: {target_path}")
-            return
-        video_files.append(target_path)
-    else:
-        video_files = glob.glob(str(input_dir / "*.mp4"))
-
-    if not video_files:
-        print("Warning: No video files to process.")
-        return
-        
-    print(f"============================================================")
-    print(f"Capture Pipeline V2 Started (Target: {len(video_files)} files)")
-    print(f"============================================================")
-    
-    for video_path in video_files:
-        process_single_video_standalone(video_path, str(output_dir))
-        
-    print(f"============================================================")
-    print(f"Capture Pipeline V2 Completed")
-    print(f"============================================================")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"[Capture V2] Completed: {len(slides)} slides in {elapsed:.2f}s")
+    return slides

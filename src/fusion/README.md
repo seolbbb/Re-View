@@ -1,7 +1,14 @@
 # Fusion 코어 모듈
 
-STT/VLM 동기화, 요약, 렌더링을 위한 코어 모듈입니다.
-ADK 파이프라인(`src/adk_pipeline`)에서 사용됩니다.
+STT/VLM 동기화 → 요약 → 렌더링을 담당하는 코어 모듈입니다.
+`src/adk_pipeline`과 파이프라인 단계에서 호출됩니다.
+
+## 역할
+
+- STT/VLM 동기화로 세그먼트/유닛 생성
+- 세그먼트 요약 생성
+- 마크다운 렌더링 + 최종 요약 생성
+- (옵션) judge 평가 리포트 생성
 
 ## 모듈 구조
 
@@ -13,12 +20,12 @@ src/fusion/
 ├── sync_engine.py           # STT/VLM 동기화 (run_sync_engine)
 ├── summarizer.py            # Gemini 요약 (run_summarizer)
 ├── renderer.py              # MD 렌더링 + 최종 요약 (render_segment_summaries_md, compose_final_summaries)
-└── prompt_versions.md       # 프롬프트 버전 안내
+└── prompt_versions.md       # 프롬프트 버전 참고
 ```
 
-## 사용 방법
+## 실행 흐름
 
-이 모듈은 ADK 파이프라인을 통해 실행됩니다.
+이 모듈은 직접 실행하지 않고 파이프라인이 호출합니다.
 
 ```bash
 # Step 1: Pre-ADK (STT + Capture)
@@ -81,6 +88,16 @@ llm_gemini:
   # ...
 ```
 
+## Summarizer 프롬프트 버전
+
+- 프롬프트 버전은 `config/fusion/prompts.yaml`에서 관리합니다.
+- 기본 버전은 `config/fusion/config.yaml`의 `summarizer.prompt_version`으로 결정됩니다.
+- 템플릿 치환 토큰 예시:
+  - `{{CLAIM_MAX_CHARS}}`
+  - `{{BULLETS_MIN}}`
+  - `{{BULLETS_MAX}}`
+  - `{{SEGMENTS_TEXT}}`
+
 ## Gemini 설정
 
 ### Developer API
@@ -116,7 +133,9 @@ data/outputs/{video_name}/
     ├── trace_map.json
     ├── segment_summaries.jsonl
     ├── segment_summaries.md
-    ├── judge.json
+    ├── judge/
+    │   ├── judge_report.json
+    │   └── judge_segment_reports.jsonl
     └── outputs/
         ├── final_summary_A.md
         ├── final_summary_B.md
@@ -125,6 +144,5 @@ data/outputs/{video_name}/
 
 ## 주의사항
 
-- 이 모듈은 라이브러리로 사용됩니다. CLI 실행은 `adk_pipeline`을 통해 수행합니다.
+- 이 모듈은 라이브러리로 사용됩니다. 실행은 파이프라인에서 수행합니다.
 - 모든 JSONL 입출력은 스트리밍 방식으로 처리됩니다.
-- 요약 프롬프트 템플릿은 `config/fusion/prompts.yaml`에서 관리합니다.

@@ -43,6 +43,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
@@ -52,6 +54,8 @@ from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_toke
 
 
 PROMPT_VERSION = "judge_v4"
+PROMPTS_PATH = ROOT / "config" / "judge" / "prompts.yaml"
+PROMPT_PAYLOAD_TOKEN = "{{SEGMENTS_JSON}}"
 JUDGE_TEMPERATURE = 0.2
 MAX_SCORE = 10
 _THREAD_LOCAL = threading.local()
@@ -235,10 +239,28 @@ def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+def _load_prompt_template(prompt_version: str) -> str:
+    """Load the judge prompt template from config/judge/prompts.yaml."""
+    if not PROMPTS_PATH.exists():
+        raise FileNotFoundError(f"Judge prompt config not found: {PROMPTS_PATH}")
+    payload = yaml.safe_load(PROMPTS_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Judge prompt config must be a mapping.")
+    entry = payload.get(prompt_version)
+    if isinstance(entry, dict):
+        template = entry.get("template")
+    else:
+        template = entry
+    if not isinstance(template, str) or not template.strip():
+        raise ValueError(f"Judge prompt template is missing: {prompt_version}")
+    return template.strip()
+
+
 def _evaluate_batch(
     *,
     config: ConfigBundle,
     response_schema: Dict[str, Any],
+    prompt_template: str,
     batch: List[Dict[str, Any]],
     batch_index: int,
     batch_total: int,
@@ -250,7 +272,7 @@ def _evaluate_batch(
         print(f"[JUDGE] batch {batch_index}/{batch_total} start (segments={seg_ids})")
     started = time.perf_counter()
     client_bundle = _get_thread_client_bundle(config)
-    prompt = _build_prompt(batch)
+    prompt = _build_prompt(prompt_template, batch)
     llm_text = _run_with_retries(
         client_bundle,
         prompt,
@@ -330,104 +352,12 @@ def _merge_segments(
     return matched, missing_units, missing_summaries
 
 
-def _build_prompt(segments_payload: List[Dict[str, Any]]) -> str:
-    """Build the LLM judge prompt."""
-    lines = [
-        "You are a strict evaluator for segment summaries.",
-        "Do not use external knowledge to validate correctness; evaluate grounding/compliance/quality only.",
-        "Background is allowed only when labeled as background with notes.",
-        "",
-        "Score each segment on three axes (0-10 integers) aligned with the summarizer prompt rules,",
-        "plus one reference-only field for visual usage (multimodal_use).",
-        "",
-        "Scoring philosophy (applies to all criteria):",
-        "10: exceptional and rare; beyond requirements with near-zero ambiguity.",
-        "7-9: good to very good; production-ready with minor flaws only.",
-        "6: acceptable baseline (pass line).",
-        "3-5: needs improvement; notable issues or weak grounding/compliance/quality.",
-        "0-2: poor/failing; unreliable or unusable.",
-        "",
-        "1) Groundedness (source alignment):",
-        "10: exceptional and rare; every direct/inferred claim is fully supported by evidence_refs;",
-        "    background is explicitly labeled in notes; no unsupported assertions.",
-        "7-9: good to very good; mostly grounded with only minor bold inferences or weak refs.",
-        "6: baseline; core is grounded but several items have weak refs or overstated source_type.",
-        "3-5: needs improvement; unsupported assertions appear or background/inferred boundary is blurry.",
-        "0-2: poor/failing; evidence conflicts or grounding collapses (unsupported dominates).",
-        "",
-        "2) Spec Compliance (format/rules adherence):",
-        "Hard fail (score 0) if output is not a JSON array or required structure is missing.",
-        "Check at least:",
-        "- Required structure: summary has bullets/definitions/explanations/open_questions arrays.",
-        "- Required fields: each item has source_type/evidence_refs/confidence/notes as required.",
-        "- source_type rules: direct/inferred must have evidence_refs; background may have empty refs",
-        "  but notes must state the background knowledge.",
-        "- explanations >= 3, cover roles A/B/C: (A) formula/notation explanation if any formula",
-        "  appears, (B) comparison/contrast, (C) motivation/usage. At least one explicit why/how.",
-        "- If a formula appears, show its full form before explanation using $...$ or $$...$$.",
-        "- Definitions cover all key terms/symbols in transcript/visual/summary output.",
-        "- Banned deictic words must not appear: 슬라이드, 화면, 그림, 보시면, 위/아래, 여기, 방금,",
-        "  앞에서, 다음으로, 이 수식, 마지막 항.",
-        "- JSON string safety: no unescaped double quotes inside string values.",
-        "10: exceptional and rare; fully compliant with all rules.",
-        "7-9: good to very good; minor slips only, no banned words.",
-        "6: baseline; repeated minor issues but usable output (no critical violations).",
-        "3-5: needs improvement; frequent violations or any banned word/required rule missed.",
-        "0-2: poor/failing; broken JSON, missing required structure, or widespread violations.",
-        "",
-        "3) Note Quality (independent tutor notes):",
-        "10: exceptional and rare; fully understandable without video; bullets provide backbone",
-        "    (first bullet includes why it matters); definitions stand alone; explanations follow a",
-        "    clear flow and differ in role; strong concept linkage; minimal fluff; very consistent",
-        "    terminology.",
-        "7-9: good to very good; useful notes with small weaknesses (slightly verbose or a weak connection).",
-        "6: baseline; understandable but contains paraphrase-like parts or weaker independence.",
-        "3-5: needs improvement; informative but weak as teaching notes; weak why/how and linkage.",
-        "0-2: poor/failing; incoherent or internally contradictory.",
-        "",
-        "Final score: final = round(0.45*groundedness + 0.35*note_quality + 0.20*compliance, 2).",
-        "",
-        "4) Multimodal Use (visual usage, reference only; NOT used in final):",
-        "10: exceptional and rare; explicitly restates key visual evidence and uses it to",
-        "    explain/define/compare/motivate, along with audio evidence.",
-        "7-9: good to very good; visual info supports 1-2 key points with clear meaning.",
-        "6: baseline; visual info is mentioned but shallow or mostly decorative.",
-        "3-5: needs improvement; visual evidence exists but is barely used or ignored.",
-        "0-2: poor/failing; hallucinated visual-specific content (claims about visuals with no evidence).",
-        "If segment_summary has no evidence_refs starting with v, cap multimodal_use to 0-3.",
-        "",
-        "Evidence guidance:",
-        "- Evidence is inside each item's segments_units (transcript_units, visual_units)",
-        "  and should be compared against segment_summary.",
-        "- Do not infer facts that are not grounded in evidence.",
-        "",
-        "Output rules:",
-        "- Return a JSON array only. No markdown or extra text.",
-        "- Use integer scores only (0-10).",
-        "- Do not output final; it will be computed downstream.",
-        "- Include feedback as a single Korean sentence per segment.",
-        "- feedback should mention the most important issue or strength.",
-        "- Do not mention multimodal_use in feedback unless it is the sole critical issue.",
-        "- If there are no issues, say that it is strong (e.g., '전반적으로 우수').",
-    ]
-
-    lines.append("Output format for each segment:")
-    lines.append("{")
-    lines.append('  "segment_id": int,')
-    lines.append(
-        '  "scores": {"groundedness": int, "compliance": int, '
-        '"note_quality": int, "multimodal_use": int},'
-    )
-    lines.append('  "feedback": "한 줄 피드백"')
-    lines.append("}")
-    lines.extend(
-        [
-            "",
-            "Input JSON:",
-            json.dumps(segments_payload, ensure_ascii=False),
-        ]
-    )
-    return "\n".join(lines)
+def _build_prompt(prompt_template: str, segments_payload: List[Dict[str, Any]]) -> str:
+    """Fill the judge prompt template with the input payload."""
+    if PROMPT_PAYLOAD_TOKEN not in prompt_template:
+        raise ValueError(f"Judge prompt missing token: {PROMPT_PAYLOAD_TOKEN}")
+    payload_json = json.dumps(segments_payload, ensure_ascii=False)
+    return prompt_template.replace(PROMPT_PAYLOAD_TOKEN, payload_json)
 
 
 def _build_response_schema() -> Dict[str, Any]:
@@ -524,10 +454,11 @@ def run_judge(
         )
 
     response_schema = _build_response_schema()
+    prompt_template = _load_prompt_template(PROMPT_VERSION)
 
     # Count input tokens for all payloads and save to token_usage.json
     try:
-        full_prompt = _build_prompt(payloads)
+        full_prompt = _build_prompt(prompt_template, payloads)
         client_bundle = _init_gemini_client(config)
         token_result = client_bundle.client.models.count_tokens(
             model=client_bundle.model,
@@ -555,13 +486,14 @@ def run_judge(
     if workers == 1 or len(batches) == 1:
         for idx, batch in enumerate(batches, start=1):
             llm_results.update(
-                _evaluate_batch(
-                    config=config,
-                    response_schema=response_schema,
-                    batch=batch,
-                    batch_index=idx,
-                    batch_total=len(batches),
-                    json_repair_attempts=json_repair_attempts,
+                    _evaluate_batch(
+                        config=config,
+                        response_schema=response_schema,
+                        prompt_template=prompt_template,
+                        batch=batch,
+                        batch_index=idx,
+                        batch_total=len(batches),
+                        json_repair_attempts=json_repair_attempts,
                     verbose=verbose,
                 )
             )
@@ -573,6 +505,7 @@ def run_judge(
                     _evaluate_batch,
                     config=config,
                     response_schema=response_schema,
+                    prompt_template=prompt_template,
                     batch=batch,
                     batch_index=idx,
                     batch_total=len(batches),

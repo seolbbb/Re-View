@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from typing import Any, Dict, List
@@ -101,26 +100,3 @@ def convert_vlm_raw_to_fusion_vlm(
         encoding="utf-8",
     )
 
-
-def _parse_args() -> argparse.Namespace:
-    """CLI 인자를 파싱한다."""
-    parser = argparse.ArgumentParser(description="vlm_raw.json + manifest.json → fusion 입력 vlm.json 변환")
-    parser.add_argument("--manifest", required=True, help="capture manifest.json 경로")
-    parser.add_argument("--vlm-raw", required=True, help="VLM 원시 결과(vlm_raw.json) 경로")
-    parser.add_argument("--out", required=True, help="출력 vlm.json 경로")
-    return parser.parse_args()
-
-
-def main() -> None:
-    """CLI에서 호출되는 엔트리포인트."""
-    args = _parse_args()
-    convert_vlm_raw_to_fusion_vlm(
-        manifest_json=Path(args.manifest),
-        vlm_raw_json=Path(args.vlm_raw),
-        output_vlm_json=Path(args.out),
-    )
-    print(f"[OK] saved to {Path(args.out).resolve()}")
-
-
-if __name__ == "__main__":
-    main()

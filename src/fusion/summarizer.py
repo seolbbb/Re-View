@@ -201,6 +201,7 @@ def _render_prompt_template(template: str, replacements: Dict[str, str]) -> str:
         rendered = rendered.replace(f"{{{key}}}", value)
     return rendered
 
+
 def _build_batch_prompt(
     segments: List[Dict[str, Any]],
     claim_max_chars: int,
@@ -270,6 +271,25 @@ def _build_batch_prompt(
         prompt = f"{prompt}\n\n{segments_text}"
 
     return f"{context_section}{prompt}"
+
+
+def _extract_text_from_response(response: Any) -> str:
+    """Gemini 응답에서 텍스트를 추출한다."""
+    text = getattr(response, "text", None)
+    if text:
+        return text
+    candidates = getattr(response, "candidates", None)
+    if candidates:
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            if not content:
+                continue
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    return part_text
+    raise ValueError("Gemini 응답에서 텍스트를 추출하지 못했습니다.")
 
 
 def _generate_content(
@@ -360,11 +380,24 @@ def _normalize_source_type(value: Any) -> str:
     return source_type
 
 
+def _strip_code_fences(text: str) -> str:
+    """JSON 응답에 포함된 코드 펜스를 제거한다."""
+    cleaned = text.strip()
+    if "```" not in cleaned:
+        return cleaned
+    parts = cleaned.split("```")
+    if len(parts) >= 3:
+        inner = parts[1]
+        lines = inner.splitlines()
+        if lines and lines[0].strip().lower() in {"json", "jsonl"}:
+            inner = "\n".join(lines[1:])
+        return inner.strip()
+    return cleaned.replace("```", "").strip()
+
+
 def _validate_summary_payload(
     payload: Dict[str, Any],
     segment_id: int,
-    claim_max_chars: int,
-    bullets_min: int,
     bullets_max: int,
 ) -> Dict[str, Any]:
     bullets = payload.get("bullets") or []
@@ -665,8 +698,6 @@ def run_summarizer(
                     summary_map[segment_id] = _validate_summary_payload(
                         item.get("summary", {}),
                         segment_id,
-                        claim_max_chars,
-                        bullets_min,
                         bullets_max,
                     )
 
@@ -754,6 +785,7 @@ def run_batch_summarizer(
     bullets_min = config.raw.summarizer.bullets_per_segment_min
     bullets_max = config.raw.summarizer.bullets_per_segment_max
     claim_max_chars = config.raw.summarizer.claim_max_chars
+    prompt_version = config.raw.summarizer.prompt_version or DEFAULT_PROMPT_VERSION
 
     segments: List[Dict[str, Any]] = []
     for segment in read_jsonl(segments_units_jsonl):
@@ -834,7 +866,7 @@ def run_batch_summarizer(
                         raise ValueError("응답에 segment_id가 없습니다.")
                     sid = int(item["segment_id"])
                     summary_map[sid] = _validate_summary_payload(
-                        item.get("summary", {}), sid, claim_max_chars, bullets_min, bullets_max
+                        item.get("summary", {}), sid, bullets_max
                     )
 
                 # 파일에 기록

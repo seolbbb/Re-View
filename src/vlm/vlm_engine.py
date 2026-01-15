@@ -1,8 +1,10 @@
-"""VLM 추출 엔진과 OpenRouter 연동 로직."""
+"""VLM 추출 엔진과 OpenRouter 연동 로직.
+
+오류 처리 헬퍼는 src/vlm/openrouter_errors.py에 분리되어 있다.
+"""
 
 from __future__ import annotations
 
-import argparse
 import base64
 import json
 import mimetypes
@@ -16,103 +18,22 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import yaml
 
+from src.vlm.openrouter_errors import (
+    extract_error_code,
+    format_openrouter_error,
+    format_service_unavailable_message,
+    is_service_unavailable_error,
+)
+
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 PROMPT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "vlm" / "prompts.yaml"
 SETTINGS_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "vlm" / "settings.yaml"
 
 BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
-PROVIDER_NAME_RE = re.compile(r'provider_name["\']?:\s*["\']([^"\']+)')
-ERROR_CODE_RE = re.compile(r"Error code:\s*(\d+)")
 DEFAULT_PROMPT_VERSION = "vlm_v1.1"
 DEFAULT_MODEL_NAME = "qwen/qwen3-vl-32b-instruct"
 DEFAULT_KEY_ENV = "OPENROUTER_API_KEY"
 KEY_LIST_ENV = "OPENROUTER_API_KEYS"
-
-
-def _extract_status_code(exc: Exception) -> Optional[int]:
-    """예외 객체에서 HTTP 상태 코드를 추출한다."""
-    for attr in ("status_code", "http_status", "status"):
-        value = getattr(exc, attr, None)
-        if isinstance(value, int):
-            return value
-    message = str(exc)
-    match = ERROR_CODE_RE.search(message)
-    if match:
-        try:
-            return int(match.group(1))
-        except ValueError:
-            return None
-    return None
-
-
-def _extract_provider_name(message: str) -> Optional[str]:
-    """에러 메시지에서 제공자 이름을 추출한다."""
-    match = PROVIDER_NAME_RE.search(message)
-    if match:
-        return match.group(1)
-    return None
-
-
-def _is_service_unavailable_error(exc: Exception) -> bool:
-    """서비스 불가(503) 오류인지 판별한다."""
-    status_code = _extract_status_code(exc)
-    if status_code == 503:
-        return True
-    message = str(exc).lower()
-    return "service_unavailable" in message or "service unavailable" in message
-
-
-def _extract_error_code(error: Any) -> Optional[int]:
-    if isinstance(error, dict):
-        code = error.get("code")
-        if isinstance(code, int):
-            return code
-        try:
-            return int(code)
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _extract_provider_from_error(error: Any) -> Optional[str]:
-    if not isinstance(error, dict):
-        return None
-    metadata = error.get("metadata")
-    if isinstance(metadata, dict):
-        provider = metadata.get("provider_name")
-        if isinstance(provider, str) and provider.strip():
-            return provider
-    return None
-
-
-def _format_openrouter_error(error: Any) -> str:
-    if isinstance(error, dict):
-        message = str(error.get("message", ""))
-        code = error.get("code")
-        provider = _extract_provider_from_error(error)
-        parts = []
-        if message:
-            parts.append(message)
-        if code is not None:
-            parts.append(f"code={code}")
-        if provider:
-            parts.append(f"provider={provider}")
-        return "OpenRouter error: " + ", ".join(parts) if parts else "OpenRouter error"
-    return f"OpenRouter error: {error}"
-
-
-def _format_service_unavailable_message(exc: Exception) -> str:
-    """503 오류 메시지를 사용자 친화적으로 정리한다."""
-    provider = _extract_provider_name(str(exc))
-    if provider:
-        return (
-            f"VLM 제공자({provider})에서 503 오류가 발생했습니다. "
-            "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
-        )
-    return (
-        "VLM 제공자에서 503 오류가 발생했습니다. "
-        "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
-    )
 
 
 def load_prompt_bundle(
@@ -152,6 +73,7 @@ def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]
 
 
 def _load_openrouter_keys() -> List[str]:
+    """환경변수에서 OpenRouter API 키 목록을 구성한다."""
     keys: List[str] = []
     list_env = os.getenv(KEY_LIST_ENV, "")
     if list_env:
@@ -303,18 +225,19 @@ class OpenRouterVlmExtractor:
                 last_error = exc
                 if idx < len(self.clients):
                     continue
-                if _is_service_unavailable_error(exc):
-                    raise RuntimeError(_format_service_unavailable_message(exc)) from exc
+                if is_service_unavailable_error(exc):
+                    raise RuntimeError(format_service_unavailable_message(exc)) from exc
                 raise
             error = getattr(completion, "error", None)
             if error:
-                last_error = RuntimeError(_format_openrouter_error(error))
+                last_error = RuntimeError(format_openrouter_error(error))
                 if idx < len(self.clients):
                     continue
-                code = _extract_error_code(error)
-                if code == 503:
-                    message = _format_service_unavailable_message(
-                        RuntimeError(str(error))
+                code = extract_error_code(error)
+                if code in (502, 503):
+                    message = format_service_unavailable_message(
+                        RuntimeError(str(error)),
+                        status_code=code,
                     )
                     raise RuntimeError(message) from last_error
                 raise last_error
@@ -507,81 +430,3 @@ def write_vlm_raw_json(results: List[Dict[str, Any]], output_path: Path) -> None
     """VLM 결과를 vlm_raw.json 형태로 저장한다."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def parse_args() -> argparse.Namespace:
-    """CLI 인자를 파싱한다."""
-    parser = argparse.ArgumentParser(description="OpenRouter VLM 실행 (이미지 → Markdown 텍스트)")
-    parser.add_argument(
-        "--image",
-        action="append",
-        required=True,
-        help="Path to a local image (repeatable).",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Override the OpenRouter model name.",
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help="Parallel batch requests (default: 1).",
-    )
-    parser.add_argument(
-        "--video-name",
-        required=True,
-        help="data/outputs/{video_name}/vlm_raw.json 경로를 만들 때 사용할 이름",
-    )
-    parser.add_argument(
-        "--prompt-version",
-        default=None,
-        help="prompts.yaml의 프롬프트 버전 ID (예: vlm_v1.0)",
-    )
-    parser.add_argument(
-        "--prompt-path",
-        default=None,
-        help="prompts.yaml 경로 (기본: config/vlm/prompts.yaml)",
-    )
-    parser.add_argument(
-        "--settings-path",
-        default=None,
-        help="settings.yaml 경로 (기본: config/vlm/settings.yaml)",
-    )
-    parser.add_argument(
-        "--output-root",
-        default="data/outputs",
-        help="원시 결과 출력 베이스 디렉토리 (기본: data/outputs)",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """CLI에서 전달된 인자로 VLM 추출을 실행한다."""
-    args = parse_args()
-
-    prompt_path = Path(args.prompt_path) if args.prompt_path else None
-    settings_path = Path(args.settings_path) if args.settings_path else None
-    extractor = OpenRouterVlmExtractor(
-        video_name=args.video_name,
-        output_root=Path(args.output_root),
-        prompt_version=args.prompt_version,
-        prompt_path=prompt_path,
-        settings_path=settings_path,
-    )
-    if args.model:
-        extractor.model_name = args.model
-
-    results = extractor.extract_features(
-        args.image,
-        show_progress=True,
-        concurrency=args.concurrency,
-    )
-    output_path = extractor.get_output_path()
-    write_vlm_raw_json(results, output_path)
-    print(f"[OK] saved to {output_path}")
-
-
-if __name__ == "__main__":
-    main()
