@@ -147,6 +147,32 @@ def _extract_manifest_timestamp_ms(item: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _parse_time_to_ms(raw_value: str) -> Optional[int]:
+    value = raw_value.strip()
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        numbers = [int(part) for part in parts]
+    except ValueError:
+        return None
+    if any(number < 0 for number in numbers):
+        return None
+    if len(numbers) == 2:
+        minutes, seconds = numbers
+        if seconds >= 60:
+            return None
+        total_seconds = minutes * 60 + seconds
+    else:
+        hours, minutes, seconds = numbers
+        if minutes >= 60 or seconds >= 60:
+            return None
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+    return total_seconds * 1000
+
+
 def _render_captures(video_root: Path) -> None:
     manifest = _load_manifest(video_root)
     if not manifest:
@@ -573,13 +599,26 @@ def main() -> None:
                             st.caption(author)
                         st.markdown(message.get("content", ""))
 
+            time_input = st.text_input(
+                "Time (mm:ss)",
+                value="",
+                key="chat_time_input",
+                placeholder="예: 01:23",
+            )
             prompt = st.chat_input("Message chatbot", disabled=st.session_state.adk_busy)
             if prompt and not st.session_state.adk_busy:
+                raw_time = st.session_state.get("chat_time_input", "")
+                time_ms = _parse_time_to_ms(raw_time)
+                if raw_time and time_ms is None:
+                    st.warning("Time format should be mm:ss (예: 01:23). Sending without time.")
                 st.session_state.adk_busy = True
                 st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                user_message = prompt
+                if time_ms is not None:
+                    user_message = f"[time_ms={time_ms}] {prompt}"
                 try:
                     with st.spinner("Waiting for chatbot..."):
-                        responses = send_adk_message(st.session_state.adk_session, prompt)
+                        responses = send_adk_message(st.session_state.adk_session, user_message)
                     for response in responses:
                         st.session_state.chat_messages.append(
                             {
