@@ -1,7 +1,14 @@
 # Fusion 코어 모듈
 
-STT/VLM 동기화, 요약, 렌더링을 위한 코어 모듈입니다.
-ADK 파이프라인(`src/adk_pipeline`)에서 사용됩니다.
+STT/VLM 동기화 → 요약 → 렌더링을 담당하는 코어 모듈입니다.
+`src/adk_pipeline`과 파이프라인 단계에서 호출됩니다.
+
+## 역할
+
+- STT/VLM 동기화로 세그먼트/유닛 생성
+- 세그먼트 요약 생성
+- 마크다운 렌더링 + 최종 요약 생성
+- (옵션) judge 평가 리포트 생성
 
 ## 모듈 구조
 
@@ -9,18 +16,16 @@ ADK 파이프라인(`src/adk_pipeline`)에서 사용됩니다.
 src/fusion/
 ├── __init__.py              # 패키지 초기화
 ├── config.py                # 설정 로드 (load_config)
-├── config.yaml              # 설정 템플릿
 ├── io_utils.py              # I/O 유틸리티
 ├── sync_engine.py           # STT/VLM 동기화 (run_sync_engine)
 ├── summarizer.py            # Gemini 요약 (run_summarizer)
-├── renderer.py              # MD 렌더링 (render_segment_summaries_md)
-├── final_summary_composer.py # 최종 요약 (compose_final_summaries)
-└── prompt_versions.md       # 프롬프트 버전 히스토리
+├── renderer.py              # MD 렌더링 + 최종 요약 (render_segment_summaries_md, compose_final_summaries)
+└── prompt_versions.md       # 프롬프트 버전 참고
 ```
 
-## 사용 방법
+## 실행 흐름
 
-이 모듈은 ADK 파이프라인을 통해 실행됩니다.
+이 모듈은 직접 실행하지 않고 파이프라인이 호출합니다.
 
 ```bash
 # Step 1: Pre-ADK (STT + Capture)
@@ -32,7 +37,7 @@ adk web src/adk_pipeline
 
 ## 핵심 함수
 
-### sync_engine.run_sync_engine(config, limit, dry_run)
+### sync_engine.run_sync_engine(config, limit)
 STT와 VLM 결과를 동기화하여 세그먼트를 생성합니다.
 
 **출력:**
@@ -40,7 +45,7 @@ STT와 VLM 결과를 동기화하여 세그먼트를 생성합니다.
 - `segments_units.jsonl`: 상세 유닛 정보 포함
 - `sync.json`, `trace_map.json`: 동기화 메타데이터
 
-### summarizer.run_summarizer(config, limit, dry_run)
+### summarizer.run_summarizer(config, limit)
 Gemini를 사용하여 세그먼트별 요약을 생성합니다.
 
 **출력:**
@@ -52,7 +57,7 @@ Gemini를 사용하여 세그먼트별 요약을 생성합니다.
 **출력:**
 - `segment_summaries.md`: 읽기 쉬운 마크다운 형식
 
-### final_summary_composer.compose_final_summaries(...)
+### renderer.compose_final_summaries(...)
 세그먼트 요약을 기반으로 최종 요약을 생성합니다.
 
 **출력:**
@@ -60,13 +65,10 @@ Gemini를 사용하여 세그먼트별 요약을 생성합니다.
 
 ## 설정 (config.yaml)
 
-```yaml
-paths:
-  stt_json: "path/to/stt.json"
-  vlm_json: "path/to/vlm.json"
-  captures_manifest_json: "path/to/manifest.json"
-  output_root: "path/to/output"
+템플릿 설정 파일은 `config/fusion/settings.yaml`에 있으며, `paths`는 실행 시
+생성된 config에서 자동으로 주입됩니다.
 
+```yaml
 sync_engine:
   min_segment_sec: 10
   max_segment_sec: 120
@@ -77,6 +79,7 @@ summarizer:
   temperature: 0.1
   bullets_per_segment_min: 2
   bullets_per_segment_max: 5
+  prompt_version: "sum_v1.6"
   # ...
 
 llm_gemini:
@@ -84,6 +87,16 @@ llm_gemini:
   model: "gemini-2.0-flash"
   # ...
 ```
+
+## Summarizer 프롬프트 버전
+
+- 프롬프트 버전은 `config/fusion/prompts.yaml`에서 관리합니다.
+- 기본 버전은 `config/fusion/settings.yaml`의 `summarizer.prompt_version`으로 결정됩니다.
+- 템플릿 치환 토큰 예시:
+  - `{{CLAIM_MAX_CHARS}}`
+  - `{{BULLETS_MIN}}`
+  - `{{BULLETS_MAX}}`
+  - `{{SEGMENTS_TEXT}}`
 
 ## Gemini 설정
 
@@ -120,7 +133,9 @@ data/outputs/{video_name}/
     ├── trace_map.json
     ├── segment_summaries.jsonl
     ├── segment_summaries.md
-    ├── judge.json
+    ├── judge/
+    │   ├── judge_report.json
+    │   └── judge_segment_reports.jsonl
     └── outputs/
         ├── final_summary_A.md
         ├── final_summary_B.md
@@ -129,6 +144,5 @@ data/outputs/{video_name}/
 
 ## 주의사항
 
-- 이 모듈은 라이브러리로 사용됩니다. CLI 실행은 `adk_pipeline`을 통해 수행합니다.
+- 이 모듈은 라이브러리로 사용됩니다. 실행은 파이프라인에서 수행합니다.
 - 모든 JSONL 입출력은 스트리밍 방식으로 처리됩니다.
-- 요약 프롬프트 버전 히스토리는 `prompt_versions.md`에 기록됩니다.

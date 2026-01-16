@@ -1,6 +1,10 @@
+"""
+VLM 추출 엔진과 OpenRouter 연동 로직
+오류 처리 helper는 src/vlm/openrouter_errors.py에 분리되어 있다.
+"""
+
 from __future__ import annotations
 
-import argparse
 import base64
 import json
 import mimetypes
@@ -8,100 +12,28 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from openai import OpenAI
+import yaml
 
-from src.common.schemas import OcrBox, OcrResult
-
-ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
-
-FULL_IMAGE_BBOX = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
-
-DEFAULT_REQUEST_PARAMS = {
-    "temperature": 0.4,
-    "top_p": 0.9,
-    "max_tokens": None,
-    "presence_penalty": 0.0,
-    "frequency_penalty": 0.1,
-    "seed": None,
-    "stream": False,
-    "stop": ["</s>", "<|endoftext|>"],
-}
-
-BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
-PROVIDER_NAME_RE = re.compile(r'provider_name["\']?:\s*["\']([^"\']+)')
-ERROR_CODE_RE = re.compile(r"Error code:\s*(\d+)")
-PROMPT_SECTION_RE = re.compile(r"^##\s+.+?\(([^)]+)\)\s*$", re.MULTILINE)
-PROMPT_BLOCK_RE = re.compile(
-    r"^###\s*(SYSTEM|USER)\s*$\n```text\n(.*?)\n```",
-    re.MULTILINE | re.DOTALL,
+from src.vlm.openrouter_errors import (
+    extract_error_code,
+    format_openrouter_error,
+    format_service_unavailable_message,
+    is_service_unavailable_error,
 )
 
-PROMPT_VERSIONS_PATH = Path(__file__).resolve().with_name("prompt_versions.md")
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+PROMPT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "vlm" / "prompts.yaml"
+SETTINGS_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "vlm" / "settings.yaml"
+
+BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
 DEFAULT_PROMPT_VERSION = "vlm_v1.1"
-
-
-def _extract_status_code(exc: Exception) -> Optional[int]:
-    for attr in ("status_code", "http_status", "status"):
-        value = getattr(exc, attr, None)
-        if isinstance(value, int):
-            return value
-    message = str(exc)
-    match = ERROR_CODE_RE.search(message)
-    if match:
-        try:
-            return int(match.group(1))
-        except ValueError:
-            return None
-    return None
-
-
-def _extract_provider_name(message: str) -> Optional[str]:
-    match = PROVIDER_NAME_RE.search(message)
-    if match:
-        return match.group(1)
-    return None
-
-
-def _is_service_unavailable_error(exc: Exception) -> bool:
-    status_code = _extract_status_code(exc)
-    if status_code == 503:
-        return True
-    message = str(exc).lower()
-    return "service_unavailable" in message or "service unavailable" in message
-
-
-def _format_service_unavailable_message(exc: Exception) -> str:
-    provider = _extract_provider_name(str(exc))
-    if provider:
-        return (
-            f"VLM 제공자({provider})에서 503 오류가 발생했습니다. "
-            "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
-        )
-    return (
-        "VLM 제공자에서 503 오류가 발생했습니다. "
-        "잠시 후 다시 시도하세요. 배치 크기와 동시성 값을 낮추면 도움이 될 수 있습니다."
-    )
-
-
-def _parse_prompt_versions(content: str) -> Dict[str, Dict[str, str]]:
-    versions: Dict[str, Dict[str, str]] = {}
-    matches = list(PROMPT_SECTION_RE.finditer(content))
-    for idx, match in enumerate(matches):
-        version_id = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
-        section = content[start:end]
-        prompts: Dict[str, str] = {}
-        for block in PROMPT_BLOCK_RE.finditer(section):
-            name = block.group(1).strip().lower()
-            text = block.group(2).strip()
-            prompts[name] = text
-        if prompts:
-            versions[version_id] = prompts
-    return versions
+DEFAULT_MODEL_NAME = "qwen/qwen3-vl-32b-instruct"
+DEFAULT_KEY_ENV = "OPENROUTER_API_KEY"
+KEY_LIST_ENV = "OPENROUTER_API_KEYS"
 
 
 def load_prompt_bundle(
@@ -109,34 +41,67 @@ def load_prompt_bundle(
     prompt_version: Optional[str] = None,
     prompt_path: Optional[Path] = None,
 ) -> Tuple[str, str]:
-    version_id = (
-        prompt_version
-        or os.getenv("VLM_PROMPT_VERSION")
-        or DEFAULT_PROMPT_VERSION
-    )
-    path = prompt_path or PROMPT_VERSIONS_PATH
+    """프롬프트 설정 파일에서 시스템/사용자 프롬프트를 읽는다."""
+    version_id = prompt_version or DEFAULT_PROMPT_VERSION
+    path = prompt_path or PROMPT_CONFIG_PATH
     if not path.exists():
-        raise FileNotFoundError(f"prompt_versions.md를 찾을 수 없습니다: {path}")
-    content = path.read_text(encoding="utf-8")
-    versions = _parse_prompt_versions(content)
-    if version_id not in versions:
-        available = ", ".join(sorted(versions.keys()))
-        raise ValueError(f"프롬프트 버전을 찾을 수 없습니다: {version_id} (가능: {available})")
-    prompt_pair = versions[version_id]
-    if "system" not in prompt_pair or "user" not in prompt_pair:
-        raise ValueError(f"프롬프트 블록이 누락되었습니다: {version_id}")
-    return prompt_pair["system"], prompt_pair["user"]
+        raise FileNotFoundError(f"VLM prompt config not found: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid VLM prompt config format (must be a map).")
+
+    prompt_pair = payload.get(version_id)
+    if not isinstance(prompt_pair, dict):
+        available = ", ".join(sorted(payload.keys()))
+        raise ValueError(f"Prompt version not found: {version_id} (available: {available})")
+    system = prompt_pair.get("system")
+    user = prompt_pair.get("user")
+    if not isinstance(system, str) or not isinstance(user, str):
+        raise ValueError(f"Prompt block missing: {version_id}")
+    return system.strip(), user.strip()
 
 
-def load_env() -> None:
-    if ENV_PATH.exists():
-        load_dotenv(ENV_PATH)
-    else:
-        load_dotenv()
+def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]:
+    """VLM 설정 YAML을 로드한다."""
+    path = settings_path or SETTINGS_CONFIG_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"VLM settings file not found: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid VLM settings format (must be a map).")
+    return payload
+
+
+def _load_openrouter_keys() -> List[str]:
+    """환경변수에서 OpenRouter API 키 목록을 구성한다."""
+    keys: List[str] = []
+    list_env = os.getenv(KEY_LIST_ENV, "")
+    if list_env:
+        for item in re.split(r"[,\s]+", list_env):
+            if item.strip():
+                keys.append(item.strip())
+    index = 1
+    while True:
+        key = os.getenv(f"{DEFAULT_KEY_ENV}_{index}")
+        if not key:
+            break
+        keys.append(key.strip())
+        index += 1
+    single_key = os.getenv(DEFAULT_KEY_ENV)
+    if single_key:
+        keys.append(single_key.strip())
+    seen = set()
+    deduped = []
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
 
 
 class OpenRouterVlmExtractor:
-    """Vision-capable OpenRouter 모델로 이미지 텍스트/수식 힌트를 추출한다."""
+    """OpenRouter 기반 VLM으로 이미지 텍스트를 추출한다."""
 
     def __init__(
         self,
@@ -145,24 +110,49 @@ class OpenRouterVlmExtractor:
         *,
         prompt_version: Optional[str] = None,
         prompt_path: Optional[Path] = None,
+        settings_path: Optional[Path] = None,
     ) -> None:
-        load_env()
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
-        if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY is not set in the environment.")
+        if ENV_PATH.exists():
+            load_dotenv(ENV_PATH)
+        else:
+            load_dotenv()
+
+        self.api_keys = _load_openrouter_keys()
+        if not self.api_keys:
+            raise ValueError(
+                "OPENROUTER_API_KEY (single) or OPENROUTER_API_KEYS (multiple) must be set."
+            )
 
         self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        self.model_name = "qwen/qwen3-vl-32b-instruct"
-        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        self.request_params = dict(DEFAULT_REQUEST_PARAMS)
+        settings = load_vlm_settings(settings_path=settings_path)
+        model_name = settings.get("model_name", DEFAULT_MODEL_NAME)
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("Invalid model_name format in VLM settings.")
+        self.model_name = model_name
+        self.clients = [
+            OpenAI(base_url=self.base_url, api_key=api_key) for api_key in self.api_keys
+        ]
+        request_params = settings.get("request_params", {})
+        if not isinstance(request_params, dict):
+            raise ValueError("Invalid request_params format in VLM settings (must be a map).")
+        self.request_params = request_params
+        settings_prompt_version = settings.get("prompt_version")
+        if settings_prompt_version is not None and not isinstance(settings_prompt_version, str):
+            raise ValueError("Invalid prompt_version format in VLM settings.")
+        selected_prompt_version = (
+            prompt_version
+            or settings_prompt_version
+            or DEFAULT_PROMPT_VERSION
+        )
         self.system_prompt, self.user_prompt = load_prompt_bundle(
-            prompt_version=prompt_version,
+            prompt_version=selected_prompt_version,
             prompt_path=prompt_path,
         )
         self.video_name = video_name
         self.output_root = Path(output_root)
 
     def _build_batch_user_prompt(self, image_count: int) -> str:
+        """배치 처리용 사용자 프롬프트를 구성한다."""
         return (
             "여러 이미지를 순서대로 제공한다. "
             f"이미지는 총 {image_count}장이다. "
@@ -173,11 +163,13 @@ class OpenRouterVlmExtractor:
         )
 
     def get_output_path(self) -> Path:
+        """vlm_raw.json이 저장될 경로를 반환한다."""
         if not self.video_name:
             raise ValueError("video_name is required to build the output path.")
         return self.output_root / self.video_name / "vlm_raw.json"
 
     def _build_image_part(self, image_path: str) -> dict:
+        """이미지 파일을 data URL 형태로 변환한다."""
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Image not found: {image_path}")
         mime_type, _ = mimetypes.guess_type(image_path)
@@ -189,7 +181,164 @@ class OpenRouterVlmExtractor:
 
         return {"type": "image_url", "image_url": {"url": url}}
 
+    def _build_single_messages(self, image_path: str) -> List[Dict[str, Any]]:
+        """단일 이미지 요청에 사용할 메시지를 구성한다."""
+        return [
+            {"role": "system", "content": self.system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": self.user_prompt},
+                    self._build_image_part(image_path),
+                ],
+            },
+        ]
+
+    def _build_batch_messages(self, image_paths: List[str]) -> List[Dict[str, Any]]:
+        """배치 요청에 사용할 메시지를 구성한다."""
+        content_parts = [{"type": "text", "text": self._build_batch_user_prompt(len(image_paths))}]
+        for idx, image_path in enumerate(image_paths, start=1):
+            content_parts.append({"type": "text", "text": f"Image {idx}:"})
+            content_parts.append(self._build_image_part(image_path))
+        return [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": content_parts},
+        ]
+
+    def _request_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        label: str,
+        request_params: Dict[str, Any],
+        show_progress: bool,
+    ) -> str:
+        """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다.
+
+        - 여러 API 키가 있으면 순서대로 시도한다.
+        - show_progress가 켜져 있으면 현재 키 인덱스와 실패 전환을 로그로 남긴다.
+        - 502/503은 서비스 장애로 판단해 사용자 친화 메시지로 변환한다.
+        - 응답이 비어 있거나 오류 payload가 있으면 예외를 던진다.
+        - 정상 응답이면 첫 번째 choice의 content를 반환한다.
+        """
+        last_error: Optional[Exception] = None
+        total_keys = len(self.clients)
+        
+        # 1. 설정된 모든 API 키를 순회하며 요청 시도 (Round-robin/Failover)
+        for idx, client in enumerate(self.clients, start=1):
+            if show_progress:
+                print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
+            try:
+                # 2. 실제 API 호출
+                completion = client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    **request_params,
+                )
+            except Exception as exc:
+                last_error = exc
+                # 3. 실패 시 다음 키가 있으면 재시도, 없으면 예외 처리
+                if idx < total_keys:
+                    if show_progress:
+                        print(
+                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            flush=True,
+                        )
+                    continue
+                # 4. 서비스 불가 에러(502/503)는 별도 메시지로 변환
+                if is_service_unavailable_error(exc):
+                    raise RuntimeError(format_service_unavailable_message(exc)) from exc
+                raise
+            
+            # 5. 응답 에러 필드 확인
+            error = getattr(completion, "error", None)
+            if error:
+                last_error = RuntimeError(format_openrouter_error(error))
+                if idx < total_keys:
+                    if show_progress:
+                        print(
+                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            flush=True,
+                        )
+                    continue
+                code = extract_error_code(error)
+                if code in (502, 503):
+                    message = format_service_unavailable_message(
+                        RuntimeError(str(error)),
+                        status_code=code,
+                    )
+                    raise RuntimeError(message) from last_error
+                raise last_error
+            
+            # 6. 빈 응답 처리
+            if not completion or not completion.choices:
+                last_error = RuntimeError(
+                    f"OpenRouter API returned empty response for {label}: {completion}"
+                )
+                if idx < total_keys:
+                    if show_progress:
+                        print(
+                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            flush=True,
+                        )
+                    continue
+                raise last_error
+            
+            # 7. 성공 시 결과 반환
+            return completion.choices[0].message.content or ""
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"OpenRouter API returned empty response for {label}: none")
+
+    def _build_result(self, image_path: str, content: str) -> Dict[str, Any]:
+        """Convert VLM response to vlm_raw.json format result."""
+        text = content.strip()
+        detections = [{"text": text}] if text else []
+        return {"image_path": image_path, "raw_results": detections}
+
+    def _run_batch_request(
+        self,
+        batch_paths: List[str],
+        *,
+        label: str,
+        request_params: Dict[str, Any],
+        show_progress: bool,
+    ) -> List[Dict[str, Any]]:
+        """배치 요청을 실행하고 이미지별 결과를 반환한다."""
+        messages = self._build_batch_messages(batch_paths)
+        content = self._request_completion(
+            messages,
+            label=label,
+            request_params=request_params,
+            show_progress=show_progress,
+        )
+        sections = self._split_batch_content(content, len(batch_paths))
+        return [
+            self._build_result(image_path, section)
+            for image_path, section in zip(batch_paths, sections)
+        ]
+
+    def _run_single_request(
+        self,
+        image_path: str,
+        *,
+        label: str,
+        request_params: Dict[str, Any],
+        show_progress: bool,
+    ) -> Dict[str, Any]:
+        """단일 이미지 요청을 실행하고 결과를 반환한다."""
+        messages = self._build_single_messages(image_path)
+        content = self._request_completion(
+            messages,
+            label=label,
+            request_params=request_params,
+            show_progress=show_progress,
+        )
+        return self._build_result(image_path, content)
+
     def _split_batch_content(self, content: str, image_count: int) -> List[str]:
+        """배치 응답을 이미지 수에 맞춰 섹션별로 분리한다."""
         if image_count < 1:
             return []
         matches = list(BATCH_SECTION_RE.finditer(content))
@@ -205,50 +354,14 @@ class OpenRouterVlmExtractor:
 
         return [sections.get(i, "") for i in range(1, image_count + 1)]
 
-    def _extract_batch(self, image_paths: List[str], request_params: dict) -> List[OcrResult]:
-        content_parts = [{"type": "text", "text": self._build_batch_user_prompt(len(image_paths))}]
-        for idx, image_path in enumerate(image_paths, start=1):
-            content_parts.append({"type": "text", "text": f"Image {idx}:"})
-            content_parts.append(self._build_image_part(image_path))
-
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": content_parts},
-        ]
-
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                **request_params,
-            )
-        except Exception as exc:
-            if _is_service_unavailable_error(exc):
-                raise RuntimeError(_format_service_unavailable_message(exc)) from exc
-            raise
-        if not completion or not completion.choices:
-            raise RuntimeError(f"OpenRouter API returned empty response for batch: {completion}")
-        content = completion.choices[0].message.content or ""
-        sections = self._split_batch_content(content, len(image_paths))
-
-        results: List[OcrResult] = []
-        for image_path, section in zip(image_paths, sections):
-            if section.strip():
-                detections = [OcrBox(text=section, bbox=FULL_IMAGE_BBOX)]
-            else:
-                detections = []
-            results.append(OcrResult(image_path=image_path, raw_results=detections))
-
-        return results
-
     def extract_features(
         self,
         image_paths: List[str],
         batch_size: Optional[int] = None,
         show_progress: bool = False,
         concurrency: int = 1,
-    ) -> List[OcrResult]:
-        """이미지 리스트에 대해 VLM 호출을 수행하고, 결과를 이미지 단위로 반환한다."""
+    ) -> List[Dict[str, Any]]:
+        """이미지 목록을 VLM에 전달해 결과를 순서대로 반환한다."""
         if not image_paths:
             return []
         if batch_size is None:
@@ -257,7 +370,7 @@ class OpenRouterVlmExtractor:
             raise ValueError("batch_size must be >= 1")
         if concurrency < 1:
             raise ValueError("concurrency must be >= 1")
-        results: List[OcrResult] = []
+        results: List[Dict[str, Any]] = []
         request_params = {k: v for k, v in self.request_params.items() if v is not None}
         total_images = len(image_paths)
 
@@ -269,172 +382,121 @@ class OpenRouterVlmExtractor:
             print(f"[VLM] base_url: {self.base_url}", flush=True)
             print(f"[VLM] concurrency: {concurrency}", flush=True)
 
+        # [Case 1] 배치 모드 (batch_size > 1)
         if batch_size > 1:
+            # 1. 이미지를 배치 단위로 분할
             batches = [
                 image_paths[start : start + batch_size]
                 for start in range(0, len(image_paths), batch_size)
             ]
             total_batches = len(batches)
+
+            # 1-1. 순차 실행 (Concurrency 미사용)
             if concurrency == 1 or total_batches == 1:
                 for batch_index, batch_paths in enumerate(batches, start=1):
                     if show_progress:
                         print(
-                            f"[VLM] request batch {batch_index}/{total_batches} "
+                            f"[VLM] request group {batch_index}/{total_batches} "
                             f"({len(batch_paths)} images)",
                             flush=True,
                         )
-                    results.extend(self._extract_batch(batch_paths, request_params))
+                    results.extend(
+                        self._run_batch_request(
+                            batch_paths,
+                            label=f"group {batch_index}/{total_batches}",
+                            request_params=request_params,
+                            show_progress=show_progress,
+                        )
+                    )
                     if show_progress:
-                        print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
+                        print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
                 return results
 
-            results_by_index: dict[int, List[OcrResult]] = {}
+            # 1-2. 병렬 실행 (ThreadPoolExecutor 사용)
+            results_by_index: dict[int, List[Dict[str, Any]]] = {}
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 future_map = {}
                 for batch_index, batch_paths in enumerate(batches, start=1):
                     if show_progress:
                         print(
-                            f"[VLM] request batch {batch_index}/{total_batches} "
+                            f"[VLM] request group {batch_index}/{total_batches} "
                             f"({len(batch_paths)} images)",
                             flush=True,
                         )
-                    future = executor.submit(self._extract_batch, batch_paths, request_params)
+                    future = executor.submit(
+                        self._run_batch_request,
+                        batch_paths,
+                        label=f"group {batch_index}/{total_batches}",
+                        request_params=request_params,
+                        show_progress=show_progress,
+                    )
                     future_map[future] = batch_index
+
+                if show_progress:
+                    print("-" * 50, flush=True)
+                
+                # 완료된 순서대로 결과 수집하되, 인덱스로 저장해 나중에 정렬
                 for future in as_completed(future_map):
                     batch_index = future_map[future]
                     results_by_index[batch_index] = future.result()
                     if show_progress:
-                        print(f"[VLM] done batch {batch_index}/{total_batches}", flush=True)
+                        print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
 
+            # 원래 배치 순서대로 결과 병합
             for batch_index in range(1, total_batches + 1):
                 results.extend(results_by_index[batch_index])
             return results
 
-        def _extract_single(image_path: str) -> OcrResult:
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": self.user_prompt},
-                        self._build_image_part(image_path),
-                    ],
-                },
-            ]
-
-            try:
-                completion = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    **request_params,
-                )
-            except Exception as exc:
-                if _is_service_unavailable_error(exc):
-                    raise RuntimeError(_format_service_unavailable_message(exc)) from exc
-                raise
-            if not completion or not completion.choices:
-                raise RuntimeError(f"OpenRouter API returned empty response for single image: {completion}")
-            content = completion.choices[0].message.content or ""
-            if content.strip():
-                detections = [OcrBox(text=content, bbox=FULL_IMAGE_BBOX)]
-            else:
-                detections = []
-            return OcrResult(image_path=image_path, raw_results=detections)
-
+        # [Case 2] 단일 모드 (batch_size == 1)
+        # 2-1. 순차 실행
         if concurrency == 1 or total_images == 1:
             for idx, image_path in enumerate(image_paths, start=1):
                 if show_progress:
                     image_name = Path(image_path).name
                     print(f"[VLM] request {idx}/{total_images}: {image_name}", flush=True)
-                result = _extract_single(image_path)
+                result = self._run_single_request(
+                    image_path,
+                    label=f"image {idx}/{total_images}",
+                    request_params=request_params,
+                    show_progress=show_progress,
+                )
                 if show_progress:
                     print(f"[VLM] done {idx}/{total_images}", flush=True)
                 results.append(result)
             return results
 
-        results_by_index = {}
+        # 2-2. 병렬 실행
+        results_by_index: Dict[int, Dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             future_map = {}
             for idx, image_path in enumerate(image_paths, start=1):
                 if show_progress:
                     image_name = Path(image_path).name
                     print(f"[VLM] request {idx}/{total_images}: {image_name}", flush=True)
-                future = executor.submit(_extract_single, image_path)
+                future = executor.submit(
+                    self._run_single_request,
+                    image_path,
+                    label=f"image {idx}/{total_images}",
+                    request_params=request_params,
+                    show_progress=show_progress,
+                )
                 future_map[future] = idx
+            
+            # 완료된 순서대로 결과 수집
             for future in as_completed(future_map):
                 idx = future_map[future]
                 results_by_index[idx] = future.result()
                 if show_progress:
                     print(f"[VLM] done {idx}/{total_images}", flush=True)
 
+        # 원래 이미지 순서대로 정렬하여 반환
         for idx in range(1, total_images + 1):
             results.append(results_by_index[idx])
 
         return results
 
 
-def write_vlm_raw_json(results: List[OcrResult], output_path: Path) -> None:
+def write_vlm_raw_json(results: List[Dict[str, Any]], output_path: Path) -> None:
+    """VLM 결과를 vlm_raw.json 형태로 저장한다."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [result.model_dump() for result in results]
-    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="OpenRouter VLM 실행 (이미지 → Markdown 텍스트)")
-    parser.add_argument(
-        "--image",
-        action="append",
-        required=True,
-        help="Path to a local image (repeatable).",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Override the OpenRouter model name.",
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help="Parallel batch requests (default: 1).",
-    )
-    parser.add_argument(
-        "--video-name",
-        required=True,
-        help="data/outputs/{video_name}/vlm_raw.json 경로를 만들 때 사용할 이름",
-    )
-    parser.add_argument(
-        "--prompt-version",
-        default=None,
-        help="prompt_versions.md의 프롬프트 버전 ID (예: vlm_v1.0)",
-    )
-    parser.add_argument(
-        "--prompt-path",
-        default=None,
-        help="prompt_versions.md 경로 (기본: src/vlm/prompt_versions.md)",
-    )
-    parser.add_argument(
-        "--output-root",
-        default="data/outputs",
-        help="원시 결과 출력 베이스 디렉토리 (기본: data/outputs)",
-    )
-    args = parser.parse_args()
-
-    prompt_path = Path(args.prompt_path) if args.prompt_path else None
-    extractor = OpenRouterVlmExtractor(
-        video_name=args.video_name,
-        output_root=Path(args.output_root),
-        prompt_version=args.prompt_version,
-        prompt_path=prompt_path,
-    )
-    if args.model:
-        extractor.model_name = args.model
-
-    results = extractor.extract_features(
-        args.image,
-        show_progress=True,
-        concurrency=args.concurrency,
-    )
-    output_path = extractor.get_output_path()
-    write_vlm_raw_json(results, output_path)
-    print(f"[OK] saved to {output_path}")
+    output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,0 +1,26 @@
+# STT 제공자 설정
+stt:
+  default_provider: clova      # 기본 STT 백엔드
+  clova:
+    include_confidence: true   # 세그먼트별 confidence 포함
+    include_raw_response: false  # 원본 API 응답 포함
+    word_alignment: false      # 단어 단위 정렬
+    full_text: false           # 전체 텍스트 포함
+    completion: sync           # 처리 모드
+    language: ko-KR            # 언어 코드
+    timeout: 60                # 요청 타임아웃(초)
+  whisper:
+    include_confidence: false  # 세그먼트별 confidence 포함
+    include_raw_response: false  # 원본 API 응답 포함
+    model_size: base           # 모델 크기
+    device: null               # 장치 지정(null=자동)
+    language: ko               # 언어 코드
+    task: transcribe           # 작업 유형
+    temperature: 0.0           # 샘플링 온도
+
+# 오디오 추출 설정
+extract:
+  sample_rate: 16000           # 출력 샘플 레이트
+  channels: 1                  # 채널 수
+  codec: pcm_s16le             # 출력 코덱
+  mono_method: auto            # 모노 믹스 방식

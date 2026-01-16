@@ -7,72 +7,23 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from textwrap import dedent
+
+import yaml
 
 from .config import ConfigBundle
-from .io_utils import ensure_output_root, print_jsonl_head, read_jsonl, update_token_usage
+from .io_utils import ensure_output_root, read_jsonl, update_token_usage
+from .gemini import init_gemini_client, run_with_retries
 
 
-PROMPT_VERSION = "sum_v1.5"
+PROMPT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "fusion" / "prompts.yaml"
+DEFAULT_PROMPT_VERSION = "sum_v1.6"
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class GeminiClientBundle:
-    client: Any
-    backend: str
-    model: str
 
-
-def _load_genai() -> Any:
-    try:
-        from google import genai  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "google-genai 패키지가 필요합니다. requirements.txt를 확인하세요."
-        ) from exc
-    return genai
-
-
-def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
-    genai = _load_genai()
-    llm_cfg = config.raw.llm_gemini
-    if llm_cfg.backend == "developer_api":
-        api_key = None
-        for env_name in llm_cfg.developer_api.api_key_env_candidates:
-            api_key = os.getenv(env_name)
-            if api_key:
-                break
-        if not api_key:
-            raise ValueError(
-                "Developer API 키가 없습니다. GOOGLE_API_KEY 또는 GEMINI_API_KEY를 설정하세요."
-            )
-        client = genai.Client(api_key=api_key)
-        return GeminiClientBundle(
-            client=client, backend="developer_api", model=llm_cfg.model
-        )
-
-    if llm_cfg.backend == "vertex_ai":
-        project = llm_cfg.vertex_ai.project
-        location = llm_cfg.vertex_ai.location
-        if not project or not location:
-            raise ValueError(
-                "Vertex AI는 project/location이 필요합니다. config를 확인하세요."
-            )
-        if llm_cfg.vertex_ai.auth_mode == "adc":
-            client = genai.Client(vertexai=True, project=project, location=location)
-        else:
-            api_key = os.getenv(llm_cfg.vertex_ai.api_key_env)
-            if not api_key:
-                raise ValueError("Vertex AI express_api_key 모드용 API 키가 없습니다.")
-            client = genai.Client(
-                vertexai=True, project=project, location=location, api_key=api_key
-            )
-        return GeminiClientBundle(
-            client=client, backend="vertex_ai", model=llm_cfg.model
-        )
-
-    raise ValueError(f"지원하지 않는 backend: {llm_cfg.backend}")
 
 
 def _build_response_schema() -> Dict[str, Any]:
@@ -164,6 +115,39 @@ def _build_response_schema() -> Dict[str, Any]:
     }
 
 
+def load_prompt_template(
+    *,
+    prompt_version: Optional[str] = None,
+    prompt_path: Optional[Path] = None,
+) -> str:
+    """프롬프트 템플릿을 설정 파일에서 읽는다."""
+    version_id = prompt_version or DEFAULT_PROMPT_VERSION
+    path = prompt_path or PROMPT_CONFIG_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"Summary prompt config not found: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid summary prompt config format (must be a map).")
+    prompt_block = payload.get(version_id)
+    if not isinstance(prompt_block, dict):
+        available = ", ".join(sorted(payload.keys()))
+        raise ValueError(
+            f"Prompt version not found: {version_id} (available: {available})"
+        )
+    template = prompt_block.get("template")
+    if not isinstance(template, str) or not template.strip():
+        raise ValueError(f"Prompt template is empty: {version_id}")
+    return template.strip()
+
+
+def _render_prompt_template(template: str, replacements: Dict[str, str]) -> str:
+    """템플릿 토큰을 치환해 최종 프롬프트를 만든다."""
+    rendered = template
+    for key, value in replacements.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+        rendered = rendered.replace(f"{{{key}}}", value)
+    return rendered
+
 
 def _build_batch_prompt(
     segments: List[Dict[str, Any]],
@@ -171,89 +155,11 @@ def _build_batch_prompt(
     bullets_min: int,
     bullets_max: int,
     previous_context: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    prompt_path: Optional[Path] = None,
+    feedback_map: Optional[Dict[int, str]] = None,
 ) -> str:
-    """간소화된 배치 프롬프트 생성 (속도 최적화)"""
-    # 이전 배치 context 섹션
-    context_section = ""
-    if previous_context:
-        context_section = f"""
-========================
-이전 배치 요약 (맥락 유지용)
-========================
-{previous_context}
-
-위 내용은 이전 배치에서 다룬 핵심 내용입니다.
-- 현재 배치 요약 시 위 내용과 일관성을 유지하세요.
-- 동일한 용어/개념은 같은 방식으로 설명하세요.
-========================
-
-"""
-
-    prompt = f"""{context_section}당신은 강의 요약 전문가입니다. 아래 제공되는 세그먼트 정보(transcript, visual summary)를 바탕으로 각 세그먼트의 핵심 내용을 요약하세요.
-
-반드시 다음 JSON 배열 형식으로 출력해야 합니다:
-[
-  {{
-    "segment_id": 1,
-    "summary": {{
-      "bullets": [
-        {{
-          "claim": "핵심 내용 한 문장 ({claim_max_chars}자 내외)",
-          "source_type": "direct", 
-          "evidence_refs": ["t1"],
-          "confidence": "high",
-          "notes": "추가 설명 (선택)"
-        }}
-      ],
-      "definitions": [
-        {{
-          "term": "용어",
-          "definition": "정의",
-          "source_type": "direct",
-          "evidence_refs": [],
-          "confidence": "high"
-        }}
-      ],
-      "explanations": [
-         {{
-           "point": "상세 설명 (4~8문장)",
-           "source_type": "inferred",
-           "evidence_refs": [],
-           "confidence": "high",
-           "notes": ""
-         }}
-      ],
-      "open_questions": []
-    }}
-  }}
-]
-
-규칙:
-- bullets는 세그먼트당 {bullets_min}~{bullets_max}개 작성
-- claim은 {claim_max_chars}자 내외로 간결하게
-- source_type: direct(직접인용), inferred(추론), background(배경지식) 중 하나
-- evidence_refs: 근거가 되는 transcript unit_id (t*) 또는 visual unit_id (v*) 리스트
-- 한국어로 작성하세요.
-
-세그먼트 데이터:
-"""
-    for seg in segments:
-        prompt += f"\\n--- Segment {seg.get('segment_id')} ---\\n"
-        prompt += json.dumps(seg, ensure_ascii=False)
-    
-    return prompt
-
-
-def _build_batch_prompt_legacy(
-    segments: List[Dict[str, Any]],
-    claim_max_chars: int,
-    bullets_min: int,
-    bullets_max: int,
-    previous_context: Optional[str] = None,
-) -> str:
-    jsonl_text = "\n".join(
-        json.dumps(segment, ensure_ascii=False) for segment in segments
-    )
+    """설정된 템플릿을 사용해 배치 프롬프트를 생성한다."""
     claim_rule = (
         f"- claim은 {claim_max_chars}자 이하의 한 문장"
         if claim_max_chars > 0
@@ -266,7 +172,22 @@ def _build_batch_prompt_legacy(
     else:
         bullets_rule = "- bullets는 필요한 만큼 작성"
 
-    # 이전 배치 context 섹션
+    segments_text_parts: List[str] = []
+    for seg in segments:
+        seg_id = int(seg.get("segment_id", -1))
+        segments_text_parts.append(f"--- Segment {seg_id} ---")
+        
+        # 피드백 주입
+        if feedback_map and seg_id in feedback_map:
+            fb_text = feedback_map[seg_id]
+            segments_text_parts.append(
+                f"!!! 이전 시도 피드백 (반영하여 개선할 것) !!!\n{fb_text}\n"
+            )
+            
+        segments_text_parts.append(json.dumps(seg, ensure_ascii=False))
+    segments_text = "\n".join(segments_text_parts)
+    jsonl_text = "\n".join(json.dumps(seg, ensure_ascii=False) for seg in segments)
+
     context_section = ""
     if previous_context:
         context_section = f"""
@@ -278,313 +199,39 @@ def _build_batch_prompt_legacy(
 위 내용은 이전 배치에서 다룬 핵심 내용입니다.
 - 현재 배치 요약 시 위 내용과 일관성을 유지하세요.
 - 동일한 용어/개념은 같은 방식으로 설명하세요.
-- 중복 설명은 피하고, 새로운 정보에 집중하세요.
-- 이전 내용과 연결되는 부분이 있으면 자연스럽게 연결하세요.
 ========================
 
 """
 
-    prompt = f"""{context_section}당신은 "요약가"가 아니라 "초학자 튜터(독립형 강의 노트 작성자)"입니다.
-목표는 입력(STT/VLM)을 그대로 줄이는 것이 아니라, 사용자가 영상을/슬라이드를 보지 않아도 오직 당신의 출력(JSON)만 읽고 이해할 수 있도록 '설명'과 '연결'을 만들어 주는 것입니다.
-
-- 모든 출력은 한국어로 작성하되, 아래 용어 표기 규칙을 반드시 지키세요.
-- 출력은 반드시 "순수 JSON 배열"만 반환하세요. (설명 문장/코드블록/마크다운 금지)
-- 각 세그먼트는 오직 해당 세그먼트 입력만 근거로 하되, 일반적인 배경지식은 허용됩니다(아래 source_type 규칙 준수).
-- 사용자에게는 STT/VLM 입력이 보이지 않습니다. 사용자가 볼 수 있는 것은 오직 당신의 출력(JSON)뿐입니다.
-
-========================
-출력 JSON 형식 (필수)
-========================
-배열의 각 원소:
-{{
-  "segment_id": int,
-  "summary": {{
-    "bullets": [...],
-    "definitions": [...],
-    "explanations": [...],
-    "open_questions": [...]
-  }}
-}}
-
-========================
-가장 중요한 품질 목표 (우선순위)
-========================
-1) "독립형 노트": 사용자가 영상을/슬라이드를/그림을 보지 않아도 이해할 수 있어야 합니다.
-2) "처음 듣는 학생이 이해"가 최우선입니다.
-3) 단순 패러프레이즈(입력 문장 구조를 그대로 바꾼 문장)를 피하세요.
-4) 각 세그먼트마다 최소 1개는 "왜(why)" 또는 "어떻게(how)"를 명시적으로 설명하세요.
-5) 수식/기호가 나오면 가능한 한 입력에 있는 전체 수식을 먼저 제시하고, 이어서 각 기호/항의 의미를 풀어 쓰세요.
-   - "이 수식/이 항/여기" 같은 지시어는 금지합니다. 반드시 수식 이름/항 이름/기호를 명시하세요.
-6) 강의 맥락에서 중요한 연결(앞에서 왜 이걸 말하는지, 다음으로 무엇을 위해 쓰는지)을 최소 1개는 써 주세요.
-   - 단, "앞에서/다음에/방금" 같은 시간 지시어 대신, 연결되는 개념/목표를 명시적으로 적으세요.
-
-========================
-요약 규칙
-========================
-{bullets_rule}
-{claim_rule}
-
-- 수식/기호는 입력에서 확인되면 그대로 제시한다.
-- 입력에 전체 수식이 없더라도 핵심 관계를 복원해 표현할 수 있다(수식 대신 문장 설명도 허용).
-  이때 source_type은 inferred 또는 background로 표기하고, confidence는 medium/low로 낮추며,
-  notes에 "입력에 전체 수식 없음, 요약/재구성" 같은 설명을 1문장 남긴다.
-- 입력과 무관한 수식/기호를 사실처럼 단정하지 않는다.
-
-- bullets는 "강의의 뼈대(학생이 외워야 할 핵심)"입니다.
-  * 첫 번째 bullet(가장 위)은 '가장 중요한 개념 + 왜 중요한지(한 문장 안에서)'가 되도록 작성하세요.
-  * 나머지 bullets는 (정의/전개/비교/결론/주의) 중 누락된 축을 채우세요.
-- definitions는 학생이 '검색 없이' 이해할 수 있도록 1~2문장으로 명확히 쓰되,
-  필요하면 괄호로 쉬운 말 풀이를 1개 덧붙일 수 있습니다. (예: "… (쉽게 말해, …)")
-
-========================
-독립형 노트 원칙 (가장 중요, 다른 규칙보다 우선)
-========================
-- 사용자는 영상을/슬라이드를/그림을 "보고 있지 않다". 사용자가 볼 수 있는 것은 오직 당신의 출력(JSON)뿐이다.
-- 따라서 다음 표현을 전부 금지한다: "슬라이드", "화면", "그림(을) 보면", "보시면", "위/아래", "여기", "방금", "앞에서", "다음으로", "지금 보이는".
-- 시각 정보(visual_text/visual_units)는 '사용자가 보는 이미지'가 아니라 '텍스트로 추출된 장면 정보'다.
-  시각 정보에 근거한 내용을 쓰려면, 그 시각 내용을 출력 내부에서 먼저 문장으로 재서술한 다음 해설하라.
-  (예: "예시로 x_0는 선명한 이미지, x_t는 노이즈가 섞인 이미지, x_T는 거의 순수 노이즈라는 단계적 변화가 제시된다.")
-
-========================
-정의(Definitions) 커버리지 규칙 (필수)
-========================
-- 각 segment의 definitions는 해당 segment에서 등장하는 "핵심 용어/약어/수식 기호"를 빠짐없이 포함해야 합니다.
-- "등장"의 범위는 다음 3가지의 합집합입니다.
-  (A) transcript_text / transcript_units에 실제로 등장한 전문 용어/약어/영문 표현
-  (B) visual_text / visual_units의 Title/Labels/Equation/Description에 실제로 등장한 전문 용어/약어/수식 기호
-  (C) 당신이 bullets/explanations/open_questions에서 사용한 전문 용어/약어/수식 기호
-- 포함 대상의 예시(유형): ELBO, KL divergence, likelihood, prior matching, denoising matching, objective function,
-  Bayes rule, reparameterization trick, q(·), p(·), p_{{\\theta}}(·), E_q[·], x_0/x_1/x_t/x_T, α_t, ε, I 등.
-- 제외 가능: 일반어(예: "생각", "정답", "문제", "결과"), 감탄사/군더더기 표현, 지시어.
-- 정의 누락 금지: bullets/explanations/open_questions에 등장하는 용어/기호가 definitions에 없으면 출력은 실패로 간주합니다.
-- 정의 개수 최소치: definitions의 길이는 "후보 용어 개수" 이상이어야 합니다.
-  단, 관련 기호는 묶어서 1개 항목으로 정의해도 됩니다(예: {{x_0, x_1, x_t, x_T}}를 하나의 term으로 묶어 정의).
-- 정의 길이 제한: 각 definition은 1~2문장(최대 3문장)으로 간결하게 작성합니다.
-- 작성 절차(권장): (1) 먼저 용어/기호 목록을 만들고 (2) definitions를 채운 뒤 (3) bullets/explanations를 쓰되,
-  새 용어를 추가로 쓰게 되면 definitions에도 반드시 추가합니다.
-
-========================
-시각/지시어 금지 규칙 (필수, 강화)
-========================
-- "이/해당/위/아래/여기/수식의/그림의/슬라이드의/마지막 항" 같은 지시어만으로 대상을 지칭하지 마세요.
-- "이 수식은", "수식의 마지막 항인", "슬라이드의 고양이 그림은" 같은 문장 형태를 금지합니다.
-- 반드시 대상 이름을 먼저 명시하세요.
-  좋은 예: "ELBO 3항 분해 식", "Denoising matching 항", "KL(q(x_T|x_0) || p(x_T))", "Reparameterization trick",
-          "정규분포 $N(x_t; sqrt(α_t) x_{{t-1}}, (1-α_t) I)$"
-- 그림/도식/표/그래프가 있으면, 무엇을 보여주는지 "텍스트로" 서술하세요. (사용자가 실제 그림을 보지 못한다는 전제)
-
-========================
-수식/도식 선제 제시 규칙 (필수)
-========================
-- 수식이 있으면 explanations에서 해당 수식을 처음 설명하는 시점에 반드시 전체 수식(입력에 있는 형태 그대로)을 1회 이상 먼저 제시하라.
-  - 제시 방식: 문장 안에 수식을 반드시 `$...$` 또는 `$$...$$`로 감싸서 포함한다.
-  - LaTeX 백슬래시 명령을 사용할 수 있다. 단, 출력은 JSON이므로 문자열 값 내부의 백슬래시는 반드시 두 번 연속으로 출력해야 한다(예: `\\theta`, `\\alpha_t`, `\\mathcal{{L}}`).
-  - 표기 정규화(권장): `p_theta` 같은 평문 표기 대신 LaTeX 표기인 `$p_{{\\theta}}$`를 사용하라.
-  - 표기 정규화(권장): `sum_{{t=2}}^T`/`product_{{t=2}}^T` 같은 평문 표기 대신 `\\sum_{{t=2}}^T`/`\\prod_{{t=2}}^T`를 사용하라.
-  - 이후에 각 기호/항의 의미를 풀어쓴다.
-- 도식/예시 이미지가 있으면 explanations에서 처음 활용하는 시점에 반드시 다음을 먼저 텍스트로 정의하라:
-  1) 무엇이 등장하는지(예: x_0, x_t, x_T의 예시)
-  2) 무엇이 변하는지(예: 노이즈가 증가하여 선명→흐림→거의 순수 노이즈)
-  3) 왜 이 예시를 쓰는지(예: forward noising / reverse denoising 직관 제공)
-
-========================
-source_type / evidence_refs (추적 가능성 유지)
-========================
-각 항목(bullets/definitions/explanations/open_questions)에 source_type을 반드시 포함하세요.
-
-- "direct": 입력 텍스트를 직접 인용/가까운 패러프레이즈. evidence_refs 필수.
-- "inferred": 입력 여러 조각을 종합해 논리적으로 재구성/연결. evidence_refs 필수(근거 unit_id).
-- "background": 널리 알려진 정의/수학적 성질/기본 성질/표준 해석 등 일반 배경지식.
-  evidence_refs는 빈 배열([]) 허용.
-  단, notes에 "어떤 배경지식인지(짧게)"를 반드시 적으세요.
-
-중요: evidence_refs 때문에 설명이 위축되면 안 됩니다.
-- 강의에서 말한 내용은 direct/inferred로 근거를 달고,
-- 이해를 돕기 위한 일반 설명은 background로 분리하세요.
-
-========================
-출력 포맷 규칙 (필수)
-========================
-- bullet_id 형식: "SEGMENT_ID-INDEX" (INDEX는 1부터 시작)
-
-- bullets 항목:
-{{
-  "bullet_id": "1-1",
-  "claim": "학생이 외울 핵심 1~2문장(가능하면 왜/효과 포함). 독립형 노트로서 완결된 문장으로 작성.",
-  "source_type": "direct|inferred|background",
-  "evidence_refs": ["t1","v2"],
-  "confidence": "high|medium|low",
-  "notes": "핵심을 이해시키는 보조 힌트 0~1문장 (필요할 때만). 금지어(슬라이드/그림/위/아래/여기/이 수식) 사용 금지."
-}}
-
-- definitions 항목:
-{{
-  "term": "용어(규칙에 따라 영어 우선). term에는 일반 용어뿐 아니라 수식 기호/표현도 허용됨.",
-  "definition": "초학자 기준 정의 1~2문장 + (선택) 쉬운 말 풀이 1개",
-  "source_type": "direct|inferred|background",
-  "evidence_refs": ["v2"],
-  "confidence": "high|medium|low",
-  "notes": "오해 포인트가 있으면 1문장. background 사용 시: 어떤 일반 지식인지 1문장으로 명시."
-}}
-- term 예시(기호/표현 포함):
-  "$x_0, x_t, x_T$", "$p_{{\\theta}}(x_{{t-1}} | x_t)$", "$q(x_{{t-1}} | x_t, x_0)$", "$\\alpha_t$", "$\\varepsilon ~ \\mathcal{{N}}(0, I)$", "$E_{{q(\\cdot)}}[\\cdot]$"
-
-========================
-JSON 문자열 안정성 규칙 (필수)
-========================
-- 문자열 값(claim/definition/point/question/notes/term) 내부에는 큰따옴표 문자(")를 절대 포함하지 마세요.
-  - JSON 문법을 위한 큰따옴표(키/값을 감싸는 따옴표)는 예외입니다.
-  - 인용이 필요하면 괄호() 또는 따옴표 대신 ‘ ’ 같은 문자를 사용하세요.
-- LaTeX 등으로 백슬래시(역슬래시) 문자를 써야 한다면, JSON 문자열 안에서는 반드시 `\\` 형태로 이중 이스케이프해서 출력하세요.
-
-- explanations 항목(가장 중요: '가르치기'):
-{{
-  "point": "4~8문장. 반드시 독립형 노트로 완결된 문장만 사용. (1) 직관/큰그림 → (2) 정확한 의미/정의 → (3) 왜 필요한지(동기) → (4) 입력 속 예시/문맥 연결(텍스트로 재서술) → (5) 흔한 오해/주의점. 수식을 다루면 먼저 전체 수식을 제시한 뒤 기호/항을 설명.",
-  "source_type": "direct|inferred|background",
-  "evidence_refs": ["t3","v2"],
-  "confidence": "high|medium|low",
-  "notes": "background 사용 시: 어떤 일반 지식인지 1문장으로 명시. 금지어(슬라이드/그림/위/아래/여기/이 수식) 사용 금지."
-}}
-
-- open_questions 항목:
-{{
-  "question": "학생이 자연스럽게 가질 질문 1문장. 독립형 노트 기준으로 맥락이 통하도록 작성.",
-  "source_type": "direct|inferred|background",
-  "evidence_refs": ["t2"],
-  "confidence": "high|medium|low",
-  "notes": ""
-}}
-
-========================
-필수 '설명' 최소치 (강제)
-========================
-- 각 segment마다 explanations를 최소 3개 작성하세요.
-- explanations 3개는 역할이 겹치면 안 됩니다. 다음 3종류를 최소 1개씩 포함:
-  A) 수식/기호 해설(있으면 최우선): "수식에서 특정 기호는 ~을 뜻한다" 형태로 풀어쓰기 (전체 수식 선제 제시 포함)
-  B) 비교/대조: 두 개념의 차이(언제/왜/어떤 결과가 다른지)
-  C) 동기/용도: "왜 이 용어/수식/가정을 도입하는지"를 학생 관점으로 설명
-
-========================
-패러프레이즈 방지 규칙 (중요)
-========================
-- 입력 문장을 그대로 바꿔 말하는 문장만 나열하지 마세요.
-- 최소 1개 bullet 또는 explanation에는 반드시 다음 중 하나를 포함:
-  * "즉, …"로 요지를 재구성
-  * "왜냐하면 …"로 이유 제시
-  * "예를 들어 …"로 간단 예시(입력 맥락 기반, 단 사용자가 그림을 본다는 전제 없이 텍스트로 설명)
-  * "주의: …"로 흔한 오해 교정
-
-========================
-용어 표기 규칙(중요, 다른 규칙보다 우선)
-========================
-- 출력은 기본적으로 한국어로 작성한다.
-- 단, 아래 범주의 전문 용어는 한국어 번역 대신 영어 원어 표기를 우선 사용한다.
-  1) 알고리즘/모델/방법론 명칭 (예: Expectation-Maximization (EM), Variational Inference, Mean-field Variational Inference, ELBO)
-  2) 확률/통계/최적화 핵심 개념 (예: log marginal likelihood, posterior, prior, likelihood, KL divergence, stationary point, stationary function, functional derivative)
-  3) 수식에 직접 등장하는 심볼/표현 (예: log p(x), q(z), p(z|x), L(q))
-
-- 괄호 규칙:
-  * 처음 등장할 때만 "영어 (약어)" 또는 "영어 (한국어 번역)" 중 하나로 병기한다.
-    - 기본: 영어 (약어) 형태 권장. 예: Expectation-Maximization (EM)
-    - 한국어 병기는 필요할 때만. 예: log marginal likelihood (로그 마지널 라이클리후드)
-  * 이후에는 영어/약어만 사용한다.
-
-========================
-입력(JSONL, 1줄=1세그먼트)
-========================
-{jsonl_text}
-
-========================
-마지막 점검(출력 전에 스스로 확인)
-========================
-- 각 segment에 explanations 3개 이상인가?
-- 최소 1개는 why/how를 명시했는가?
-- background 항목은 notes에 '어떤 배경지식인지'가 적혔는가?
-- 금지 표현이 없는가? (슬라이드/화면/그림을 보면/보시면/위/아래/여기/방금/앞에서/다음으로/이 수식/마지막 항)
-- 수식/관계는 처음 설명하는 시점에 전체 수식을 1회 이상 먼저 제시했는가?
-- 시각 정보는 사용자가 그림을 본다는 전제 없이 텍스트로 재서술했는가?
-- definitions가 (A) transcript, (B) visual, (C) bullets/explanations/open_questions에서 등장한 핵심 용어/기호를 모두 포함하는가?
-- 재구성한 수식/관계는 source_type/notes/confidence로 출처와 확실성을 표시했는가?
-- JSON이 깨지지 않았는가? (코드블록/마크다운 금지, 순수 JSON 배열만 출력)
-"""
-
-    return prompt
-
-
-def _strip_code_fences(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-    return stripped
-
-
-def _extract_text_from_response(response: Any) -> str:
-    text = getattr(response, "text", None)
-    if text:
-        return text
-    candidates = getattr(response, "candidates", None)
-    if candidates:
-        for candidate in candidates:
-            content = getattr(candidate, "content", None)
-            if not content:
-                continue
-            parts = getattr(content, "parts", None) or []
-            for part in parts:
-                part_text = getattr(part, "text", None)
-                if part_text:
-                    return part_text
-    raise ValueError("Gemini 응답에서 텍스트를 추출할 수 없습니다.")
-
-
-def _generate_content(
-    client_bundle: GeminiClientBundle,
-    prompt: str,
-    response_schema: Dict[str, Any],
-    temperature: float,
-    response_mime_type: str,
-    timeout_sec: int,
-) -> str:
-    import concurrent.futures
-
-    client = client_bundle.client
-    config = {
-        "temperature": temperature,
-        "response_mime_type": response_mime_type,
-        "response_schema": response_schema,
+    template = load_prompt_template(
+        prompt_version=prompt_version, prompt_path=prompt_path
+    )
+    replacements = {
+        "CLAIM_MAX_CHARS": str(claim_max_chars),
+        "BULLETS_MIN": str(bullets_min),
+        "BULLETS_MAX": str(bullets_max),
+        "BULLETS_RULE": bullets_rule,
+        "CLAIM_RULE": claim_rule,
+        "SEGMENTS_TEXT": segments_text,
+        "JSONL_TEXT": jsonl_text,
+        "bullets_rule": bullets_rule,
+        "claim_rule": claim_rule,
+        "jsonl_text": jsonl_text,
     }
+    prompt = _render_prompt_template(template, replacements)
+    if (
+        "{{SEGMENTS_TEXT}}" not in template
+        and "{SEGMENTS_TEXT}" not in template
+        and "{{JSONL_TEXT}}" not in template
+        and "{jsonl_text}" not in template
+    ):
+        prompt = f"{prompt}\n\n{segments_text}"
 
-    def _call_api():
-        try:
-            return client.models.generate_content(
-                model=client_bundle.model,
-                contents=prompt,
-                config=config,
-                timeout=timeout_sec,
-            )
-        except TypeError:
-            return client.models.generate_content(
-                model=client_bundle.model,
-                contents=prompt,
-                config=config,
-            )
+    return f"{context_section}{prompt}"
 
-    # 강제 타임아웃 적용 (SDK timeout이 안 먹힐 경우 대비)
-    print(f"[DEBUG] Gemini API 호출 시작 (timeout={timeout_sec}s)...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call_api)
-        try:
-            response = future.result(timeout=timeout_sec + 10)  # 여유 10초 추가
-            print(f"[DEBUG] Gemini API 호출 완료")
-        except concurrent.futures.TimeoutError:
-            print(f"[DEBUG] Gemini API 타임아웃!")
-            raise TimeoutError(f"Gemini API 호출이 {timeout_sec + 10}초 후 타임아웃되었습니다.")
 
-    return _extract_text_from_response(response)
+
+
 
 
 def _normalize_evidence_refs(evidence_refs: Any) -> List[str]:
@@ -629,11 +276,24 @@ def _normalize_source_type(value: Any) -> str:
     return source_type
 
 
+def _strip_code_fences(text: str) -> str:
+    """JSON 응답에 포함된 코드 펜스를 제거한다."""
+    cleaned = text.strip()
+    if "```" not in cleaned:
+        return cleaned
+    parts = cleaned.split("```")
+    if len(parts) >= 3:
+        inner = parts[1]
+        lines = inner.splitlines()
+        if lines and lines[0].strip().lower() in {"json", "jsonl"}:
+            inner = "\n".join(lines[1:])
+        return inner.strip()
+    return cleaned.replace("```", "").strip()
+
+
 def _validate_summary_payload(
     payload: Dict[str, Any],
     segment_id: int,
-    claim_max_chars: int,
-    bullets_min: int,
     bullets_max: int,
 ) -> Dict[str, Any]:
     bullets = payload.get("bullets") or []
@@ -642,13 +302,13 @@ def _validate_summary_payload(
     open_questions = payload.get("open_questions") or []
 
     if not isinstance(bullets, list):
-        raise ValueError("bullets 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: bullets")
     if not isinstance(definitions, list):
-        raise ValueError("definitions 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: definitions")
     if not isinstance(explanations, list):
-        raise ValueError("explanations 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: explanations")
     if not isinstance(open_questions, list):
-        raise ValueError("open_questions 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: open_questions")
     # bullets 개수, claim 길이 검증 제거 (Judge에서 품질 평가)
 
     normalized_bullets: List[Dict[str, Any]] = []
@@ -789,59 +449,29 @@ def _repair_prompt(
         bullets_rule = f"- bullets는 최소 {bullets_min}개 (상한 없음)"
     else:
         bullets_rule = "- bullets는 필요한 만큼"
-    return f"""아래는 잘못된 JSON 출력입니다. 반드시 유효한 JSON만 반환하세요.
-출력은 JSON 배열이며, 각 원소는 segment_id와 summary를 포함해야 합니다.
-summary는 bullets/definitions/explanations/open_questions 구조입니다. 설명 없이 JSON만 출력하세요.
 
-규칙:
-{bullets_rule}
-{claim_rule}
-- evidence_refs는 unit_id(t*, v*) 배열만 사용
-- confidence는 low|medium|high
+    return dedent(f"""
+        아래는 잘못된 JSON 출력입니다. 반드시 유효한 JSON만 반환하세요.
+        출력은 JSON 배열이며, 각 원소는 segment_id와 summary를 포함해야 합니다.
+        summary는 bullets/definitions/explanations/open_questions 구조입니다. 설명 없이 JSON만 출력하세요.
 
-잘못된 출력:
-{bad_json}
-"""
+        규칙:
+        {bullets_rule}
+        {claim_rule}
+        - evidence_refs는 unit_id(t*, v*) 배열만 사용
+        - confidence는 low|medium|high
+
+        잘못된 출력:
+        {bad_json}
+    """).strip()
 
 
-def _run_with_retries(
-    client_bundle: GeminiClientBundle,
-    prompt: str,
-    response_schema: Dict[str, Any],
-    temperature: float,
-    response_mime_type: str,
-    timeout_sec: int,
-    max_retries: int,
-    backoff_sec: List[int],
-) -> str:
-    attempt = 0
-    while True:
-        try:
-            return _generate_content(
-                client_bundle,
-                prompt,
-                response_schema,
-                temperature,
-                response_mime_type,
-                timeout_sec,
-            )
-        except Exception as exc:
-            if attempt >= max_retries:
-                logger.error(f"GenerateContent failed after {max_retries} retries: {exc}")
-                raise
-            sleep_for = (
-                backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
-            )
-            logger.warning(
-                f"GenerateContent failed (attempt {attempt+1}/{max_retries}). "
-                f"Retrying in {sleep_for}s. Error: {exc}"
-            )
-            time.sleep(max(sleep_for, 0))
-            attempt += 1
 
 
 def run_summarizer(
-    config: ConfigBundle, limit: Optional[int] = None, dry_run: bool = False
+    config: ConfigBundle,
+    limit: Optional[int] = None,
+    feedback_map: Optional[Dict[int, str]] = None,
 ) -> None:
     paths = config.paths
     ensure_output_root(paths.output_root)
@@ -849,11 +479,12 @@ def run_summarizer(
     output_dir.mkdir(parents=True, exist_ok=True)
     input_jsonl = output_dir / "segments_units.jsonl"
     if not input_jsonl.exists():
-        raise FileNotFoundError(f"segments_units.jsonl이 없습니다: {input_jsonl}")
+        raise FileNotFoundError(f"segments_units.jsonl not found: {input_jsonl}")
 
     bullets_min = config.raw.summarizer.bullets_per_segment_min
     bullets_max = config.raw.summarizer.bullets_per_segment_max
     claim_max_chars = config.raw.summarizer.claim_max_chars
+    prompt_version = config.raw.summarizer.prompt_version or DEFAULT_PROMPT_VERSION
 
     segments: List[Dict[str, Any]] = []
     for segment in read_jsonl(input_jsonl):
@@ -862,16 +493,19 @@ def run_summarizer(
         segments.append(segment)
 
     if not segments:
-        raise ValueError("요약할 세그먼트가 없습니다.")
+        raise ValueError("No segments to summarize.")
 
-    prompt = _build_batch_prompt(segments, claim_max_chars, bullets_min, bullets_max)
-
-    if dry_run:
-        print(f"[DRY RUN] segments={len(segments)} (LLM 미호출, 출력 미생성)")
-        return
+    prompt = _build_batch_prompt(
+        segments,
+        claim_max_chars,
+        bullets_min,
+        bullets_max,
+        prompt_version=prompt_version,
+        feedback_map=feedback_map,
+    )
 
     response_schema = _build_response_schema()
-    client_bundle = _init_gemini_client(config)
+    client_bundle = init_gemini_client(config)
 
     # Count input tokens and save to token_usage.json
     try:
@@ -896,7 +530,7 @@ def run_summarizer(
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text = _run_with_retries(
+        llm_text = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
@@ -913,22 +547,20 @@ def run_summarizer(
             try:
                 payload = _parse_json_response(llm_text)
                 if not isinstance(payload, list):
-                    raise ValueError("응답이 JSON 배열 형식이 아닙니다.")
+                    raise ValueError("Response is not a JSON array.")
 
                 summary_map: Dict[int, Dict[str, Any]] = {}
                 for item in payload:
                     if not isinstance(item, dict):
-                        raise ValueError("응답 배열의 항목 형식이 올바르지 않습니다.")
+                        raise ValueError("Invalid item format in response array.")
                     if "segment_id" not in item:
-                        raise ValueError("응답에 segment_id가 없습니다.")
+                        raise ValueError("Missing segment_id in response.")
                     segment_id = int(item.get("segment_id"))
                     if segment_id in summary_map:
-                        raise ValueError(f"중복 segment_id 발견: {segment_id}")
+                        raise ValueError(f"Duplicate segment_id found: {segment_id}")
                     summary_map[segment_id] = _validate_summary_payload(
                         item.get("summary", {}),
                         segment_id,
-                        claim_max_chars,
-                        bullets_min,
                         bullets_max,
                     )
 
@@ -937,7 +569,7 @@ def run_summarizer(
                     missing = sorted(set(expected_ids) - set(summary_map.keys()))
                     extra = sorted(set(summary_map.keys()) - set(expected_ids))
                     raise ValueError(
-                        f"segment_id 불일치 (missing={missing}, extra={extra})"
+                        f"segment_id mismatch (missing={missing}, extra={extra})"
                     )
 
                 for segment in segments:
@@ -950,8 +582,7 @@ def run_summarizer(
                         "end_ms": segment.get("end_ms"),
                         "summary": summary,
                         "version": {
-                            "schema_version": 1,
-                            "prompt_version": PROMPT_VERSION,
+                            "prompt_version": prompt_version,
                             "llm_model_id": config.raw.llm_gemini.model,
                             "temperature": config.raw.summarizer.temperature,
                             "backend": config.raw.llm_gemini.backend,
@@ -969,7 +600,7 @@ def run_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text = _run_with_retries(
+                llm_text = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -980,12 +611,10 @@ def run_summarizer(
                     config.raw.llm_gemini.backoff_sec,
                 )
         if last_error:
-            raise RuntimeError(f"LLM JSON/검증 실패: {last_error}")
+            raise RuntimeError(f"LLM JSON/Validation failed: {last_error}")
     finally:
         if output_handle:
             output_handle.close()
-
-    print_jsonl_head(output_jsonl, max_lines=2)
 
 
 def run_batch_summarizer(
@@ -995,6 +624,7 @@ def run_batch_summarizer(
     config: ConfigBundle,
     previous_context: Optional[str] = None,
     limit: Optional[int] = None,
+    feedback_map: Optional[Dict[int, str]] = None,
 ) -> Dict[str, Any]:
     """배치별 세그먼트 요약을 생성합니다.
 
@@ -1014,11 +644,12 @@ def run_batch_summarizer(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not segments_units_jsonl.exists():
-        raise FileNotFoundError(f"segments_units.jsonl이 없습니다: {segments_units_jsonl}")
+        raise FileNotFoundError(f"segments_units.jsonl not found: {segments_units_jsonl}")
 
     bullets_min = config.raw.summarizer.bullets_per_segment_min
     bullets_max = config.raw.summarizer.bullets_per_segment_max
     claim_max_chars = config.raw.summarizer.claim_max_chars
+    prompt_version = config.raw.summarizer.prompt_version or DEFAULT_PROMPT_VERSION
 
     segments: List[Dict[str, Any]] = []
     for segment in read_jsonl(segments_units_jsonl):
@@ -1038,11 +669,17 @@ def run_batch_summarizer(
         }
 
     prompt = _build_batch_prompt(
-        segments, claim_max_chars, bullets_min, bullets_max, previous_context
+        segments,
+        claim_max_chars,
+        bullets_min,
+        bullets_max,
+        previous_context,
+        prompt_version=prompt_version,
+        feedback_map=feedback_map,
     )
 
     response_schema = _build_response_schema()
-    client_bundle = _init_gemini_client(config)
+    client_bundle = init_gemini_client(config)
 
     # Token 사용량 기록
     try:
@@ -1067,13 +704,13 @@ def run_batch_summarizer(
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text = _run_with_retries(
+        llm_text = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
             config.raw.summarizer.temperature,
             config.raw.llm_gemini.response_mime_type,
-            300,  # config.raw.llm_gemini.timeout_sec
+            config.raw.llm_gemini.timeout_sec,
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
         )
@@ -1094,7 +731,7 @@ def run_batch_summarizer(
                         raise ValueError("응답에 segment_id가 없습니다.")
                     sid = int(item["segment_id"])
                     summary_map[sid] = _validate_summary_payload(
-                        item.get("summary", {}), sid, claim_max_chars, bullets_min, bullets_max
+                        item.get("summary", {}), sid, bullets_max
                     )
 
                 # 파일에 기록
@@ -1108,8 +745,7 @@ def run_batch_summarizer(
                         "end_ms": segment.get("end_ms"),
                         "summary": summary,
                         "version": {
-                            "schema_version": 1,
-                            "prompt_version": PROMPT_VERSION,
+                            "prompt_version": prompt_version,
                             "llm_model_id": config.raw.llm_gemini.model,
                             "temperature": config.raw.summarizer.temperature,
                             "backend": config.raw.llm_gemini.backend,
@@ -1127,7 +763,7 @@ def run_batch_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text = _run_with_retries(
+                llm_text = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -1145,8 +781,6 @@ def run_batch_summarizer(
 
     # 다음 배치를 위한 context 추출
     next_context = extract_batch_context(output_jsonl)
-
-    print_jsonl_head(output_jsonl, max_lines=2)
 
     return {
         "success": True,

@@ -1,0 +1,51 @@
+# STT/VLM 동기화 및 세그먼트 분할 설정
+sync_engine:
+  boundary_source: "vlm_timestamps_visual_first"  # 세그먼트 경계 기준
+  min_segment_sec: 15                            # 세그먼트 최소 길이(초)
+  max_segment_sec: 90                            # 세그먼트 최대 길이(초)
+  max_transcript_chars: 2000                     # 세그먼트당 STT 최대 글자수
+  silence_gap_ms: 1500                           # 침묵 간격 분리 기준(ms)
+  max_visual_items: 2                            # 세그먼트당 VLM 아이템 최대 수
+  max_visual_chars: 0                            # 시각 텍스트 최대 글자수(0=제한 없음)
+  dedup_similarity_threshold: 0.85               # 시각 텍스트 중복 제거 임계값
+
+# LLM 요약 생성 설정
+summarizer:
+  bullets_per_segment_min: 1   # bullets 최소 개수, bullets: 세그먼트 요약의 핵심 포인트 목록
+  bullets_per_segment_max: 0   # bullets 최대 개수(0=제한 없음)
+  claim_max_chars: 0           # claim 최대 글자수(0=제한 없음)
+  temperature: 0.2             # 생성 다양성
+  json_repair_attempts: 2      # JSON 복구 재시도 횟수
+  prompt_version: "sum_v1.6"   # summarizer 프롬프트 버전
+
+# Gemini 호출 설정
+llm_gemini:
+  backend: "developer_api"           # Gemini 호출 방식
+  model: "gemini-3-flash-preview"    # 모델 이름
+  timeout_sec: 120                   # 요청 타임아웃(초)
+  max_retries: 5                     # 재시도 횟수
+  backoff_sec: [2, 5, 15, 30, 60]    # 재시도 백오프(초)
+  response_mime_type: "application/json"  # 응답 MIME 타입
+
+  developer_api:
+    api_key_env_candidates: ["GOOGLE_API_KEY", "GEMINI_API_KEY"]  # API 키 후보
+
+  vertex_ai:
+    auth_mode: "adc"           # 인증 방식(adc/express_api_key)
+    project: null              # Vertex AI project (adc 모드)
+    location: null             # Vertex AI location (adc 모드)
+    api_key_env: "GOOGLE_API_KEY"  # express_api_key 모드용 env
+
+# 마크다운 렌더링 설정
+render:
+  include_sources: false  # 마크다운에 소스 포함 여부
+  md_wrap_width: 0        # 마크다운 줄바꿈 너비(0=무제한)
+
+# 최종 요약 출력 설정
+final_summary:
+  generate_formats: ["timeline", "tldr_timeline"]  # 생성할 최종 요약 포맷
+  temperature: 0.2                                 # 생성 다양성
+  max_chars_per_format: 0                          # 포맷별 최대 글자수(0=제한 없음)
+  style:
+    include_timestamps: true  # 타임스탬프 포함 여부
+    language: "ko"            # 출력 언어

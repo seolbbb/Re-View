@@ -1,4 +1,4 @@
-"""JSON/JSONL 입출력과 공통 유틸."""
+"""JSON/JSONL 입출력과 공통 util."""
 
 from __future__ import annotations
 
@@ -51,18 +51,6 @@ def ensure_output_root(output_root: Path) -> None:
     test_path.unlink(missing_ok=True)
 
 
-def print_jsonl_head(path: Path, max_lines: int = 2) -> None:
-    lines = []
-    with path.open("r", encoding="utf-8") as handle:
-        for _ in range(max_lines):
-            line = handle.readline()
-            if not line:
-                break
-            lines.append(line.rstrip("\n"))
-    if lines:
-        print("\n".join(lines))
-
-
 def format_ms(ms: int) -> str:
     minutes = max(ms, 0) // 60000
     seconds = (max(ms, 0) // 1000) % 60
@@ -87,16 +75,16 @@ def update_token_usage(
     model: str,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Update token_usage.json with token counts for a component.
+    """컴포넌트별 토큰 사용량을 token_usage.json에 업데이트한다.
 
-    Records are appended to a history array for each component.
+    각 컴포넌트에 대해 기록은 history 배열에 누적된다.
 
     Args:
-        output_dir: Directory to save token_usage.json (e.g., fusion/)
-        component: Component name (e.g., "summarizer", "judge")
-        input_tokens: Number of input tokens counted
-        model: Model name used for counting
-        extra: Optional extra fields to include
+        output_dir: token_usage.json을 저장할 디렉토리 (예: fusion/)
+        component: 컴포넌트 이름 (예: "summarizer", "judge")
+        input_tokens: 계산된 입력 토큰 수
+        model: 토큰 계산에 사용된 모델 이름
+        extra: 추가로 포함할 선택적 필드
     """
     from datetime import datetime, timezone
 

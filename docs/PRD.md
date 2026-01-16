@@ -280,7 +280,6 @@
 
 ```json
 {
-  "schema_version": 1,
   "segments": [
     { "start_ms": 0, "end_ms": 5000, "text": "안녕하세요", "confidence": 0.95 }
   ]
@@ -312,7 +311,6 @@
 
 ```json
 {
-  "schema_version": 1,
   "items": [
     {
       "timestamp_ms": 1000,
@@ -407,7 +405,7 @@
 }
 ```
 
-**최종 요약 포맷** (`src/fusion/final_summary_composer.py`):
+**최종 요약 포맷** (`src/fusion/renderer.py`):
 
 - `final_summary_timeline.md`: 시간 순 타임라인 노트
 - `final_summary_tldr_timeline.md`: TL;DR + 시간 순 하이브리드
@@ -444,7 +442,6 @@
 
 ```json
 {
-  "schema_version": 1,
   "pass": true,
   "final_score": 8.5,
   "threshold": 7.0,
