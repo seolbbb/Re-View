@@ -6,14 +6,14 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
-from src.fusion.io_utils import ensure_output_root, write_json
+from src.fusion.io_utils import write_json
 from src.fusion.renderer import compose_final_summaries, render_segment_summaries_md
 from src.fusion.summarizer import run_summarizer
 from src.fusion.sync_engine import run_sync_engine
@@ -21,6 +21,55 @@ from src.judge.judge import run_judge
 from src.pipeline.benchmark import BenchmarkTimer
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+
+
+def _process_judge_result(
+    judge_result: Dict[str, Any],
+    config: Any,
+    output_path: Path,
+    batch_index: Optional[int],
+) -> Tuple[bool, float]:
+    """Judge 결과를 처리하여 파일로 저장하고 요약 정보를 반환한다."""
+    report = judge_result.get("report", {})
+    segment_reports = judge_result.get("segment_reports", []) or []
+    final_score = float(report.get("scores", {}).get("final", 0.0))
+    min_score = float(config.judge.min_score)
+    passed = final_score >= min_score
+
+    feedback = [
+        {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
+        for item in segment_reports
+        if item.get("segment_id") is not None
+    ]
+
+    payload = {
+        "model": str(report.get("meta", {}).get("model", "")),
+        "pass": passed,
+        "final_score": final_score,
+        "min_score": min_score,
+        "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
+        "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
+        "feedback": feedback,
+    }
+
+    if config.judge.include_segments:
+        payload["segments"] = [
+            {
+                "segment_id": int(item.get("segment_id")),
+                "scores": item.get("scores", {}),
+            }
+            for item in segment_reports
+            if item.get("segment_id") is not None
+        ]
+
+    write_json(output_path, payload)
+
+    if batch_index is None:
+        label = "Pipeline Judge"
+    else:
+        label = f"Pipeline batch {batch_index + 1} Judge"
+    print(f"  📊 {label}: {'PASS' if passed else 'FAIL'} (score: {final_score:.1f})")
+    return passed, final_score
 
 
 def generate_fusion_config(
@@ -264,7 +313,7 @@ def run_fusion_pipeline(
 ) -> Dict[str, Any]:
     """동기화부터 최종 요약까지 묶어서 실행하고 통계를 반환한다."""
     config = load_config(str(config_path))
-    ensure_output_root(config.paths.output_root)
+    config.paths.output_root.mkdir(parents=True, exist_ok=True)
 
     fusion_info: Dict[str, Any] = {
         "segment_count": 0,
@@ -279,15 +328,70 @@ def run_fusion_pipeline(
     )
     fusion_info["timings"]["sync_engine_sec"] = sync_elapsed
 
-    _, llm_elapsed = timer.time_stage(
-        "fusion.llm_summarizer",
-        run_summarizer,
-        config,
-        limit=limit,
-    )
-    fusion_info["timings"]["llm_summarizer_sec"] = llm_elapsed
-
     output_dir = config.paths.output_root / "fusion"
+    judge_output_dir = output_dir / "judge"
+    judge_output_dir.mkdir(parents=True, exist_ok=True)
+    max_attempts = 2
+    feedback_map: Dict[int, str] = {}
+    summarizer_elapsed_total = 0.0
+    judge_elapsed_total = 0.0
+
+    for attempt in range(max_attempts):
+        is_retry = attempt > 0
+        stage_suffix = f"_retry_{attempt}" if is_retry else ""
+
+        _, llm_elapsed = timer.time_stage(
+            f"fusion.llm_summarizer{stage_suffix}",
+            run_summarizer,
+            config,
+            limit=limit,
+            feedback_map=feedback_map,
+        )
+        summarizer_elapsed_total += llm_elapsed
+
+        judge_result, judge_elapsed = timer.time_stage(
+            f"fusion.judge{stage_suffix}",
+            run_judge,
+            config=config,
+            segments_units_path=output_dir / "segments_units.jsonl",
+            segment_summaries_path=output_dir / "segment_summaries.jsonl",
+            output_report_path=judge_output_dir / "judge_report.json",
+            output_segments_path=judge_output_dir / "judge_segment_reports.jsonl",
+            batch_size=config.judge.batch_size,
+            workers=config.judge.workers,
+            json_repair_attempts=config.judge.json_repair_attempts,
+            limit=limit,
+            write_outputs=True,
+            verbose=config.judge.verbose,
+        )
+        judge_elapsed_total += judge_elapsed
+
+        passed, final_score = _process_judge_result(
+            judge_result,
+            config,
+            output_dir / "judge.json",
+            None,
+        )
+
+        if passed:
+            break
+
+        if attempt < max_attempts - 1:
+            print(
+                "⚠️ Judge Fail (Score: "
+                f"{final_score:.1f}). Retrying with feedback... "
+                f"({attempt + 1}/{max_attempts})"
+            )
+            feedback_map = {}
+            segment_reports = judge_result.get("segment_reports", []) or []
+            for item in segment_reports:
+                seg_id = item.get("segment_id")
+                fb = str(item.get("feedback", "")).strip()
+                if seg_id is not None and fb:
+                    feedback_map[int(seg_id)] = fb
+
+    fusion_info["timings"]["llm_summarizer_sec"] = summarizer_elapsed_total
+    fusion_info["timings"]["judge_sec"] = judge_elapsed_total
 
     _, render_elapsed = timer.time_stage(
         "fusion.renderer",
@@ -318,55 +422,6 @@ def run_fusion_pipeline(
             outputs_dir.joinpath(f"final_summary_{fmt}.md").write_text(
                 summaries[fmt], encoding="utf-8"
             )
-
-    judge_output_dir = output_dir / "judge"
-    judge_output_dir.mkdir(parents=True, exist_ok=True)
-    judge_result, judge_elapsed = timer.time_stage(
-        "fusion.judge",
-        run_judge,
-        config=config,
-        segments_units_path=output_dir / "segments_units.jsonl",
-        segment_summaries_path=output_dir / "segment_summaries.jsonl",
-        output_report_path=judge_output_dir / "judge_report.json",
-        output_segments_path=judge_output_dir / "judge_segment_reports.jsonl",
-        batch_size=config.judge.batch_size,
-        workers=config.judge.workers,
-        json_repair_attempts=config.judge.json_repair_attempts,
-        limit=limit,
-        write_outputs=True,
-        verbose=config.judge.verbose,
-    )
-    fusion_info["timings"]["judge_sec"] = judge_elapsed
-
-    report = judge_result.get("report", {})
-    segment_reports = judge_result.get("segment_reports", []) or []
-    final_score = float(report.get("scores", {}).get("final", 0.0))
-    min_score = float(config.judge.min_score)
-    passed = final_score >= min_score
-    feedback = [
-        {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
-        for item in segment_reports
-        if item.get("segment_id") is not None
-    ]
-    payload: Dict[str, Any] = {
-        "model": str(report.get("meta", {}).get("model", "")),
-        "pass": passed,
-        "final_score": final_score,
-        "min_score": min_score,
-        "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
-        "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
-        "feedback": feedback,
-    }
-    if config.judge.include_segments:
-        payload["segments"] = [
-            {
-                "segment_id": int(item.get("segment_id")),
-                "scores": item.get("scores", {}),
-            }
-            for item in segment_reports
-            if item.get("segment_id") is not None
-        ]
-    write_json(output_dir / "judge.json", payload)
 
     segments_file = output_dir / "segment_summaries.jsonl"
     if segments_file.exists():
@@ -452,21 +507,25 @@ def run_batch_fusion_pipeline(
     if accumulated_summaries_path.exists():
         accumulated_summaries_path.unlink()
 
+    total_vlm_elapsed = 0.0
+
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
             print("\n⏳ Waiting 5s to avoid API rate limiting...")
+            t0 = time.perf_counter()
             time.sleep(5)
+            timer.record_stage("waiting", time.perf_counter() - t0)
 
         print(f"\n{'-'*50}")
         print(f"🔄 Pipeline batch {batch_idx + 1}/{total_batches} in progress...")
-        print(f"   Capture range: {batch_info['start_idx']} ~ {batch_info['end_idx'] - 1}")
+        print(f"   Capture range: {batch_info['start_idx'] + 1} ~ {batch_info['end_idx']}")
 
         batch_dir = batches_dir / f"batch_{batch_idx}"
         batch_dir.mkdir(parents=True, exist_ok=True)
 
         batch_manifest = sorted_manifest[batch_info["start_idx"] : batch_info["end_idx"]]
 
-        timer.time_stage(
+        _, batch_vlm_elapsed = timer.time_stage(
             f"pipeline_batch_{batch_idx + 1}.vlm",
             run_vlm_for_batch,
             captures_dir=captures_dir,
@@ -478,6 +537,7 @@ def run_batch_fusion_pipeline(
             concurrency=vlm_concurrency,
             show_progress=vlm_show_progress,
         )
+        total_vlm_elapsed += batch_vlm_elapsed
 
         if not fusion_config_path.exists():
             generate_fusion_config(
@@ -517,17 +577,73 @@ def run_batch_fusion_pipeline(
         batch_summaries_path = batch_dir / "segment_summaries.jsonl"
 
         config = load_config(str(fusion_config_path))
-        summarize_result, _ = timer.time_stage(
-            f"pipeline_batch_{batch_idx + 1}.summarize",
-            run_batch_summarizer,
-            segments_units_jsonl=batch_segments_path,
-            output_dir=batch_dir,
-            config=config,
-            previous_context=previous_context,
-            limit=limit,
-        )
+        
+        # Judge 실패 시 재시도 로직 (Feedback Loop)
+        max_attempts = 2
+        feedback_map = {}
+        passed = False
+        final_score = 0.0
+        new_context = ""
 
-        new_context = summarize_result.get("context", "")
+        for attempt in range(max_attempts):
+            is_retry = attempt > 0
+            stage_suffix = f"_retry_{attempt}" if is_retry else ""
+            
+            # 1. Summarizer 실행
+            summarize_result, _ = timer.time_stage(
+                f"pipeline_batch_{batch_idx + 1}.summarize{stage_suffix}",
+                run_batch_summarizer,
+                segments_units_jsonl=batch_segments_path,
+                output_dir=batch_dir,
+                config=config,
+                previous_context=previous_context,
+                limit=limit,
+                feedback_map=feedback_map,
+            )
+            new_context = summarize_result.get("context", "")
+
+            # 2. Judge 실행
+            batch_judge_dir = batch_dir / "judge"
+            batch_judge_dir.mkdir(parents=True, exist_ok=True)
+            judge_result, _ = timer.time_stage(
+                f"pipeline_batch_{batch_idx + 1}.judge{stage_suffix}",
+                run_judge,
+                config=config,
+                segments_units_path=batch_segments_path,
+                segment_summaries_path=batch_summaries_path,
+                output_report_path=batch_judge_dir / "judge_report.json",
+                output_segments_path=batch_judge_dir / "judge_segment_reports.jsonl",
+                batch_size=config.judge.batch_size,
+                workers=config.judge.workers,
+                json_repair_attempts=config.judge.json_repair_attempts,
+                limit=limit,
+                verbose=config.judge.verbose,
+                write_outputs=True,
+            )
+
+            # 3. 결과 판정
+            passed, final_score = _process_judge_result(
+                judge_result,
+                config,
+                batch_dir / "judge.json",
+                batch_idx
+            )
+            
+            if passed:
+                break
+            
+            # 재시도 준비: 피드백 추출
+            if attempt < max_attempts - 1:
+                print(f"⚠️ Batch {batch_idx + 1} Judge Fail (Score: {final_score:.1f}). Retrying with feedback... ({attempt + 1}/{max_attempts})")
+                feedback_map = {}
+                segment_reports = judge_result.get("segment_reports", []) or []
+                for item in segment_reports:
+                    seg_id = item.get("segment_id")
+                    fb = str(item.get("feedback", "")).strip()
+                    if seg_id is not None and fb:
+                        feedback_map[int(seg_id)] = fb
+
+        # 루프 종료 후 Context/Accumulation 처리
         if new_context:
             previous_context = new_context[:500]
 
@@ -536,59 +652,6 @@ def run_batch_fusion_pipeline(
                 batch_content = handle.read()
             with accumulated_summaries_path.open("a", encoding="utf-8") as handle:
                 handle.write(batch_content)
-
-        batch_judge_dir = batch_dir / "judge"
-        batch_judge_dir.mkdir(parents=True, exist_ok=True)
-        judge_result, _ = timer.time_stage(
-            f"pipeline_batch_{batch_idx + 1}.judge",
-            run_judge,
-            config=config,
-            segments_units_path=batch_segments_path,
-            segment_summaries_path=batch_summaries_path,
-            output_report_path=batch_judge_dir / "judge_report.json",
-            output_segments_path=batch_judge_dir / "judge_segment_reports.jsonl",
-            batch_size=config.judge.batch_size,
-            workers=config.judge.workers,
-            json_repair_attempts=config.judge.json_repair_attempts,
-            limit=limit,
-            verbose=config.judge.verbose,
-            write_outputs=True,
-        )
-
-        report = judge_result.get("report", {})
-        segment_reports = judge_result.get("segment_reports", []) or []
-        final_score = float(report.get("scores", {}).get("final", 0.0))
-        min_score = float(config.judge.min_score)
-        passed = final_score >= min_score
-        feedback = [
-            {"segment_id": int(item.get("segment_id")), "feedback": str(item.get("feedback", "")).strip()}
-            for item in segment_reports
-            if item.get("segment_id") is not None
-        ]
-        payload = {
-            "model": str(report.get("meta", {}).get("model", "")),
-            "pass": passed,
-            "final_score": final_score,
-            "min_score": min_score,
-            "prompt_version": str(report.get("meta", {}).get("prompt_version", "")),
-            "generated_at_utc": str(report.get("meta", {}).get("generated_at_utc", "")),
-            "feedback": feedback,
-        }
-        if config.judge.include_segments:
-            payload["segments"] = [
-                {
-                    "segment_id": int(item.get("segment_id")),
-                    "scores": item.get("scores", {}),
-                }
-                for item in segment_reports
-                if item.get("segment_id") is not None
-            ]
-        batch_judge_path = batch_dir / "judge.json"
-        write_json(batch_judge_path, payload)
-        print(
-            f"  📊 Pipeline batch {batch_idx + 1} Judge: {'PASS' if passed else 'FAIL'} "
-            f"(score: {final_score:.1f})"
-        )
 
         fusion_info["batch_results"].append(
             {
@@ -602,6 +665,10 @@ def run_batch_fusion_pipeline(
             f"  ✅ Pipeline batch {batch_idx + 1} complete "
             f"(segments: {new_segment_count})"
         )
+
+    # 전체 VLM 시간을 합산하여 'vlm' 단계로 기록 (리포트용)
+    timer.record_stage("vlm", total_vlm_elapsed)
+    fusion_info["timings"]["vlm_sec"] = total_vlm_elapsed
 
     fusion_info["segment_count"] = cumulative_segment_count
 

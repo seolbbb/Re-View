@@ -57,13 +57,6 @@ def _sanitize_video_name(stem: str) -> str:
     return value[:80]
 
 
-def _write_json(path: Path, payload: Any) -> None:
-    """JSON 파일을 UTF-8로 저장한다."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-
-
 def parse_args() -> argparse.Namespace:
     """명령줄 인자를 parsing한다."""
     parser = argparse.ArgumentParser(
@@ -153,7 +146,9 @@ def run_pipeline(
         "benchmark": {},
         "status": "running",
     }
-    _write_json(run_meta_path, run_meta)
+    run_meta_path.parent.mkdir(parents=True, exist_ok=True)
+    with run_meta_path.open("w", encoding="utf-8") as handle:
+        json.dump(run_meta, handle, ensure_ascii=False, indent=2, sort_keys=True)
 
     timer.start_total()
     capture_count = 0
@@ -161,6 +156,7 @@ def run_pipeline(
 
     try:
         """STT/Capture 입력/출력 경로 준비."""
+        # 각 단계별 결과물이 저장될 경로 정의
         stt_json = video_root / "stt.json"
         captures_dir = video_root / "captures"
         manifest_json = video_root / "manifest.json"
@@ -172,16 +168,19 @@ def run_pipeline(
         capture_elapsed = 0.0
 
         """STT + Capture 실행."""
+        # 병렬 모드: 시간 단축을 위해 STT와 Capture를 동시에 실행
         if parallel:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 def run_stt_timed():
                     """STT 단계를 타이밍 포함으로 실행한다."""
+                    # STT: 음성을 텍스트로 변환 (stt.json 생성)
                     start = time.perf_counter()
                     run_stt(video_path, stt_json, backend=stt_backend)
                     return time.perf_counter() - start
 
                 def run_capture_timed():
                     """Capture 단계를 타이밍 포함으로 실행한다."""
+                    # Capture: 주요 장면을 이미지로 추출 (captures 폴더 및 manifest.json 생성)
                     start = time.perf_counter()
                     result = run_capture(
                         video_path,
@@ -204,10 +203,11 @@ def run_pipeline(
 
             timer.record_stage("stt", stt_elapsed)
             timer.record_stage("capture", capture_elapsed)
-            print(f"  ✓ STT done in {format_duration(stt_elapsed)} (parallel)")
-            print(f"  ✓ Capture done in {format_duration(capture_elapsed)} (parallel)")
+            print(f"  ✅ STT done in {format_duration(stt_elapsed)} (parallel)")
+            print(f"  ✅ Capture done in {format_duration(capture_elapsed)} (parallel)")
         else:
             """STT + Capture 순차 실행."""
+            # 순차 모드: 디버깅 등을 위해 하나씩 실행
             _, stt_elapsed = timer.time_stage("STT", run_stt, video_path, stt_json, backend=stt_backend)
             capture_result, capture_elapsed = timer.time_stage(
                 "Capture",
@@ -225,6 +225,7 @@ def run_pipeline(
         """VLM + Fusion 실행."""
         if batch_mode:
             """배치 모드: VLM/Sync/Summarize를 배치 단위로 반복."""
+            # 긴 비디오를 처리할 때 메모리/토큰 제한을 피하기 위해 캡쳐들을 묶어서(Batch) 처리
             vlm_elapsed = 0.0
             fusion_info = run_batch_fusion_pipeline(
                 video_root=video_root,
@@ -242,10 +243,12 @@ def run_pipeline(
             )
             segment_count = fusion_info.get("segment_count", 0)
             vlm_image_count = capture_count
+            vlm_elapsed = fusion_info["timings"].get("vlm_sec", 0.0)
         else:
             """VLM 단독 실행."""
+            # VLM: 추출된 이미지의 내용을 텍스트로 설명
             vlm_image_count, vlm_elapsed = timer.time_stage(
-                "VLM",
+                "vlm",
                 run_vlm_openrouter,
                 captures_dir=captures_dir,
                 manifest_json=manifest_json,
@@ -262,6 +265,7 @@ def run_pipeline(
 
             fusion_config_path = video_root / "config.yaml"
             """Fusion 설정 생성."""
+            # Fusion 단계 실행을 위한 전용 설정 파일(config.yaml) 생성
             generate_fusion_config(
                 template_config=template_config,
                 output_config=fusion_config_path,
@@ -273,6 +277,7 @@ def run_pipeline(
             )
 
             """Fusion 파이프라인 실행."""
+            # Fusion: STT와 VLM 결과를 결합하여 최종 요약 및 타임라인 생성
             fusion_info = run_fusion_pipeline(
                 fusion_config_path,
                 limit=limit,
@@ -282,6 +287,7 @@ def run_pipeline(
 
         timer.end_total()
 
+        # 벤치마크 리포트 출력 및 저장 (benchmark_report.md)
         md_report = print_benchmark_report(
             video_info=video_info,
             timer=timer,
@@ -297,6 +303,7 @@ def run_pipeline(
 
         benchmark_report = timer.get_report(video_info.get("duration_sec"))
 
+        # 실행 메타데이터 갱신 (종료 상태, 소요 시간 등)
         run_meta["durations_sec"] = {
             "stt_sec": round(stt_elapsed, 6),
             "capture_sec": round(capture_elapsed, 6),
@@ -312,13 +319,16 @@ def run_pipeline(
         }
         run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = "ok"
-        _write_json(run_meta_path, run_meta)
+        run_meta_path.parent.mkdir(parents=True, exist_ok=True)
+        with run_meta_path.open("w", encoding="utf-8") as handle:
+            json.dump(run_meta, handle, ensure_ascii=False, indent=2, sort_keys=True)
 
         print("\n✅ Pipeline completed successfully!")
         print(f"   Outputs: {video_root}")
         print(f"   Benchmark: {report_path}")
 
         print("\n📤 Syncing results to Supabase...")
+        # 최종 결과를 데이터베이스에 업로드
         db_success = sync_pipeline_results_to_db(
             video_path=video_path,
             video_root=video_root,
@@ -332,12 +342,15 @@ def run_pipeline(
             print("⚠️ Database sync skipped or failed (check logs above)")
 
     except Exception as exc:
+        # 에러 발생 시 처리 (메타데이터에 실패 기록)
         timer.end_total()
         run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = "error"
         run_meta["error"] = str(exc)
         run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
-        _write_json(run_meta_path, run_meta)
+        run_meta_path.parent.mkdir(parents=True, exist_ok=True)
+        with run_meta_path.open("w", encoding="utf-8") as handle:
+            json.dump(run_meta, handle, ensure_ascii=False, indent=2, sort_keys=True)
         print(f"\n❌ Pipeline failed: {exc}")
         raise
 

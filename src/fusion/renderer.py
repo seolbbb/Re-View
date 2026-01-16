@@ -1,4 +1,4 @@
-"""segment_summaries.jsonl -> Markdown 렌더러."""
+"""segment_summaries.jsonl -> Markdown renderer."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from .io_utils import format_ms, read_jsonl
 
 
 def _wrap_line(prefix: str, text: str, width: int) -> List[str]:
+    """텍스트를 주어진 너비에 맞춰 줄바꿈 처리한다."""
     line = f"{prefix}{text}"
     if width <= 0:
         return [line]
@@ -22,6 +23,7 @@ def _wrap_line(prefix: str, text: str, width: int) -> List[str]:
 
 
 def _load_sources_map(path: Optional[Path]) -> Dict[int, Dict[str, Any]]:
+    """근거 텍스트가 포함된 JSONL 파일을 로드하여 세그먼트 ID별 맵을 생성한다."""
     if not path or not path.exists():
         return {}
     mapping: Dict[int, Dict[str, Any]] = {}
@@ -35,6 +37,7 @@ def _load_sources_map(path: Optional[Path]) -> Dict[int, Dict[str, Any]]:
 
 
 def _split_evidence_refs(evidence: Any) -> tuple[List[str], List[str]]:
+    """근거 참조(evidence) 데이터를 transcript(t)와 visual(v) ID 리스트로 분리한다."""
     items: List[str] = []
     if isinstance(evidence, list):
         items = [str(item) for item in evidence]
@@ -68,6 +71,7 @@ def render_segment_summaries_md(
     md_wrap_width: int = 0,
     limit: Optional[int] = None,
 ) -> None:
+    """세그먼트 요약 JSONL을 읽어 상세 마크다운 리포트를 생성한다."""
     sources_map = _load_sources_map(sources_jsonl) if include_sources else {}
     output_md.parent.mkdir(parents=True, exist_ok=True)
 
@@ -225,6 +229,7 @@ def render_segment_summaries_md(
 
 
 def _truncate_lines(lines: List[str], max_chars: int) -> str:
+    """텍스트가 최대 길이를 초과하면 잘라내고 생략 표시를 추가한다."""
     if max_chars <= 0:
         return "\n".join(lines)
     joined = "\n".join(lines)
@@ -244,6 +249,7 @@ def _collect_segments(
     summaries_jsonl: Path,
     limit: Optional[int] = None,
 ) -> List[Dict[str, object]]:
+    """요약 JSONL 파일에서 모든 세그먼트 데이터를 수집한다."""
     segments: List[Dict[str, object]] = []
     processed = 0
     for row in read_jsonl(summaries_jsonl):
@@ -270,6 +276,7 @@ def _append_segment_details(
     segment: Dict[str, object],
     include_timestamps: bool,
 ) -> None:
+    """단일 세그먼트의 상세 내용을 마크다운 라인 리스트에 추가한다."""
     segment_id = int(segment["segment_id"])
     start_ms = int(segment["start_ms"])
     end_ms = int(segment["end_ms"])
@@ -326,6 +333,7 @@ def _append_segment_details(
 def build_summary_timeline(
     segments: List[Dict[str, object]], include_timestamps: bool
 ) -> str:
+    """시간 순서대로 정렬된 상세 타임라인 요약문을 생성한다."""
     lines = ["# Final Summary (시간 순 상세)"]
     for segment in sorted(segments, key=lambda x: int(x["segment_id"])):
         _append_segment_details(lines, segment, include_timestamps)
@@ -335,6 +343,7 @@ def build_summary_timeline(
 def build_summary_tldr_timeline(
     segments: List[Dict[str, object]], include_timestamps: bool
 ) -> str:
+    """TL;DR 섹션이 포함된 시간 순 타임라인 요약문을 생성한다."""
     lines = ["# Final Summary (TL;DR + 시간 순)"]
     lines.append("## TL;DR")
     for segment in sorted(segments, key=lambda x: int(x["segment_id"])):
@@ -364,6 +373,7 @@ def compose_final_summaries(
     include_timestamps: bool,
     limit: Optional[int] = None,
 ) -> Dict[str, str]:
+    """최종 요약본(타임라인, TL;DR 포함)을 생성하여 딕셔너리로 반환한다."""
     segments = _collect_segments(summaries_jsonl, limit=limit)
 
     summary_timeline = _truncate_lines(

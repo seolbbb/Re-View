@@ -9,11 +9,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from textwrap import dedent
 
 import yaml
 
 from .config import ConfigBundle
 from .io_utils import ensure_output_root, read_jsonl, update_token_usage
+from .gemini import init_gemini_client, run_with_retries
 
 
 PROMPT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "fusion" / "prompts.yaml"
@@ -21,62 +23,7 @@ DEFAULT_PROMPT_VERSION = "sum_v1.6"
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class GeminiClientBundle:
-    client: Any
-    backend: str
-    model: str
 
-
-def _load_genai() -> Any:
-    try:
-        from google import genai  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "google-genai 패키지가 필요합니다. requirements.txt를 확인하세요."
-        ) from exc
-    return genai
-
-
-def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
-    genai = _load_genai()
-    llm_cfg = config.raw.llm_gemini
-    if llm_cfg.backend == "developer_api":
-        api_key = None
-        for env_name in llm_cfg.developer_api.api_key_env_candidates:
-            api_key = os.getenv(env_name)
-            if api_key:
-                break
-        if not api_key:
-            raise ValueError(
-                "Developer API 키가 없습니다. GOOGLE_API_KEY 또는 GEMINI_API_KEY를 설정하세요."
-            )
-        client = genai.Client(api_key=api_key)
-        return GeminiClientBundle(
-            client=client, backend="developer_api", model=llm_cfg.model
-        )
-
-    if llm_cfg.backend == "vertex_ai":
-        project = llm_cfg.vertex_ai.project
-        location = llm_cfg.vertex_ai.location
-        if not project or not location:
-            raise ValueError(
-                "Vertex AI는 project/location이 필요합니다. config를 확인하세요."
-            )
-        if llm_cfg.vertex_ai.auth_mode == "adc":
-            client = genai.Client(vertexai=True, project=project, location=location)
-        else:
-            api_key = os.getenv(llm_cfg.vertex_ai.api_key_env)
-            if not api_key:
-                raise ValueError("Vertex AI express_api_key 모드용 API 키가 없습니다.")
-            client = genai.Client(
-                vertexai=True, project=project, location=location, api_key=api_key
-            )
-        return GeminiClientBundle(
-            client=client, backend="vertex_ai", model=llm_cfg.model
-        )
-
-    raise ValueError(f"지원하지 않는 backend: {llm_cfg.backend}")
 
 
 def _build_response_schema() -> Dict[str, Any]:
@@ -177,19 +124,19 @@ def load_prompt_template(
     version_id = prompt_version or DEFAULT_PROMPT_VERSION
     path = prompt_path or PROMPT_CONFIG_PATH
     if not path.exists():
-        raise FileNotFoundError(f"요약 프롬프트 설정을 찾을 수 없습니다: {path}")
+        raise FileNotFoundError(f"Summary prompt config not found: {path}")
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError("요약 프롬프트 설정 형식이 올바르지 않습니다(맵이어야 함).")
+        raise ValueError("Invalid summary prompt config format (must be a map).")
     prompt_block = payload.get(version_id)
     if not isinstance(prompt_block, dict):
         available = ", ".join(sorted(payload.keys()))
         raise ValueError(
-            f"프롬프트 버전을 찾을 수 없습니다: {version_id} (가능: {available})"
+            f"Prompt version not found: {version_id} (available: {available})"
         )
     template = prompt_block.get("template")
     if not isinstance(template, str) or not template.strip():
-        raise ValueError(f"프롬프트 템플릿이 비어 있습니다: {version_id}")
+        raise ValueError(f"Prompt template is empty: {version_id}")
     return template.strip()
 
 
@@ -210,6 +157,7 @@ def _build_batch_prompt(
     previous_context: Optional[str] = None,
     prompt_version: Optional[str] = None,
     prompt_path: Optional[Path] = None,
+    feedback_map: Optional[Dict[int, str]] = None,
 ) -> str:
     """설정된 템플릿을 사용해 배치 프롬프트를 생성한다."""
     claim_rule = (
@@ -226,7 +174,16 @@ def _build_batch_prompt(
 
     segments_text_parts: List[str] = []
     for seg in segments:
-        segments_text_parts.append(f"--- Segment {seg.get('segment_id')} ---")
+        seg_id = int(seg.get("segment_id", -1))
+        segments_text_parts.append(f"--- Segment {seg_id} ---")
+        
+        # 피드백 주입
+        if feedback_map and seg_id in feedback_map:
+            fb_text = feedback_map[seg_id]
+            segments_text_parts.append(
+                f"!!! 이전 시도 피드백 (반영하여 개선할 것) !!!\n{fb_text}\n"
+            )
+            
         segments_text_parts.append(json.dumps(seg, ensure_ascii=False))
     segments_text = "\n".join(segments_text_parts)
     jsonl_text = "\n".join(json.dumps(seg, ensure_ascii=False) for seg in segments)
@@ -273,69 +230,8 @@ def _build_batch_prompt(
     return f"{context_section}{prompt}"
 
 
-def _extract_text_from_response(response: Any) -> str:
-    """Gemini 응답에서 텍스트를 추출한다."""
-    text = getattr(response, "text", None)
-    if text:
-        return text
-    candidates = getattr(response, "candidates", None)
-    if candidates:
-        for candidate in candidates:
-            content = getattr(candidate, "content", None)
-            if not content:
-                continue
-            parts = getattr(content, "parts", None) or []
-            for part in parts:
-                part_text = getattr(part, "text", None)
-                if part_text:
-                    return part_text
-    raise ValueError("Gemini 응답에서 텍스트를 추출하지 못했습니다.")
 
 
-def _generate_content(
-    client_bundle: GeminiClientBundle,
-    prompt: str,
-    response_schema: Dict[str, Any],
-    temperature: float,
-    response_mime_type: str,
-    timeout_sec: int,
-) -> str:
-    import concurrent.futures
-
-    client = client_bundle.client
-    config = {
-        "temperature": temperature,
-        "response_mime_type": response_mime_type,
-        "response_schema": response_schema,
-    }
-
-    def _call_api():
-        try:
-            return client.models.generate_content(
-                model=client_bundle.model,
-                contents=prompt,
-                config=config,
-                timeout=timeout_sec,
-            )
-        except TypeError:
-            return client.models.generate_content(
-                model=client_bundle.model,
-                contents=prompt,
-                config=config,
-            )
-
-    # 강제 타임아웃 적용 (SDK timeout이 안 먹힐 경우 대비)
-    print(f"[DEBUG] Gemini API request started (timeout={timeout_sec}s)...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call_api)
-        try:
-            response = future.result(timeout=timeout_sec + 10)  # 여유 10초 추가
-            print(f"[DEBUG] Gemini API request completed")
-        except concurrent.futures.TimeoutError:
-            print(f"[DEBUG] Gemini API request timed out!")
-            raise TimeoutError(f"Gemini API 호출이 {timeout_sec + 10}초 후 타임아웃되었습니다.")
-
-    return _extract_text_from_response(response)
 
 
 def _normalize_evidence_refs(evidence_refs: Any) -> List[str]:
@@ -406,13 +302,13 @@ def _validate_summary_payload(
     open_questions = payload.get("open_questions") or []
 
     if not isinstance(bullets, list):
-        raise ValueError("bullets 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: bullets")
     if not isinstance(definitions, list):
-        raise ValueError("definitions 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: definitions")
     if not isinstance(explanations, list):
-        raise ValueError("explanations 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: explanations")
     if not isinstance(open_questions, list):
-        raise ValueError("open_questions 형식이 올바르지 않습니다.")
+        raise ValueError("Invalid format: open_questions")
     # bullets 개수, claim 길이 검증 제거 (Judge에서 품질 평가)
 
     normalized_bullets: List[Dict[str, Any]] = []
@@ -553,65 +449,37 @@ def _repair_prompt(
         bullets_rule = f"- bullets는 최소 {bullets_min}개 (상한 없음)"
     else:
         bullets_rule = "- bullets는 필요한 만큼"
-    return f"""아래는 잘못된 JSON 출력입니다. 반드시 유효한 JSON만 반환하세요.
-출력은 JSON 배열이며, 각 원소는 segment_id와 summary를 포함해야 합니다.
-summary는 bullets/definitions/explanations/open_questions 구조입니다. 설명 없이 JSON만 출력하세요.
 
-규칙:
-{bullets_rule}
-{claim_rule}
-- evidence_refs는 unit_id(t*, v*) 배열만 사용
-- confidence는 low|medium|high
+    return dedent(f"""
+        아래는 잘못된 JSON 출력입니다. 반드시 유효한 JSON만 반환하세요.
+        출력은 JSON 배열이며, 각 원소는 segment_id와 summary를 포함해야 합니다.
+        summary는 bullets/definitions/explanations/open_questions 구조입니다. 설명 없이 JSON만 출력하세요.
 
-잘못된 출력:
-{bad_json}
-"""
+        규칙:
+        {bullets_rule}
+        {claim_rule}
+        - evidence_refs는 unit_id(t*, v*) 배열만 사용
+        - confidence는 low|medium|high
 
-
-def _run_with_retries(
-    client_bundle: GeminiClientBundle,
-    prompt: str,
-    response_schema: Dict[str, Any],
-    temperature: float,
-    response_mime_type: str,
-    timeout_sec: int,
-    max_retries: int,
-    backoff_sec: List[int],
-) -> str:
-    attempt = 0
-    while True:
-        try:
-            return _generate_content(
-                client_bundle,
-                prompt,
-                response_schema,
-                temperature,
-                response_mime_type,
-                timeout_sec,
-            )
-        except Exception as exc:
-            if attempt >= max_retries:
-                logger.error(f"GenerateContent failed after {max_retries} retries: {exc}")
-                raise
-            sleep_for = (
-                backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
-            )
-            logger.warning(
-                f"GenerateContent failed (attempt {attempt+1}/{max_retries}). "
-                f"Retrying in {sleep_for}s. Error: {exc}"
-            )
-            time.sleep(max(sleep_for, 0))
-            attempt += 1
+        잘못된 출력:
+        {bad_json}
+    """).strip()
 
 
-def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
+
+
+def run_summarizer(
+    config: ConfigBundle,
+    limit: Optional[int] = None,
+    feedback_map: Optional[Dict[int, str]] = None,
+) -> None:
     paths = config.paths
     ensure_output_root(paths.output_root)
     output_dir = paths.output_root / "fusion"
     output_dir.mkdir(parents=True, exist_ok=True)
     input_jsonl = output_dir / "segments_units.jsonl"
     if not input_jsonl.exists():
-        raise FileNotFoundError(f"segments_units.jsonl이 없습니다: {input_jsonl}")
+        raise FileNotFoundError(f"segments_units.jsonl not found: {input_jsonl}")
 
     bullets_min = config.raw.summarizer.bullets_per_segment_min
     bullets_max = config.raw.summarizer.bullets_per_segment_max
@@ -625,7 +493,7 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
         segments.append(segment)
 
     if not segments:
-        raise ValueError("요약할 세그먼트가 없습니다.")
+        raise ValueError("No segments to summarize.")
 
     prompt = _build_batch_prompt(
         segments,
@@ -633,10 +501,11 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
         bullets_min,
         bullets_max,
         prompt_version=prompt_version,
+        feedback_map=feedback_map,
     )
 
     response_schema = _build_response_schema()
-    client_bundle = _init_gemini_client(config)
+    client_bundle = init_gemini_client(config)
 
     # Count input tokens and save to token_usage.json
     try:
@@ -661,7 +530,7 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text = _run_with_retries(
+        llm_text = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
@@ -678,17 +547,17 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
             try:
                 payload = _parse_json_response(llm_text)
                 if not isinstance(payload, list):
-                    raise ValueError("응답이 JSON 배열 형식이 아닙니다.")
+                    raise ValueError("Response is not a JSON array.")
 
                 summary_map: Dict[int, Dict[str, Any]] = {}
                 for item in payload:
                     if not isinstance(item, dict):
-                        raise ValueError("응답 배열의 항목 형식이 올바르지 않습니다.")
+                        raise ValueError("Invalid item format in response array.")
                     if "segment_id" not in item:
-                        raise ValueError("응답에 segment_id가 없습니다.")
+                        raise ValueError("Missing segment_id in response.")
                     segment_id = int(item.get("segment_id"))
                     if segment_id in summary_map:
-                        raise ValueError(f"중복 segment_id 발견: {segment_id}")
+                        raise ValueError(f"Duplicate segment_id found: {segment_id}")
                     summary_map[segment_id] = _validate_summary_payload(
                         item.get("summary", {}),
                         segment_id,
@@ -700,7 +569,7 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
                     missing = sorted(set(expected_ids) - set(summary_map.keys()))
                     extra = sorted(set(summary_map.keys()) - set(expected_ids))
                     raise ValueError(
-                        f"segment_id 불일치 (missing={missing}, extra={extra})"
+                        f"segment_id mismatch (missing={missing}, extra={extra})"
                     )
 
                 for segment in segments:
@@ -731,7 +600,7 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text = _run_with_retries(
+                llm_text = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -742,7 +611,7 @@ def run_summarizer(config: ConfigBundle, limit: Optional[int] = None) -> None:
                     config.raw.llm_gemini.backoff_sec,
                 )
         if last_error:
-            raise RuntimeError(f"LLM JSON/검증 실패: {last_error}")
+            raise RuntimeError(f"LLM JSON/Validation failed: {last_error}")
     finally:
         if output_handle:
             output_handle.close()
@@ -755,6 +624,7 @@ def run_batch_summarizer(
     config: ConfigBundle,
     previous_context: Optional[str] = None,
     limit: Optional[int] = None,
+    feedback_map: Optional[Dict[int, str]] = None,
 ) -> Dict[str, Any]:
     """배치별 세그먼트 요약을 생성합니다.
 
@@ -774,7 +644,7 @@ def run_batch_summarizer(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not segments_units_jsonl.exists():
-        raise FileNotFoundError(f"segments_units.jsonl이 없습니다: {segments_units_jsonl}")
+        raise FileNotFoundError(f"segments_units.jsonl not found: {segments_units_jsonl}")
 
     bullets_min = config.raw.summarizer.bullets_per_segment_min
     bullets_max = config.raw.summarizer.bullets_per_segment_max
@@ -805,10 +675,11 @@ def run_batch_summarizer(
         bullets_max,
         previous_context,
         prompt_version=prompt_version,
+        feedback_map=feedback_map,
     )
 
     response_schema = _build_response_schema()
-    client_bundle = _init_gemini_client(config)
+    client_bundle = init_gemini_client(config)
 
     # Token 사용량 기록
     try:
@@ -833,13 +704,13 @@ def run_batch_summarizer(
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text = _run_with_retries(
+        llm_text = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
             config.raw.summarizer.temperature,
             config.raw.llm_gemini.response_mime_type,
-            300,  # config.raw.llm_gemini.timeout_sec
+            config.raw.llm_gemini.timeout_sec,
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
         )
@@ -892,7 +763,7 @@ def run_batch_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text = _run_with_retries(
+                llm_text = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,

@@ -1,4 +1,4 @@
-"""JSON/JSONL 입출력과 공통 유틸."""
+"""JSON/JSONL 입출력과 공통 util."""
 
 from __future__ import annotations
 

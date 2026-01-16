@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 from src.fusion.config import ConfigBundle
 from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_token_usage
+from src.fusion.gemini import init_gemini_client, run_with_retries
 
 
 PROMPTS_PATH = ROOT / "config" / "judge" / "prompts.yaml"
@@ -30,143 +31,17 @@ MAX_SCORE = 10
 _THREAD_LOCAL = threading.local()
 
 
-@dataclass(frozen=True)
-class GeminiClientBundle:
-    """Gemini 클라이언트와 모델 메타데이터 묶음."""
-
-    client: Any
-    backend: str
-    model: str
-
-
-def _load_genai() -> Any:
-    """google genai 모듈을 로드하고 오류를 명확히 알린다."""
-    try:
-        from google import genai  # type: ignore
-    except ImportError as exc:
-        raise ImportError("google-genai package is required. Check requirements.txt.") from exc
-    return genai
-
-
-def _init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
-    """fusion config 기준으로 Gemini 클라이언트를 생성한다."""
-    genai = _load_genai()
-    llm_cfg = config.raw.llm_gemini
-    if llm_cfg.backend == "developer_api":
-        api_key = None
-        for env_name in llm_cfg.developer_api.api_key_env_candidates:
-            api_key = os.getenv(env_name)
-            if api_key:
-                break
-        if not api_key:
-            raise ValueError("Developer API key is missing. Set GOOGLE_API_KEY or GEMINI_API_KEY.")
-        client = genai.Client(api_key=api_key)
-        return GeminiClientBundle(client=client, backend="developer_api", model=llm_cfg.model)
-
-    if llm_cfg.backend == "vertex_ai":
-        project = llm_cfg.vertex_ai.project
-        location = llm_cfg.vertex_ai.location
-        if not project or not location:
-            raise ValueError("Vertex AI requires project/location in config.")
-        if llm_cfg.vertex_ai.auth_mode == "adc":
-            client = genai.Client(vertexai=True, project=project, location=location)
-        else:
-            api_key = os.getenv(llm_cfg.vertex_ai.api_key_env)
-            if not api_key:
-                raise ValueError("Vertex AI express_api_key mode requires an API key.")
-            client = genai.Client(vertexai=True, project=project, location=location, api_key=api_key)
-        return GeminiClientBundle(client=client, backend="vertex_ai", model=llm_cfg.model)
-
-    raise ValueError(f"Unsupported backend: {llm_cfg.backend}")
 
 
 def _get_thread_client_bundle(config: ConfigBundle) -> GeminiClientBundle:
     """thread 로컬에 Gemini 클라이언트를 캐시한다."""
     bundle = getattr(_THREAD_LOCAL, "client_bundle", None)
     if bundle is None:
-        bundle = _init_gemini_client(config)
+        bundle = init_gemini_client(config)
         _THREAD_LOCAL.client_bundle = bundle
     return bundle
 
 
-def _extract_text_from_response(response: Any) -> str:
-    """Gemini 응답에서 텍스트를 추출한다."""
-    text = getattr(response, "text", None)
-    if text:
-        return text
-    candidates = getattr(response, "candidates", None)
-    if candidates:
-        for candidate in candidates:
-            content = getattr(candidate, "content", None)
-            if not content:
-                continue
-            parts = getattr(content, "parts", None) or []
-            for part in parts:
-                part_text = getattr(part, "text", None)
-                if part_text:
-                    return part_text
-    raise ValueError("Failed to extract text from Gemini response.")
-
-
-def _generate_content(
-    client_bundle: GeminiClientBundle,
-    prompt: str,
-    response_schema: Dict[str, Any],
-    temperature: float,
-    response_mime_type: str,
-    timeout_sec: int,
-) -> str:
-    """Gemini 호출 결과의 텍스트를 반환한다."""
-    client = client_bundle.client
-    config = {
-        "temperature": temperature,
-        "response_mime_type": response_mime_type,
-        "response_schema": response_schema,
-    }
-    try:
-        response = client.models.generate_content(
-            model=client_bundle.model,
-            contents=prompt,
-            config=config,
-            timeout=timeout_sec,
-        )
-    except TypeError:
-        response = client.models.generate_content(
-            model=client_bundle.model,
-            contents=prompt,
-            config=config,
-        )
-    return _extract_text_from_response(response)
-
-
-def _run_with_retries(
-    client_bundle: GeminiClientBundle,
-    prompt: str,
-    response_schema: Dict[str, Any],
-    temperature: float,
-    response_mime_type: str,
-    timeout_sec: int,
-    max_retries: int,
-    backoff_sec: List[int],
-) -> str:
-    """오류 시 Gemini 호출을 재시도한다."""
-    attempt = 0
-    while True:
-        try:
-            return _generate_content(
-                client_bundle,
-                prompt,
-                response_schema,
-                temperature,
-                response_mime_type,
-                timeout_sec,
-            )
-        except Exception:
-            if attempt >= max_retries:
-                raise
-            sleep_for = backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
-            time.sleep(max(sleep_for, 0))
-            attempt += 1
 
 
 def _strip_code_fences(text: str) -> str:
@@ -180,12 +55,6 @@ def _strip_code_fences(text: str) -> str:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     return stripped
-
-
-def _parse_json_response(text: str) -> Any:
-    """LLM 출력을 JSON으로 파싱한다."""
-    cleaned = _strip_code_fences(text)
-    return json.loads(cleaned)
 
 
 def _repair_prompt(bad_json: str) -> str:
@@ -239,13 +108,18 @@ def _evaluate_batch(
     verbose: bool,
 ) -> Dict[int, Dict[str, Any]]:
     """배치 단위로 LLM 평가를 실행하고 결과를 반환한다."""
+    # 1. 배치 처리 시작 시간 측정
     seg_ids = [int(item.get("segment_id", -1)) for item in batch]
     if verbose:
         print(f"[JUDGE] batch {batch_index}/{batch_total} start (segments={seg_ids})")
     started = time.perf_counter()
+    
+    # 2. 클라이언트/프롬프트 준비
     client_bundle = _get_thread_client_bundle(config)
     prompt = _build_prompt(prompt_template, batch)
-    llm_text = _run_with_retries(
+    
+    # 3. LLM 호출 (Retry 로직 포함)
+    llm_text = run_with_retries(
         client_bundle,
         prompt,
         response_schema,
@@ -255,11 +129,14 @@ def _evaluate_batch(
         max_retries=config.raw.llm_gemini.max_retries,
         backoff_sec=config.raw.llm_gemini.backoff_sec,
     )
+    
     last_error: Optional[Exception] = None
     results: Dict[int, Dict[str, Any]] = {}
+    
+    # 4. JSON 파싱 및 구조 검증 (실패 시 복구 프롬프트로 재시도)
     for _ in range(json_repair_attempts + 1):
         try:
-            payload = _parse_json_response(llm_text)
+            payload = json.loads(_strip_code_fences(llm_text))
             if not isinstance(payload, list):
                 raise ValueError("LLM response is not a JSON array.")
             for item in payload:
@@ -271,7 +148,8 @@ def _evaluate_batch(
             break
         except Exception as exc:
             last_error = exc
-            llm_text = _run_with_retries(
+            # 수정 프롬프트로 재시도
+            llm_text = run_with_retries(
                 client_bundle,
                 _repair_prompt(llm_text),
                 response_schema,
@@ -283,6 +161,8 @@ def _evaluate_batch(
             )
     if last_error:
         raise RuntimeError(f"LLM JSON parse failed: {last_error}")
+    
+    # 5. 처리 결과 반환
     if verbose:
         elapsed = time.perf_counter() - started
         print(f"[JUDGE] batch {batch_index}/{batch_total} done in {elapsed:.2f}s")
@@ -375,10 +255,7 @@ def _normalize_feedback(value: Any) -> str:
 
 def _compute_final_score(groundedness: int, compliance: int, note_quality: int) -> float:
     """가중치 기반 최종 점수를 계산한다."""
-    return round(
-        0.45 * groundedness + 0.35 * note_quality + 0.20 * compliance,
-        2,
-    )
+    return round(0.45 * groundedness + 0.35 * note_quality + 0.20 * compliance, 2)
 
 
 def run_judge(
@@ -396,6 +273,7 @@ def run_judge(
     write_outputs: bool,
 ) -> Dict[str, Any]:
     """Judge를 실행하고 결과를 반환한다."""
+    # 1. 데이터 로드 및 정합성 체크
     segments_units = _load_segments_units(segments_units_path)
     segment_summaries = _load_segment_summaries(segment_summaries_path)
     matched_ids, missing_units, missing_summaries = _merge_segments(
@@ -410,6 +288,7 @@ def run_judge(
     if workers < 1:
         raise ValueError("workers must be >= 1.")
 
+    # 2. 평가 페이로드 구성
     payloads: List[Dict[str, Any]] = []
     for seg_id in matched_ids:
         payloads.append(
@@ -423,10 +302,10 @@ def run_judge(
     response_schema = _build_response_schema()
     prompt_version, prompt_template = _load_prompt_template(config.judge.prompt_version)
 
-    # Count input tokens for all payloads and save to token_usage.json
+    # 3. 토큰 사용량 측정
     try:
         full_prompt = _build_prompt(prompt_template, payloads)
-        client_bundle = _init_gemini_client(config)
+        client_bundle = init_gemini_client(config)
         token_result = client_bundle.client.models.count_tokens(
             model=client_bundle.model,
             contents=full_prompt
@@ -450,6 +329,8 @@ def run_judge(
         print(
             f"[JUDGE] batches={len(batches)} batch_size={batch_size} workers={workers}"
         )
+    
+    # 4. 배치 평가 실행 (단일/병렬)
     if workers == 1 or len(batches) == 1:
         for idx, batch in enumerate(batches, start=1):
             llm_results.update(
@@ -484,6 +365,7 @@ def run_judge(
             for future in as_completed(futures):
                 llm_results.update(future.result())
 
+    # 5. 결과 집계 및 점수 계산
     segment_reports: List[Dict[str, Any]] = []
     groundedness_scores: List[int] = []
     compliance_scores: List[int] = []
@@ -496,10 +378,10 @@ def run_judge(
         if not llm_item:
             raise ValueError(f"Missing LLM result for segment_id={seg_id}")
         llm_scores = llm_item.get("scores", {}) if isinstance(llm_item, dict) else {}
-        groundedness = _clamp_score(llm_scores.get("groundedness"))
-        compliance = _clamp_score(llm_scores.get("compliance"))
-        note_quality = _clamp_score(llm_scores.get("note_quality"))
-        multimodal_use = _clamp_score(llm_scores.get("multimodal_use"))
+        groundedness = _clamp_score(llm_scores.get("groundedness"))      # 근거 충실도 (출처/컨텍스트 기반 응답)
+        compliance = _clamp_score(llm_scores.get("compliance"))          # 프롬프트/규칙 준수도
+        note_quality = _clamp_score(llm_scores.get("note_quality"))      # 결과물 품질 (명확성·구조·요약력)
+        multimodal_use = _clamp_score(llm_scores.get("multimodal_use"))  # 멀티모달 정보 활용 적절성
         final_score = _compute_final_score(groundedness, compliance, note_quality)
         feedback = _normalize_feedback(llm_item.get("feedback"))
         if not feedback:

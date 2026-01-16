@@ -125,23 +125,31 @@ class BenchmarkTimer:
         result = func(*args, **kwargs)
         elapsed = time.perf_counter() - start
 
-        self.stages[stage_name] = {
-            "elapsed_sec": elapsed,
-            "start_time": start,
-            "end_time": start + elapsed,
-        }
+        if stage_name in self.stages:
+            self.stages[stage_name]["elapsed_sec"] += elapsed
+            self.stages[stage_name]["end_time"] = start + elapsed
+        else:
+            self.stages[stage_name] = {
+                "elapsed_sec": elapsed,
+                "start_time": start,
+                "end_time": start + elapsed,
+            }
 
-        print(f"  ✓ {stage_name}: {format_duration(elapsed)}")
+        if stage_name != "waiting":
+            print(f"  ✅ {stage_name}: {format_duration(elapsed)}")
 
         return result, elapsed
 
     def record_stage(self, stage_name: str, elapsed: float) -> None:
         """외부에서 측정한 시간을 기록한다."""
-        self.stages[stage_name] = {
-            "elapsed_sec": elapsed,
-            "start_time": None,
-            "end_time": None,
-        }
+        if stage_name in self.stages:
+            self.stages[stage_name]["elapsed_sec"] += elapsed
+        else:
+            self.stages[stage_name] = {
+                "elapsed_sec": elapsed,
+                "start_time": None,
+                "end_time": None,
+            }
 
     def get_total_elapsed(self) -> float:
         """전체 경과 시간을 반환한다."""
@@ -212,6 +220,7 @@ def print_benchmark_report(
         "stt",
         "capture",
         "vlm",
+        "waiting",
         "fusion.sync_engine",
         "fusion.llm_summarizer",
         "fusion.renderer",
@@ -219,22 +228,72 @@ def print_benchmark_report(
         "fusion.judge",
     ]
 
-    for stage in stage_order:
-        if stage in report["stages"]:
-            info = report["stages"][stage]
-            print(
-                f"   {stage:24s} {info['elapsed_formatted']:>10s} ({info['percentage']:5.1f}%)"
+    printed_stages = set()
+    skip_stages = set()
+    display_entries: List[Tuple[str, str, float, Optional[str]]] = []
+
+    has_batch = any(stage.startswith("pipeline_batch_") for stage in report["stages"])
+    if has_batch:
+        skip_stages.add("vlm")
+
+    if parallel and "stt" in report["stages"] and "capture" in report["stages"]:
+        stt_info = report["stages"]["stt"]
+        capture_info = report["stages"]["capture"]
+        parallel_elapsed = max(stt_info["elapsed_sec"], capture_info["elapsed_sec"])
+        parallel_pct = (
+            parallel_elapsed / report["total_elapsed_sec"] * 100
+            if report["total_elapsed_sec"] > 0
+            else 0.0
+        )
+        details = (
+            f"stt={stt_info['elapsed_formatted']}, "
+            f"capture={capture_info['elapsed_formatted']}"
+        )
+        display_entries.append(
+            (
+                "stt+capture (parallel)",
+                format_duration(parallel_elapsed),
+                parallel_pct,
+                details,
             )
+        )
+        skip_stages.update({"stt", "capture"})
+
+    for stage in stage_order:
+        if stage in report["stages"] and stage not in skip_stages:
+            info = report["stages"][stage]
+            display_entries.append(
+                (stage, info["elapsed_formatted"], info["percentage"], None)
+            )
+            printed_stages.add(stage)
+
+    for stage in report["stages"]:
+        if stage in printed_stages or stage in skip_stages:
+            continue
+        info = report["stages"][stage]
+        display_entries.append(
+            (stage, info["elapsed_formatted"], info["percentage"], None)
+        )
+
+    width = max(24, max((len(stage) for stage, _, _, _ in display_entries), default=0))
+    for stage, elapsed_formatted, percentage, details in display_entries:
+        line = f"   {stage:<{width}} {elapsed_formatted:>10s} ({percentage:5.1f}%)"
+        if details:
+            line += f" [{details}]"
+        print(line)
 
     print("-" * 50)
-    print(f"   {'TOTAL':24s} {report['total_elapsed_formatted']:>10s}")
+    print(f"   {'TOTAL':<{width}} {report['total_elapsed_formatted']:>10s}")
 
     if "speed_ratio" in report:
         print(f"\n🚀 Speed Ratio: {report['realtime_factor']} (video length)")
+        target_sec = (video_info.get("duration_sec") or 0) * 0.5
+        target_str = format_duration(target_sec)
+        video_len_str = format_duration(video_info.get("duration_sec") or 0)
         if report["speed_ratio"] < 0.5:
-            print("   ✅ Target met! (under 3 minutes for a 6-minute video)")
+            print(f"   ✅ Target met! (under {target_str} for a {video_len_str} video)")
         else:
-            print("   ⚠️  Optimization needed (target: <= 0.5x)")
+            print(f"   ⚠️  Optimization needed (target: <= {target_str} for a {video_len_str} video)")
 
     print(f"\n📁 Output: {output_root}")
     print("=" * 60 + "\n")
@@ -274,12 +333,37 @@ def print_benchmark_report(
         ]
     )
 
+    md_printed = set()
+    md_skip = set(skip_stages)
+
+    if parallel and "stt" in report["stages"] and "capture" in report["stages"]:
+        stt_info = report["stages"]["stt"]
+        capture_info = report["stages"]["capture"]
+        parallel_elapsed = max(stt_info["elapsed_sec"], capture_info["elapsed_sec"])
+        parallel_pct = (
+            parallel_elapsed / report["total_elapsed_sec"] * 100
+            if report["total_elapsed_sec"] > 0
+            else 0.0
+        )
+        md_lines.append(
+            f"| stt+capture (parallel) | {format_duration(parallel_elapsed)} | {parallel_pct:.1f}% |"
+        )
+
     for stage in stage_order:
-        if stage in report["stages"]:
+        if stage in report["stages"] and stage not in md_skip:
             info = report["stages"][stage]
             md_lines.append(
                 f"| {stage} | {info['elapsed_formatted']} | {info['percentage']:.1f}% |"
             )
+            md_printed.add(stage)
+
+    for stage in report["stages"]:
+        if stage in md_printed or stage in md_skip:
+            continue
+        info = report["stages"][stage]
+        md_lines.append(
+            f"| {stage} | {info['elapsed_formatted']} | {info['percentage']:.1f}% |"
+        )
 
     md_lines.extend(
         [

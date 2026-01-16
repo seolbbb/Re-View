@@ -223,10 +223,13 @@ class OpenRouterVlmExtractor:
         """
         last_error: Optional[Exception] = None
         total_keys = len(self.clients)
+        
+        # 1. 설정된 모든 API 키를 순회하며 요청 시도 (Round-robin/Failover)
         for idx, client in enumerate(self.clients, start=1):
             if show_progress:
                 print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
             try:
+                # 2. 실제 API 호출
                 completion = client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
@@ -234,6 +237,7 @@ class OpenRouterVlmExtractor:
                 )
             except Exception as exc:
                 last_error = exc
+                # 3. 실패 시 다음 키가 있으면 재시도, 없으면 예외 처리
                 if idx < total_keys:
                     if show_progress:
                         print(
@@ -241,9 +245,12 @@ class OpenRouterVlmExtractor:
                             flush=True,
                         )
                     continue
+                # 4. 서비스 불가 에러(502/503)는 별도 메시지로 변환
                 if is_service_unavailable_error(exc):
                     raise RuntimeError(format_service_unavailable_message(exc)) from exc
                 raise
+            
+            # 5. 응답 에러 필드 확인
             error = getattr(completion, "error", None)
             if error:
                 last_error = RuntimeError(format_openrouter_error(error))
@@ -262,6 +269,8 @@ class OpenRouterVlmExtractor:
                     )
                     raise RuntimeError(message) from last_error
                 raise last_error
+            
+            # 6. 빈 응답 처리
             if not completion or not completion.choices:
                 last_error = RuntimeError(
                     f"OpenRouter API returned empty response for {label}: {completion}"
@@ -274,6 +283,8 @@ class OpenRouterVlmExtractor:
                         )
                     continue
                 raise last_error
+            
+            # 7. 성공 시 결과 반환
             return completion.choices[0].message.content or ""
 
         if last_error:
@@ -371,12 +382,16 @@ class OpenRouterVlmExtractor:
             print(f"[VLM] base_url: {self.base_url}", flush=True)
             print(f"[VLM] concurrency: {concurrency}", flush=True)
 
+        # [Case 1] 배치 모드 (batch_size > 1)
         if batch_size > 1:
+            # 1. 이미지를 배치 단위로 분할
             batches = [
                 image_paths[start : start + batch_size]
                 for start in range(0, len(image_paths), batch_size)
             ]
             total_batches = len(batches)
+
+            # 1-1. 순차 실행 (Concurrency 미사용)
             if concurrency == 1 or total_batches == 1:
                 for batch_index, batch_paths in enumerate(batches, start=1):
                     if show_progress:
@@ -397,6 +412,7 @@ class OpenRouterVlmExtractor:
                         print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
                 return results
 
+            # 1-2. 병렬 실행 (ThreadPoolExecutor 사용)
             results_by_index: dict[int, List[Dict[str, Any]]] = {}
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 future_map = {}
@@ -415,16 +431,24 @@ class OpenRouterVlmExtractor:
                         show_progress=show_progress,
                     )
                     future_map[future] = batch_index
+
+                if show_progress:
+                    print("-" * 50, flush=True)
+                
+                # 완료된 순서대로 결과 수집하되, 인덱스로 저장해 나중에 정렬
                 for future in as_completed(future_map):
                     batch_index = future_map[future]
                     results_by_index[batch_index] = future.result()
                     if show_progress:
                         print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
 
+            # 원래 배치 순서대로 결과 병합
             for batch_index in range(1, total_batches + 1):
                 results.extend(results_by_index[batch_index])
             return results
 
+        # [Case 2] 단일 모드 (batch_size == 1)
+        # 2-1. 순차 실행
         if concurrency == 1 or total_images == 1:
             for idx, image_path in enumerate(image_paths, start=1):
                 if show_progress:
@@ -441,6 +465,7 @@ class OpenRouterVlmExtractor:
                 results.append(result)
             return results
 
+        # 2-2. 병렬 실행
         results_by_index: Dict[int, Dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             future_map = {}
@@ -456,12 +481,15 @@ class OpenRouterVlmExtractor:
                     show_progress=show_progress,
                 )
                 future_map[future] = idx
+            
+            # 완료된 순서대로 결과 수집
             for future in as_completed(future_map):
                 idx = future_map[future]
                 results_by_index[idx] = future.result()
                 if show_progress:
                     print(f"[VLM] done {idx}/{total_images}", flush=True)
 
+        # 원래 이미지 순서대로 정렬하여 반환
         for idx in range(1, total_images + 1):
             results.append(results_by_index[idx])
 

@@ -5,7 +5,7 @@
 import cv2
 import numpy as np
 import os
-import logging
+
 
 
 class HybridSlideExtractor:
@@ -60,24 +60,8 @@ class HybridSlideExtractor:
         # Brute-Force 매처 (Hamming 거리 사용, crossCheck로 양방향 매칭)
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         
-        # 로거 설정
-        self.logger = logging.getLogger("HybridExtractor")
-        if not self.logger.handlers:
-            self.logger.addHandler(logging.NullHandler())
-            
         # 출력 디렉토리 생성
         os.makedirs(self.output_dir, exist_ok=True)
-        
-        # 파일 로깅 설정 (capture_log.txt)
-        log_file = os.path.join(self.output_dir, "..", "capture_log.txt")
-        log_file = os.path.abspath(log_file)
-        
-        file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
-        self.logger.setLevel(logging.INFO)
-        self.file_handler = file_handler
         
         # 상태 변수 초기화
         self.last_saved_frame = None
@@ -168,18 +152,13 @@ class HybridSlideExtractor:
                 if not is_in_transition:
                     # [인터럽트 로직] 버퍼링 중 새 전환 감지
                     if current_pending_capture is not None and is_significant_change:
-                        self.logger.info(
-                            f"Buffer interrupted by new transition at {current_time:.2f}s"
-                        )
+
                         should_finalize_buffer = True
                         
                     if is_significant_change and (current_time - last_capture_time) >= self.min_interval:
                         is_in_transition = True
                         transition_start_time = current_time
-                        self.logger.info(
-                            f"Transition started at {current_time:.2f}s "
-                            f"(Diff:{diff_val:.1f}, Sim:{sim_val:.2f})"
-                        )
+
                 else:
                     # 안정성 확인
                     is_stable = (diff_val < (self.sensitivity_diff / 4.0))
@@ -193,9 +172,7 @@ class HybridSlideExtractor:
                                 'buffer': [frame.copy()],
                                 'buffer_start': current_time
                             }
-                            self.logger.info(
-                                f"Stable state detected at {current_time:.2f}s. Buffering starts..."
-                            )
+
             
             # 5. 스마트 버퍼링 로직
             if current_pending_capture is not None:
@@ -263,9 +240,7 @@ class HybridSlideExtractor:
             self._save_slide(video_name, slide_idx, self.pending_slide, duration_ms, extracted_slides)
         
         cap.release()
-        if hasattr(self, 'file_handler'):
-            self.logger.removeHandler(self.file_handler)
-            self.file_handler.close()
+
             
         return extracted_slides
 
@@ -293,7 +268,7 @@ class HybridSlideExtractor:
                 best_diff = diff
                 best_frame = frame
         
-        self.logger.info(f"Best frame selected: diff from median = {best_diff:.2f}")
+
         
         # 중복 검사
         should_save = True
@@ -341,14 +316,11 @@ class HybridSlideExtractor:
                         
                         if inlier_ratio > 0.15 and dedupe_score < 20.0 and sim_score >= 0.5:
                             is_duplicate = True
-                            self.logger.info(
-                                f"RANSAC duplicate detected: Inliers={ransac_inliers}, "
-                                f"Ratio={inlier_ratio:.2f}"
-                            )
+
             
             if is_duplicate:
                 should_save = False
-                self.logger.info(f"Duplicate/Dropped: Diff={dedupe_score:.1f}, Sim={sim_score:.2f}")
+
             else:
                 self.last_saved_des = new_des
                 self.last_saved_kp = new_kp
@@ -375,5 +347,4 @@ class HybridSlideExtractor:
             "end_ms": end_ms
         })
         
-        time_str = f"{start_ms//3600000:02d}h{(start_ms//60000)%60:02d}m{(start_ms//1000)%60:02d}s{start_ms%1000:03d}ms"
-        self.logger.info(f"Saved: {filename} ({time_str})")
+
