@@ -9,6 +9,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 
 다른 터미널을 추가로 열고 아래 요청 예시를 입력, 전처리가 되어 있어야 함
+POST 실행
 요청 예시:
   curl -X POST http://localhost:8000/process \\
     -H "Content-Type: application/json" \\
@@ -17,6 +18,12 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 diffusion.mp4이면 video_name은 diffusion
 force_db를 사용하면 supabase에서 정보를 가져옴
 db 설정하기 어렵다 -> force_db true 빼고 실행하면 로컬에 저장된 전처리 정보를 가져와서 실행함
+
+GET 실행
+서버 체크:
+    curl http://localhost:8000/health
+마지막 실행 로그:
+    curl http://localhost:8000/runs/diffusion
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from src.run_process_pipeline import run_processing_pipeline
+import json
 
 
 app = FastAPI(title="Screentime Processing API")
