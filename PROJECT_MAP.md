@@ -11,11 +11,12 @@
 - `src/pipeline/stages.py`
   - 각 단계(STT/Capture/VLM/Fusion/Judge)를 실제로 호출하는 모듈.
   - 배치 모드 흐름도 여기에서 조립됩니다.
+  - run_video_pipeline.py를 중심으로 보면 되고 이 파일은 참고로 궁금하면 보시면 됩니다.
 
 ## 모듈별 핵심 파일
 
 - STT: `src/audio/`
-  - `src/audio/stt_router.py`: STT 백엔드 선택/라우팅
+  - `src/audio/stt_router.py`: STT 백엔드 선택/라우팅 수행하는 핵심 파일
   - `src/audio/clova_stt.py`: Clova STT API 호출 및 응답 정규화
 - Capture: `src/capture/`
   - `src/capture/process_content.py`: 캡쳐 실행 엔트리(슬라이드 캡쳐 + manifest 생성)
@@ -90,3 +91,37 @@ video.mp4
 
 배치 모드에서는 배치별 결과를 만든 뒤, `fusion/`에 요약 결과를 누적하고
 렌더링/최종 Judge는 `fusion/` 기준으로 다시 수행합니다.
+
+
+
+# JSON 출력 핵심 (batch / no batch 기준)
+
+
+## 공통 핵심
+
+- `stt.json`: STT 세그먼트(시간/텍스트)
+- `manifest.json`: 캡처 이미지 목록(파일/시간)
+- `vlm.json`: 이미지별 VLM 텍스트
+- `pipeline_run.json`: 실행 메타(시간/옵션/통계)
+- `fusion/segments_units.jsonl`: STT+VLM 결합 세그먼트
+- `fusion/segment_summaries.jsonl`: 세그먼트 요약 결과
+- `fusion/judge.json`: PASS/FAIL + 점수
+
+## 배치 모드 OFF (`no batch`)
+
+- 위 파일들이 `data/outputs/<video>/`와 `fusion/`에 직접 생성됨
+- `fusion/judge/*`와 `fusion/token_usage.json`은 상세 리포트/토큰 로그
+
+## 배치 모드 ON (`diffusion_batch`)
+
+- 배치별 결과는 `batches/batch_N/`에 생성됨
+- 배치 요약은 마지막에 `fusion/segment_summaries.jsonl`로 합쳐짐
+
+
+## 기타 JSON (보조/참고용)
+
+- `fusion/judge/judge_report.json`: 점수 집계/메타 정보
+- `fusion/judge/judge_segment_reports.jsonl`: 세그먼트별 상세 평가
+- `fusion/token_usage.json`: LLM 입력 토큰 로그
+- `batches/batch_N/vlm_raw.json`: VLM 원본 응답(변환 전)
+- `batches/batch_N/token_usage.json`: 배치 요약/저지 토큰 로그
