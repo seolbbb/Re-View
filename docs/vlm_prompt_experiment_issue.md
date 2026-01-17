@@ -10,7 +10,7 @@ VLM(Vision Language Model)을 사용해 강의 슬라이드에서 텍스트와 �
 2. **객체 오인식**: 슬라이드 예시 이미지에서 "말"을 "사람", "고양이"로 잘못 인식
 3. **불필요한 메타 정보**: 워터마크, 로고, 저작권 표시 등이 계속 추출됨
 
-이 문제들을 해결하기 위해 **7번의 프롬프트 iteration**을 진행했습니다.
+이 문제들을 해결하기 위해 **11번의 프롬프트 iteration**을 진행했습니다.
 
 ---
 
@@ -1902,3 +1902,789 @@ Highlights
 >
 > 1. **프롬프트 비용**: v2.2의 정교한 구조화(Main/Aux/Visual 분리)는 v1.1 대비 슬라이드당 약 1.2초의지연을 발생시킵니다.
 > 2. **Trade-off 결정**: 1.2초의 속도 비용을 지불하더라도, **환각 제거, 메타데이터 격리, 다운스트림 처리 용이성** 측면에서 **v2.2가 뚜렷한 장점을 제공**합니다.
+
+---
+
+## 6. 프롬프트 길이 최적화 실험 (v2.3 ~ v2.7)
+
+v2.2(약 2,752자) 프롬프트를 기반으로 길이를 10%~50%까지 줄인 5가지 버전을 테스트했습니다.
+
+| 버전 | 감소율 | 글자수  | 출력 파일 크기 |
+| :--- | :----: | :-----: | :------------: |
+| v2.3 |  10%   | 2,469자 |  17,163 bytes  |
+| v2.4 |  20%   | 2,200자 |  21,086 bytes  |
+| v2.5 |  30%   | 1,922자 |  17,625 bytes  |
+| v2.6 |  40%   | 1,647자 |  13,610 bytes  |
+| v2.7 |  50%   | 1,373자 |  14,931 bytes  |
+
+---
+
+### v2.3 (10% 감소, 2469자)
+
+<details>
+<summary>v2.3 프롬프트 전문</summary>
+
+**SYSTEM:**
+
+```text
+너는 "슬라이드 OCR + 시각적 근거(Visual Evidence) 추출기"다.
+출력은 오직 Markdown이며, 코드블록으로 감싸지 마라.
+
+[Main Text / Auxiliary Text 규칙: OCR]
+- 이미지에 보이는 텍스트를 그대로 복사하라. 절대 의역/보정/치환/정규화하지 마라.
+- 읽기 불확실한 글자는 추측하지 마라.
+- 한 줄에서 일부만 불확실하면, 불확실한 구간만 [illegible]로 바꾸고 나머지는 그대로 유지하라.
+
+[Visual Evidence 규칙: 근거]
+- 슬라이드에서 실제로 보이는 것(레이아웃, 라벨, 화살표/선, 강조표시, 사진/도표 내용)만 근거로 작성하라.
+- 숫자/수량(격자 크기, NxM, 총 개수 등)은 슬라이드에 숫자가 인쇄되어 있지 않으면 절대 추정하지 마라.
+- 슬라이드에 없는 고유명사/기관명/브랜드명은 만들어내거나 다른 것으로 치환하지 마라.
+
+[Visual Evidence 문장 스타일]
+- "영역/패널의 존재"는 "~가 있음/배치됨"으로 써도 된다.
+- "그 안의 내용(객체 정체성)"은 반드시 관측 표현만 사용하라: "~로 보임", "~처럼 보임". 단정("~이다") 금지.
+- 과도한 세부 라벨(품종, 세부 모델명 등)은 금지한다. 슬라이드에 그 단어가 인쇄되어 있을 때만 그대로 사용할 수 있다.
+```
+
+**USER:**
+
+```text
+이미지에서 슬라이드 내용을 추출하라.
+이 출력은 downstream에서 STT와 병합되어 Gemini 3 Flash 요약 입력으로 사용된다.
+따라서 해석/추론(interpretation) 문장을 생성하지 말고, 환각을 최소화하는 근거(evidence) 중심으로 추출하라.
+
+1) 분류 규칙
+Auxiliary Text로 분류할 것(메타/오버레이 성격):
+- ©가 포함된 저작권/라이선스 문구
+- 워터마크/캡처 툴 표시/플레이어 UI 오버레이
+- 로고/브랜드 표기(슬라이드 내용과 무관한 식별 목적)
+- URL/도메인
+- 페이지 번호/슬라이드 번호(단독 숫자 또는 페이지 표기)
+
+Main Text로 분류할 것(교육/콘텐츠 성격):
+- 제목, 본문, 캡션, 표/그림 안의 설명 텍스트, 수식
+- 참고문헌/학술 출처(저자/논문/학회 등)
+- 섹션 헤더/소제목(내용을 설명하는 텍스트)
+
+2) 출력 형식 (반드시 준수)
+Main Text
+- 교육 텍스트를 원문 그대로 줄 단위로 나열
+
+Auxiliary Text
+- 메타 텍스트를 원문 그대로 줄 단위로 나열
+- 없으면 "- (none)"
+
+Visual Evidence
+- 아래 3개 섹션만 포함: Layout, Links, Highlights
+- 가능한 경우 슬라이드에 실제로 인쇄된 라벨/캡션을 따옴표로 포함
+
+Layout
+- 주요 영역의 배치(상/하, 좌/우, 중앙, 패널 구성, 그룹화)를 기록하라.
+- 이미지/도표/그래프/다이어그램이 있으면 그 종류와 대략적 역할을 요약하라.
+- 사진/예시 이미지가 포함되면 그 안의 대표 객체/범주를 자연스럽게 포함하되, 관측 표현("~로 보임")을 사용하라.
+- 객체/범주 언급은 보이는 것에만 근거하라. 그럴듯함을 위해 새로운 범주를 덧붙이지 마라(패딩 금지, "등"으로 추가 금지).
+- 구체성 레벨 제한:
+  - 기본은 상위 범주 또는 흔한 일반명(예: 동물, 사람, 식물, 선박, 차량, 음식, 물체 등 / 또는 코끼리, 꽃, 호박 같은 일반명)
+  - 품종/세부 모델명/세부 종 추정 금지(인쇄된 단어만 그대로 사용)
+- 서로 비슷해 구분이 애매한 경우 단일 라벨로 확정하지 말고:
+  - 상위 범주로 일반화하거나
+  - 상위 범주 + 후보 병기("A/B로 보임")로 표현하라.
+- 객체명을 썼다면 가능하면 짧은 시각적 근거를 괄호로 덧붙여라. 근거를 못 대면 더 일반화하거나 생략하라.
+
+Links
+- 보이는 화살표/선/연결 관계만 기록, 없으면 "- (none)"
+- 형식: "FROM" -> "TO" (색/형태가 보이면 괄호로)
+- FROM/TO가 사진/예시 이미지/도표 등 시각 요소인 경우, 가능하면 내용 범주를 짧게 덧붙이되 관측 표현만 사용하라(불확실하면 일반화/후보 병기/생략).
+
+Highlights
+- 보이는 강조 표시(박스/테두리/밑줄/색 강조/마커)만 기록, 없으면 "- (none)"
+- 형식: "대상" (강조 형태/색)
+- 대상은 가능한 경우 슬라이드 라벨/캡션을 사용하라. 라벨이 없으면 "특정 영역/특정 항목"처럼 기술하라.
+- 강조 대상이 사진/예시 이미지/도표 등 시각 요소인 경우, 가능하면 내용 범주를 짧게 덧붙이되 관측 표현만 사용하라(불확실하면 일반화/후보 병기/생략).
+
+3) 금지 사항(환각 방지) + 최종 점검
+- Visual Evidence에서 격자 행/열/총 개수 등 수량 추정 금지.
+- 슬라이드에 없는 텍스트를 만들어내지 마라.
+- 출력 전 점검:
+  - Main Text에 © 포함 줄이 있으면 Auxiliary Text로 옮겨라.
+  - Main/Auxiliary Text에서 고유명사를 더 그럴듯하게 치환하지 마라.
+```
+
+</details>
+
+<details>
+<summary>v2.3 슬라이드 4 출력</summary>
+
+```
+Main Text
+- 1.2 Vanilla example: filter visualization
+- Filter weight visualization:
+- *Filter visualization (1st conv. layer)
+- Activation visualization (1st conv. layer)
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- 10
+
+Visual Evidence
+Layout
+- 상단에 제목 "1.2 Vanilla example: filter visualization"이 있음.
+- 왼쪽 중앙에 사각형 이미지가 있음. 그 안에 갈색 개가 핫도그를 입고 있는 모습이 보임. 아래에 "Input image"라는 라벨이 있음.
+- 중앙 상단에 격자 형태의 작은 이미지들이 배열됨. 각 이미지에는 다양한 색상과 방향의 선/패턴이 보임. 아래에 "*Filter visualization (1st conv. layer)"라는 라벨이 있음.
+- 오른쪽 상단에 격자 형태의 작은 이미지들이 배열됨. 각 이미지에는 회색조의 곡선/형태 패턴이 보임. 아래에 "Activation visualization (1st conv. layer)"라는 라벨이 있음.
+- 왼쪽 이미지에서 중앙 격자 이미지의 한 칸(파란색 테두리로 강조된 칸)으로 파란색 선이 나옴.
+- 중앙 격자에서 오른쪽 격자의 한 칸(파란색 테두리로 강조된 칸)으로 파란색 선이 나옴.
+
+Links
+- 왼쪽 이미지 -> 중앙 격자 이미지의 파란색 테두리 칸 (파란색 선)
+- 중앙 격자 이미지의 파란색 테두리 칸 -> 오른쪽 격자 이미지의 파란색 테두리 칸 (파란색 선)
+
+Highlights
+- 왼쪽 이미지 ("Input image") (파란색 테두리)
+- 중앙 격자 이미지의 한 칸 (파란색 테두리)
+- 오른쪽 격자 이미지의 한 칸 (파란색 테두리)
+```
+
+</details>
+
+<details>
+<summary>v2.3 슬라이드 8 출력</summary>
+
+```
+Main Text
+- 2.1 Embedding feature analysis I
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- 14
+
+Visual Evidence
+Layout
+- 상단에 제목 "2.1 Embedding feature analysis I"이 있음.
+- 그 아래에 "Nearest neighbors (NN) in a feature space - Example"이라는 문구가 있음.
+- 중앙에 여러 개의 작은 이미지들이 격자 형태로 배열됨. 각 행은 비슷한 주제를 가진 이미지들로 구성됨: 첫 번째 행은 자주색 꽃들, 두 번째 행은 코끼리들, 세 번째 행은 선박들, 네 번째 행은 호박들, 다섯 번째 행은 사람과 고양이들.
+  - 두 번째 행(코끼리들) 중 하나가 붉은색 사각형으로 강조 표시됨.
+  - 붉은색 사각형에서 오른쪽으로 붉은 화살표가 나옴.
+  - 화살표 끝에는 텍스트: "We can notice semantically similar concepts are well clustered".
+  - 이 텍스트는 붉은 색상으로 강조됨.
+
+Links
+- 붉은 사각형 강조된 코끼리 이미지 -> 오른쪽 텍스트 ("We can notice semantically similar concepts are well clustered") (붉은 화살표)
+
+Highlights
+- 두 번째 행의 코끼리 이미지 하나 (붉은 사각형 강조)
+- 오른쪽 텍스트 ("We can notice semantically similar concepts are well clustered") (붉은 색상 강조)
+```
+
+</details>
+
+#### v2.3 결과 분석
+
+| 항목            | 결과                                                                                     |
+| :-------------- | :--------------------------------------------------------------------------------------- |
+| **저작권**      | © NAVER Content Foundation (정확, Auxiliary로 분류 성공)                                 |
+| **객체 묘사**   | "갈색 개가 핫도그를 입고 있는 모습" (자연스러움), "코끼리들, 선박들, 호박들" (상세 나열) |
+| **격자 추정**   | 없음 - 성공                                                                              |
+| **분류 정확도** | Main Text 분류 정확함                                                                    |
+
+---
+
+### v2.4 (20% 감소, 2200자)
+
+<details>
+<summary>v2.4 슬라이드 4 출력</summary>
+
+```
+**Main Text**
+- 1.2 Vanilla example: filter visualization
+- Filter weight visualization
+- Input image
+- *Filter visualization (1st conv. layer)
+- Activation visualization (1st conv. layer)
+
+**Auxiliary Text**
+- www.BANDICAM.com
+- boostcamp*****
+- © NAVER Content Foundation
+- 10
+
+**Visual Evidence**
+
+**Layout**
+- 상단 중앙에 제목 "1.2 Vanilla example: filter visualization"이 있음.
+- 제목 아래 중앙에 "Filter weight visualization" 텍스트가 있음.
+- 왼쪽 중앙에 큰 이미지(개가 핫도그를 입고 있는 사진)가 있으며, 그 아래 "Input image" 라벨이 있음.
+- 중앙 우측에 두 개의 격자 형태의 이미지 배열이 있음:
+  - 왼쪽 격자: 다양한 색상과 방향의 선, 패턴을 가진 작은 이미지들. 아래 라벨: "*Filter visualization (1st conv. layer)".
+  - 오른쪽 격자: 회색조의 곡선, 모서리 등이 강조된 작은 이미지들. 아래 라벨: "Activation visualization (1st conv. layer)".
+- 왼쪽 이미지에서 왼쪽 격자 내 특정 셀(파란색 사각형으로 강조됨)을 가리키는 파란색 화살표가 있음.
+  - 이 셀에서 오른쪽 격자 내 특정 셀(파란색 사각형으로 강조됨)을 가리키는 파란색 화살표가 있음.
+
+**Links**
+- "Input image" → 왼쪽 격자 내 특정 셀 (파란색 화살표)
+- 이 셀 → 오른쪽 격자 내 특정 셀 (파란색 화살표)
+
+**Highlights**
+- 왼쪽 격자 내 특정 셀 (파란색 사각형 강조)
+- 오른쪽 격자 내 특정 셀 (파란색 사각형 강조)
+```
+
+</details>
+
+<details>
+<summary>v2.4 슬라이드 8 출력</summary>
+
+```
+**Main Text**
+- 2.1 Embedding feature analysis I
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+
+**Auxiliary Text**
+- www.BANDICAM.com
+- boostcamp*****
+- © NAVER Content Foundation
+- Krizhevsky et al., ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012
+- 14
+
+**Visual Evidence**
+
+**Layout**
+- 상단 중앙에 제목 "2.1 Embedding feature analysis I"이 있음.
+- 오른쪽 상단에 작은 텍스트로 "Analysis of model behaviors"가 있음.
+- 제목 아래 중앙에 텍스트: "Nearest neighbors (NN) in a feature space - Example".
+- 중앙에는 여러 행과 열로 구성된 이미지 그리드(격자)가 있음:
+  - 각 셀에는 사진이 포함됨: 꽃, 코끼리, 배, 호박 등 다양한 객체 이미지들.
+  - 특정 행(코끼리 이미지들)이 빨간색 사각형으로 강조됨.
+  - 이 행은 서로 유사한 개념(코끼리)을 포함함.
+  - 그 오른쪽에는 빨간 화살표로 연결된 텍스트: "We can notice semantically similar concepts are well clustered".
+  - 슬라이드 하단에는 출처 정보: "Krizhevsky et al., ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012".
+
+**Links**
+- 빨간 사각형 강조된 행 → 오른쪽 텍스트 ("We can notice semantically similar concepts are well clustered") (빨간 화살표)
+
+**Highlights**
+- 특정 행(코끼리 이미지들) (빨간 사각형 강조)
+```
+
+</details>
+
+#### v2.4 결과 분석
+
+| 항목          | 결과                                                               |
+| :------------ | :----------------------------------------------------------------- |
+| **저작권**    | © NAVER Content Foundation (정확, Auxiliary로 분류 성공)           |
+| **객체 묘사** | "개가 핫도그를 입고 있는 사진", "꽃, 코끼리, 배, 호박" (상세 나열) |
+| **격자 추정** | 없음 - 성공                                                        |
+| **출력 형식** | Markdown 볼드(\*\*) 사용 - v2.2와 다른 스타일                      |
+| **학술 출처** | Auxiliary Text에 포함됨 (위치 혼란)                                |
+
+---
+
+### v2.5 (30% 감소, 1922자)
+
+<details>
+<summary>v2.5 슬라이드 4 출력</summary>
+
+```
+**Main Text**
+- 1.2 Vanilla example: filter visualization
+- Filter weight visualization
+- Filter visualization (1st conv. layer)
+- Activation visualization (1st conv. layer)
+
+**Auxiliary Text**
+- www.BANDICAM.com
+- boostcamp*****
+- © NAVER Content Foundation
+- 10
+
+**Visual Evidence**
+
+**Layout**
+- 상단 중앙에 제목 "1.2 Vanilla example: filter visualization"이 있음.
+- 제목 아래 중앙에 텍스트 "Filter weight visualization"이 있음.
+- 좌측 중앙에 사각형 이미지가 있음. 그 안에 개가 핫도그를 입고 있는 것으로 보임. 그 아래에 "Input image"라는 라벨이 있음.
+- 중앙 우측에는 두 개의 큰 격자 형태의 이미지가 수평으로 배치됨.
+  - 왼쪽 격자: 다양한 색상과 방향의 선, 점, 패턴을 포함한 작은 이미지들로 구성됨. 그 아래 라벨: "*Filter visualization (1st conv. layer)"
+  - 오른쪽 격자: 회색조의 곡선, 모서리, 형태를 포함한 작은 이미지들로 구성됨. 그 아래 라벨: "Activation visualization (1st conv. layer)"
+- 좌측 이미지에서 왼쪽 격자 내 특정 셀(파란색 테두리)으로 파란색 곡선 화살표가 나옴.
+- 왼쪽 격자 내 특정 셀에서 오른쪽 격자 내 특정 셀(파란색 테두리)로 파란색 곡선 화살표가 나옴.
+
+**Links**
+- 좌측 "Input image" → 왼쪽 격자 내 특정 셀 (파란색 곡선 화살표)
+- 왼쪽 격자 내 특정 셀 → 오른쪽 격자 내 특정 셀 (파란색 곡선 화살표)
+
+**Highlights**
+- "- (none)"
+```
+
+</details>
+
+<details>
+<summary>v2.5 슬라이드 8 출력</summary>
+
+```
+**Main Text**
+- 2.1 Embedding feature analysis I
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+
+**Auxiliary Text**
+- www.BANDICAM.com
+- boostcamp*****
+- © NAVER Content Foundation
+- Krizhevsky et al., ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012
+- 14
+
+**Visual Evidence**
+
+**Layout**
+- 상단 중앙에 제목 "2.1 Embedding feature analysis I"이 있음.
+- 상단 우측 상단에 작은 텍스트로 "Analysis of model behaviors"가 있음.
+- 중앙 상단에 텍스트 "Nearest neighbors (NN) in a feature space - Example"이 있음.
+  - 그 아래 두 개의 큰 격자 형태의 이미지가 수평으로 배치됨.
+    - 왼쪽 격자: 여러 행과 열로 구성된 이미지들. 각 행은 유사한 주제(예: 꽃, 소, 배트맨 마스크, 호박 등)를 포함하는 것으로 보임.
+    - 오른쪽 격자: 더 많은 이미지들로 구성됨. 일부 행(예: 꽃, 소, 배트맨 마스크, 호박 등)은 왼쪽 격자와 유사한 주제를 포함함.
+    - 오른쪽 격자의 일부 행(예: 소)이 붉은색 테두리로 강조됨.
+    - 붉은색 테두리 행에서 오른쪽으로 붉은색 화살표가 나옴.
+    - 화살표 끝에는 텍스트: "We can notice semantically similar concepts are well clustered"
+
+**Links**
+- 오른쪽 격자의 붉은 테두리 행 → 오른쪽 텍스트 설명 (붉은색 화살표)
+
+**Highlights**
+- 오른쪽 격자의 일부 행 (붉은색 테두리)
+```
+
+</details>
+
+#### v2.5 결과 분석
+
+| 항목           | 결과                                                                                  |
+| :------------- | :------------------------------------------------------------------------------------ |
+| **저작권**     | © NAVER Content Foundation (정확)                                                     |
+| **객체 묘사**  | "개가 핫도그를 입고 있는 것으로 보임" (관측 표현 사용), "꽃, 소, 배트맨 마스크, 호박" |
+| **격자 추정**  | 없음 - 성공                                                                           |
+| **Highlights** | 슬라이드 4에서 "- (none)" 잘못 출력됨 (파란색 테두리가 있는데 누락)                   |
+
+---
+
+### v2.6 (40% 감소, 1647자)
+
+<details>
+<summary>v2.6 슬라이드 4 출력</summary>
+
+```
+Main Text
+- 1.2 Vanilla example: filter visualization
+- Filter weight visualization
+- Input image
+- *Filter visualization (1st conv. layer)
+- Activation visualization (1st conv. layer)
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- 10
+
+Visual Evidence
+Layout: 슬라이드 상단에 제목 "1.2 Vanilla example: filter visualization"이 위치하며, 중앙 상단에 "Filter weight visualization" 문구가 있음. 왼쪽 하단에 개가 핫도그를 입에 물고 있는 이미지가 "Input image" 라벨과 함께 배치됨. 그 오른쪽으로 두 개의 큰 격자 형태의 이미지가 나란히 배치됨: 왼쪽은 "*Filter visualization (1st conv. layer)", 오른쪽은 "Activation visualization (1st conv. layer)" 라벨이 있음. 두 격자 사이에는 파란색 선이 연결되어 있으며, 각 격자 내부에서 특정 셀(필터/활성화)이 파란색 사각형으로 강조되어 있음.
+Links: "Input image" -> "*Filter visualization (1st conv. layer)" (파란색 선), "*Filter visualization (1st conv. layer)" -> "Activation visualization (1st conv. layer)" (파란색 선)
+Highlights: "*Filter visualization (1st conv. layer)" 내 특정 셀 (파란색 사각형), "Activation visualization (1st conv. layer)" 내 특정 셀 (파란색 사각형)
+```
+
+</details>
+
+<details>
+<summary>v2.6 슬라이드 8 출력</summary>
+
+```
+Main Text
+- 2.1 Embedding feature analysis I
+- Analysis of model behaviors
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- Krizhevsky et al., ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012
+- 14
+
+Visual Evidence
+Layout: 슬라이드 상단에 제목 "2.1 Embedding feature analysis I"와 오른쪽 상단에 부제목 "Analysis of model behaviors"가 위치함. 중앙에 여러 개의 작은 이미지들이 격자 형태로 배열된 도표가 있음. 이 도표는 왼쪽 열과 위쪽 행에 각각 다른 이미지들이 배치되어 있으며, 중앙에는 여러 개의 이미지들이 격자로 나열됨. 그 중 일부 이미지(주로 코끼리와 꽃)는 붉은색 사각형으로 둘러싸여 강조됨. 오른쪽에는 붉은색 화살표로 연결된 문구 "We can notice semantically similar concepts are well clustered"가 있음.
+Links: 붉은색 사각형으로 둘러싸인 이미지들 -> "We can notice semantically similar concepts are well clustered" (붉은색 화살표)
+Highlights: 붉은색 사각형으로 둘러싸인 이미지들 (붉은색 사각형)
+```
+
+</details>
+
+#### v2.6 결과 분석
+
+| 항목          | 결과                                                                                  |
+| :------------ | :------------------------------------------------------------------------------------ |
+| **저작권**    | © NAVER Content Foundation (정확)                                                     |
+| **객체 묘사** | "개가 핫도그를 입에 물고 있는 이미지" – **환각! 개가 핫도그를 "입고" 있는 것이 맞음** |
+| **격자 추정** | 없음 - 성공                                                                           |
+| **출력 형식** | Visual Evidence가 한 줄로 압축됨 (Layout/Links/Highlights 구분 불명확)                |
+| **정보 누락** | 학술 출처가 Auxiliary에 포함됨 (일관성 문제)                                          |
+
+---
+
+### v2.7 (50% 감소, 1373자)
+
+<details>
+<summary>v2.7 슬라이드 4 출력</summary>
+
+```
+**Main Text**
+- 1.2 Vanilla example: filter visualization
+- Filter weight visualization
+- Input image
+- *Filter visualization (1st conv. layer)
+- Activation visualization (1st conv. layer)
+
+**Auxiliary Text**
+- © NAVER Content Foundation
+- 10
+
+**Visual Evidence**
+
+**Layout**
+- 상단: 제목 "1.2 Vanilla example: filter visualization" 및 작은 다이어그램 (입력 이미지 -> Low -> Mid -> High -> 출력 예측)
+- 중앙 왼쪽: 입력 이미지 (핫도그를 입은 개) 배치됨, 아래에 "Input image" 라벨 존재
+- 중앙 상단: 두 개의 격자 형태 이미지 배치됨
+  - 왼쪽: "*Filter visualization (1st conv. layer)" 라벨, 격자 내 각 셀은 다양한 패턴(선, 색상 등) 포함
+  - 오른쪽: "Activation visualization (1st conv. layer)" 라벨, 격자 내 각 셀은 회색조 톤의 활성화 패턴 포함
+- 파란색 선이 입력 이미지에서 왼쪽 격자 특정 셀을 지나 오른쪽 격자 특정 셀로 연결됨
+- 하단 왼쪽: 강사 영상 영역 존재
+- 하단 중앙: "boostcamp" 로고 존재
+
+**Links**
+- 입력 이미지에서 왼쪽 격자 특정 셀로 가는 파란색 선
+- 왼쪽 격자 특정 셀에서 오른쪽 격자 특정 셀로 가는 파란색 선
+
+**Highlights**
+- 입력 이미지 (핫도그를 입은 개) (파란색 테두리)
+- 왼쪽 격자 특정 셀 (파란색 테두리)
+- 오른쪽 격자 특정 셀 (파란색 테두리)
+```
+
+</details>
+
+<details>
+<summary>v2.7 슬라이드 8 출력</summary>
+
+```
+**Main Text**
+- 2.1 Embedding feature analysis I
+- Analysis of model behaviors
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+
+**Auxiliary Text**
+- © NAVER Content Foundation
+- 14
+- Krizhevsky et al., ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012
+
+**Visual Evidence**
+
+**Layout**
+- 상단: 제목 "2.1 Embedding feature analysis I" 및 오른쪽 상단에 작은 텍스트 "Analysis of model behaviors"
+- 중앙 상단: 제목 아래에 텍스트 "Nearest neighbors (NN) in a feature space - Example"
+- 중앙: 두 개의 큰 격자 형태 이미지 배치됨 – 왼쪽은 여러 행렬로 구성된 이미지들, 오른쪽은 그중 일부를 확대한 것처럼 보임
+  - 오른쪽 격자 중 일부 행(예: 말, 호박 등)이 빨간색 사각형으로 강조됨
+  - 오른쪽 격자 우측에 붉은 화살표로 연결된 텍스트: "We can notice semantically similar concepts are well clustered"
+  - 예시 이미지들 포함: 말, 호박, 배트, 해군함 등
+
+**Links**
+- 오른쪽 격자에서 빨간색 사각형 강조 영역에서 우측으로 가는 붉은 화살표 -> 텍스트 설명
+
+**Highlights**
+- 오른쪽 격자 내 특정 행(말, 호박 등) (빨간색 사각형 강조)
+```
+
+</details>
+
+#### v2.7 결과 분석
+
+| 항목          | 결과                                                                                         |
+| :------------ | :------------------------------------------------------------------------------------------- |
+| **저작권**    | © NAVER Content Foundation (정확)                                                            |
+| **객체 묘사** | "핫도그를 입은 개" (정확), "말, 호박, 배트, 해군함" – **환각! 코끼리가 아닌 말로 잘못 인식** |
+| **격자 추정** | 없음 - 성공                                                                                  |
+| **정보 누락** | www.BANDICAM.com, boostcamp 등 일부 Auxiliary 누락                                           |
+| **출력 품질** | 간결하나 불완전한 정보                                                                       |
+
+---
+
+## 7. 프롬프트 길이 최적화 종합 분석
+
+### 결과 비교표
+
+| 버전 | 감소율 | 저작권 처리 | 객체 묘사 정확도 | 격자 추정 |  출력 형식 일관성  | 종합 평가    |
+| :--- | :----: | :---------: | :--------------: | :-------: | :----------------: | :----------- |
+| v2.2 |   0%   |   ✅ 정확   |     ✅ 높음      |  ❌ 발생  |     ✅ 일관됨      | **Baseline** |
+| v2.3 |  10%   |   ✅ 정확   |     ✅ 높음      |  ✅ 없음  |     ✅ 일관됨      | **우수**     |
+| v2.4 |  20%   |   ✅ 정확   |     ✅ 높음      |  ✅ 없음  |   ⚠️ 볼드 스타일   | 양호         |
+| v2.5 |  30%   |   ✅ 정확   |     ⚠️ 중간      |  ✅ 없음  | ⚠️ Highlights 누락 | 보통         |
+| v2.6 |  40%   |   ✅ 정확   |   ❌ 환각 발생   |  ✅ 없음  |   ❌ 압축된 형식   | 부적합       |
+| v2.7 |  50%   |   ✅ 정확   |   ❌ 환각 발생   |  ✅ 없음  |    ⚠️ 정보 누락    | 부적합       |
+
+### 주요 발견
+
+1. **저작권 처리**: 모든 버전에서 © NAVER Content Foundation을 정확히 Auxiliary Text로 분류함
+2. **격자 추정 문제 해결**: v2.2에서 발생했던 "5x5" 격자 추정이 v2.3~v2.7 모두에서 해결됨
+3. **객체 묘사 정확도 저하**: 40% 이상 감소 시 객체 오인식 발생 (개가 핫도그를 "물고 있는", 코끼리→말)
+4. **출력 형식 불안정**: 30% 이상 감소 시 출력 형식 일관성 저하
+
+### 권장 사항
+
+**v2.3 (10% 감소)를 권장합니다.**
+
+- 격자 추정 문제 해결
+- 저작권 정확히 분류
+- 객체 묘사 정확도 유지
+- 출력 형식 일관성 유지
+- 프롬프트 비용 약 10% 절감
+
+20% 이상 감소 버전은 출력 형식 일관성 저하, 40% 이상은 심각한 환각 발생으로 **프로덕션 사용 부적합**.
+
+---
+
+## 8. v2.8 실험 결과 (후보 격리 + One-Shot Example)
+
+### 변경 사항
+
+v2.6을 기반으로 다음 규칙을 추가:
+
+1. **후보 격리 규칙**: 객체/범주 후보는 Layout 문장 끝 괄호 안에만 작성 (별도 목록/줄 금지)
+2. **One-Shot Example**: 출력 형식을 명확히 보여주는 예시 포함
+
+### 실험 결과
+
+| 항목               | 결과              |
+| :----------------- | :---------------- |
+| **총 VLM 시간**    | **41.72초** (9장) |
+| **장당 평균**      | **4.6초**         |
+| **출력 파일 크기** | 12,033 bytes      |
+
+<details>
+<summary>v2.8 프롬프트 전문</summary>
+
+**SYSTEM:**
+
+```text
+너는 "슬라이드 OCR + Visual Evidence 추출기"다. Markdown만 출력, 코드블록 금지.
+
+[OCR: Main/Aux]
+- 텍스트는 보이는 그대로 복사(의역/보정/치환/정규화/추측 금지).
+- 한 줄 일부가 불확실하면 해당 구간만 [illegible], 나머지는 유지.
+
+[분류]
+- Auxiliary(메타/오버레이): © 문구, 워터마크/캡처툴/UI 오버레이, 로고·브랜드(식별 목적), URL/도메인, 페이지/슬라이드 번호.
+- Main(교육/콘텐츠): 제목/본문/캡션, 표·그림 내부 설명, 수식, 참고문헌/학술 출처, 섹션 헤더/소제목.
+
+[Visual Evidence: 근거/금지]
+- 보이는 것만 기록(배치, 라벨, 선·화살표, 강조, 사진/도표 내용).
+- 인쇄된 숫자 없으면 수량·격자·NxM·총개수 등 추정 금지.
+- 슬라이드에 없는 고유명사(기관/브랜드/지명/모델명 등) 생성·치환 금지.
+
+[Visual Evidence: 문체/객체]
+- 패널/영역 '존재'는 "~있음/배치됨" 가능.
+- 내용 '정체성'은 관측 표현만("~로 보임/~처럼 보임"), 단정 금지.
+- 품종/세부 모델/세부 종 추정 금지(인쇄된 단어만 그대로 사용).
+- 애매하면 일반화 또는 후보 병기("A/B로 보임"). 패딩("등") 금지. 가능하면 짧은 근거(괄호).
+
+[Visual Evidence: 섹션 규격]
+- Visual Evidence는 Layout/Links/Highlights 3개만.
+- 라벨/캡션 등 슬라이드에 인쇄된 텍스트는 가능하면 따옴표로 인용.
+- Links 형식: "FROM" -> "TO" (색/형태).
+- Highlights 형식: "대상" (형태/색). 라벨이 없으면 "특정 영역/항목".
+- Links/Highlights에 연결/강조가 없으면 "- (none)".
+
+[Visual Evidence: 내용 범주 덧붙임]
+- Layout에서 사진/예시/일러스트가 있으면 대표 객체/범주를 한 문장으로 자연스럽게 포함하되, 관측 표현만 사용.
+- Links/Highlights의 FROM/TO/대상이 사진/예시/도표 등 시각 요소라면, 가능하면 내용 범주를 짧게 덧붙일 수 있다(관측 표현, 불확실하면 일반화/후보/생략).
+- 수량·정량값은 인쇄된 숫자가 있을 때만 그대로 인용.
+
+[후보 격리(매우 중요)]
+- 객체/범주 후보는 Layout 문장에 "별도 목록"으로 쓰지 말고, 반드시 같은 문장 끝의 괄호 안에만 넣어라.
+- 괄호 형식은 반드시 다음 중 하나로만 쓴다:
+  - (후보: A로 보임)
+  - (후보: A/B로 보임)
+  - (후보: 상위범주로 보임)
+- 금지: Layout에서 후보를 문장 밖에 풀어쓴 목록/콜론/별도 줄로 작성.
+- 금지: 후보를 단정형으로 작성("A임/이다").
+- 금지: "등"으로 후보를 늘리는 패딩.
+
+[금지/점검]
+- 슬라이드에 없는 텍스트를 만들어내지 마라.
+- Main에 © 포함 줄이 있으면 Auxiliary로 옮겨라.
+```
+
+**USER:**
+
+```text
+이미지에서 슬라이드 내용을 추출하라. 결과는 STT와 병합되어 Gemini 3 Flash 요약 입력으로 사용된다. 해석/추론 금지, 근거 중심.
+
+출력 형식(준수)
+Main Text
+- 줄 단위 원문 나열
+Auxiliary Text
+- 줄 단위 원문 나열, 없으면 "- (none)"
+Visual Evidence
+- Layout / Links / Highlights만 출력
+
+작성 규칙(요약)
+Layout: 배치 + 시각 요소 종류/역할 + (필요 시) 사진/예시 내용의 대표 범주(관측 표현).
+Links: 보이는 연결만. "FROM" -> "TO" (색/형태).
+Highlights: 보이는 강조만. "대상" (형태/색). 라벨 우선, 없으면 "특정 영역/항목".
+
+최종 점검: © 줄이 Main에 섞이면 Auxiliary로 이동.
+(세부 규칙은 SYSTEM을 따른다.)
+
+[ONE-SHOT EXAMPLE — 형식을 그대로 따라라]
+
+예시 입력: (어떤 슬라이드 이미지)
+
+예시 출력:
+
+Main Text
+- 2.1 Embedding feature analysis 1
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+- Krizhevsky et al. ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- 14
+
+Visual Evidence
+Layout
+- 상단에 제목/부제가 있고, 중앙에 예시 이미지 격자와 설명 텍스트가 배치됨(후보: 꽃/큰 동물/선박/호박 같은 물체로 보임)
+Links
+- "이미지 격자" -> "We can notice semantically similar concepts are well clustered" (빨간 화살표)
+Highlights
+- "이미지 격자" 내 특정 행/영역 (빨간 테두리)
+```
+
+</details>
+
+<details>
+<summary>v2.8 슬라이드 4 출력</summary>
+
+```
+Main Text
+- 1.2 Vanilla example: filter visualization
+- Filter weight visualization
+- Input image
+- *Filter visualization (1st conv. layer)
+- Activation visualization (1st conv. layer)
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- 10
+
+Visual Evidence
+Layout
+- 상단에 제목이 있고, 중앙에 "Input image" 라벨의 핫도그를 입은 개 이미지가 왼쪽에 배치됨. 중앙에는 필터 시각화 격자(후보: 선/색상 패턴/기하학적 형태로 보임), 오른쪽에는 활성화 시각화 격자(후보: 흐릿한 형태/선/곡선으로 보임)가 배치됨. 두 격자 사이에 파란색 선이 연결됨.
+Links
+- "Input image" -> "*Filter visualization (1st conv. layer)" (파란색 선)
+- "*Filter visualization (1st conv. layer)" -> "Activation visualization (1st conv. layer)" (파란색 선)
+Highlights
+- "*Filter visualization (1st conv. layer)" 내 특정 필터 (파란색 사각형 테두리)
+- "Activation visualization (1st conv. layer)" 내 특정 활성화 영역 (파란색 사각형 테두리)
+```
+
+</details>
+
+<details>
+<summary>v2.8 슬라이드 8 출력</summary>
+
+```
+Main Text
+- 2.1 Embedding feature analysis I
+- Nearest neighbors (NN) in a feature space - Example
+- We can notice semantically similar concepts are well clustered
+- Krizhevsky et al., ImageNet Classification with Deep Convolutional Neural Networks, NeurIPS 2012
+
+Auxiliary Text
+- www.BANDICAM.com
+- © NAVER Content Foundation
+- 14
+
+Visual Evidence
+Layout
+- 상단에 제목과 부제가 있고, 중앙에 여러 행렬로 구성된 이미지 격자(후보: 꽃/코끼리/배/호박/사람/고양이 등 다양한 물체로 보임)가 배치됨. 오른쪽에는 붉은 화살표로 연결된 설명 텍스트가 있음.
+Links
+- 이미지 격자 내 특정 행(코끼리 이미지 행) -> "We can notice semantically similar concepts are well clustered" (붉은 화살표)
+Highlights
+- 이미지 격자 내 코끼리 행 (붉은 테두리)
+```
+
+</details>
+
+### v2.8 결과 분석
+
+| 항목          | 결과                                                                        |
+| :------------ | :-------------------------------------------------------------------------- |
+| **저작권**    | © NAVER Content Foundation (정확, Auxiliary로 분류 성공)                    |
+| **객체 묘사** | "핫도그를 입은 개" (정확), "꽃/코끼리/배/호박" (정확, 코끼리 올바르게 인식) |
+| **격자 추정** | 없음 - 성공                                                                 |
+| **후보 격리** | ✅ 성공 - "(후보: ...로 보임)" 형식 사용                                    |
+| **출력 형식** | ✅ 일관됨 - One-Shot Example 효과                                           |
+| **학술 출처** | Main Text에 정확히 분류됨                                                   |
+
+---
+
+## 9. 버전별 시간 비교 (최종 업데이트)
+
+> **측정 조건**: batch_size=2, concurrency=3 (실제 파이프라인과 동일)
+> **측정 시간**: 2026-01-18 02:48~03:05
+
+| 버전     | 감소율 | 총 VLM 시간 (9장) | 평균 시간/장 | v1.1 대비 | 비고                    |
+| :------- | :----: | :---------------: | :----------: | :-------: | :---------------------- |
+| v1.1     |   -    |    **23.87s**     |   **2.7s**   |   1.00x   | Baseline                |
+| v2.2     |   0%   |    **36.74s**     |   **4.1s**   |   1.54x   | 구조화된 출력           |
+| v2.3     |  10%   |    **36.34s**     |   **4.0s**   |   1.52x   |                         |
+| v2.4     |  20%   |    **30.76s**     |   **3.4s**   |   1.29x   |                         |
+| v2.5     |  30%   |    **32.33s**     |   **3.6s**   |   1.35x   |                         |
+| v2.6     |  40%   |    **32.60s**     |   **3.6s**   |   1.37x   | ⚠️ 환각 발생            |
+| v2.7     |  50%   |    **41.38s**     |   **4.6s**   |   1.73x   | ⚠️ 환각 발생, 가장 느림 |
+| **v2.8** |  ~40%  |    **25.37s**     |   **2.8s**   | **1.06x** | 🥈 후보 격리 + One-Shot |
+
+> **분석**:
+>
+> - **v2.8이 가장 효율적**: v1.1과 거의 동일한 속도(+6%)를 유지하면서 구조화된 출력과 후보 격리 기능 제공
+> - **프롬프트 길이와 속도 비선형**: v2.7(50% 감소)이 오히려 가장 느림. 출력 길이/복잡도가 시간에 더 큰 영향
+> - **One-Shot Example 효과**: v2.8의 One-Shot Example이 VLM 응답 생성을 효율화
+
+---
+
+## 10. 최종 권장 사항 (업데이트)
+
+### 품질 + 속도 모두 우선: **v2.8 권장** 🏆
+
+- ✅ v1.1 대비 단 6% 느림 (2.7s → 2.8s/장)
+- ✅ 후보 격리 규칙으로 출력 구조 일관성 확보
+- ✅ One-Shot Example로 출력 형식 안정화
+- ✅ 객체 인식 정확 (코끼리 올바르게 인식)
+- ✅ 학술 출처 Main Text 분류 정확
+
+### 최고 속도 필요 시: **v1.1**
+
+- ✅ 가장 빠름 (2.7s/장)
+- ⚠️ 구조화된 출력 없음
+- ⚠️ 품질 저하 감수 필요
+
+### 사용 금지
+
+- ❌ v2.6, v2.7: 심각한 환각 발생 (객체 오인식) + 느림
