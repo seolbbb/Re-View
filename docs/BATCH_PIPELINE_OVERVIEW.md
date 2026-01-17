@@ -9,7 +9,7 @@ VLM 이후 단계를 배치로 분할하여 앞부분 요약을 먼저 제공하
 ### 기존 흐름
 
 ```
-Pre-ADK: video → stt.json, manifest.json, captures/
+Preprocess: video → stt.json, manifest.json, captures/
     ↓
 VLM (전체 캡처) → vlm.json
     ↓
@@ -23,7 +23,7 @@ Judge (전체) → PASS/FAIL
 ### 배치 흐름
 
 ```
-Pre-ADK: video → stt.json, manifest.json, captures/
+Preprocess: video → stt.json, manifest.json, captures/
     ↓
 load_data: stt.json, manifest.json 로드
     ↓

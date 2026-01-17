@@ -28,8 +28,8 @@ src/fusion/
 이 모듈은 직접 실행하지 않고 파이프라인이 호출합니다.
 
 ```bash
-# Step 1: Pre-ADK (STT + Capture)
-python src/pre_adk_pipeline.py --video "my_video.mp4"
+# Step 1: Preprocess (STT + Capture)
+python src/run_preprocess_pipeline.py --video "my_video.mp4"
 
 # Step 2: ADK 파이프라인 (VLM → Sync → Summarize → Judge)
 adk web src/adk_pipeline
@@ -121,9 +121,9 @@ llm_gemini:
 ADK 파이프라인 실행 시:
 ```
 data/outputs/{video_name}/
-├── stt.json              # Pre-ADK
-├── manifest.json         # Pre-ADK
-├── captures/             # Pre-ADK
+├── stt.json              # Preprocess
+├── manifest.json         # Preprocess
+├── captures/             # Preprocess
 ├── vlm.json              # Preprocessing
 ├── config.yaml           # 동적 생성된 설정
 └── fusion/
