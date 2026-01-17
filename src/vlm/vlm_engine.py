@@ -35,12 +35,12 @@ PROVIDER_NAME_RE = re.compile(r'provider_name["\']?:\s*["\']([^"\']+)')
 ERROR_CODE_RE = re.compile(r"Error code:\s*(\d+)")
 PROMPT_SECTION_RE = re.compile(r"^##\s+.+?\(([^)]+)\)\s*$", re.MULTILINE)
 PROMPT_BLOCK_RE = re.compile(
-    r"^###\s*(SYSTEM|USER)\s*$\n```text\n(.*?)\n```",
+    r"^###\s*(SYSTEM|USER)\s*$\r?\n```text\r?\n(.*?)\r?\n```",
     re.MULTILINE | re.DOTALL,
 )
 
 PROMPT_VERSIONS_PATH = Path(__file__).resolve().with_name("prompt_versions.md")
-DEFAULT_PROMPT_VERSION = "vlm_v1.1"
+DEFAULT_PROMPT_VERSION = "vlm_v2.2"
 
 
 def _extract_status_code(exc: Exception) -> Optional[int]:
