@@ -6,18 +6,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
+import yaml
 
-from src.adk_pipeline.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
+from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
 from src.adk_chatbot.agent import root_agent as chatbot_root_agent
 from src.services.adk_session import AdkSession
 from src.services.pipeline_service import (
     get_default_output_base,
-    run_pre_adk_pipeline,
+    run_preprocess_pipeline,
     send_adk_message,
 )
 
 ROOT = Path(__file__).resolve().parent
 INPUT_DIR = ROOT / "data" / "inputs"
+CONFIG_ROOT = ROOT / "config"
 DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
 ADK_OUTPUT_BASE = get_default_output_base()
 VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
@@ -35,6 +37,101 @@ def _read_json(path: Path) -> Optional[Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _read_yaml(path: Path) -> Optional[Any]:
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+
+
+def _load_config(
+    path: Path,
+    overrides: Dict[str, Any],
+    use_override: bool,
+) -> Dict[str, Any]:
+    payload = _read_yaml(path)
+    if not isinstance(payload, dict):
+        payload = {}
+    if use_override:
+        override = overrides.get(str(path))
+        if isinstance(override, dict):
+            return override
+    return payload
+
+
+def _write_yaml(path: Path, payload: Any) -> None:
+    path.write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _normalize_config_key(value: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in value)
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _render_config_fields(data: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    updated: Dict[str, Any] = {}
+    for key, value in data.items():
+        field_key = f"{prefix}_{_normalize_config_key(str(key))}"
+        if isinstance(value, dict):
+            with st.expander(str(key), expanded=False):
+                updated[key] = _render_config_fields(value, field_key)
+            continue
+        if isinstance(value, bool):
+            updated[key] = st.checkbox(str(key), value=value, key=field_key)
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            new_value = st.number_input(
+                str(key),
+                value=value,
+                step=1,
+                key=field_key,
+            )
+            updated[key] = int(new_value)
+            continue
+        if isinstance(value, float):
+            new_value = st.number_input(
+                str(key),
+                value=value,
+                step=0.1,
+                format="%.4f",
+                key=field_key,
+            )
+            updated[key] = float(new_value)
+            continue
+        if isinstance(value, list):
+            raw = st.text_area(
+                str(key),
+                value=yaml.safe_dump(value, allow_unicode=True, sort_keys=False).strip(),
+                height=120,
+                key=field_key,
+            )
+            try:
+                parsed = yaml.safe_load(raw)
+                updated[key] = parsed if isinstance(parsed, list) else value
+            except yaml.YAMLError:
+                updated[key] = value
+                st.caption("Invalid list YAML; keeping previous value.")
+            continue
+        updated[key] = st.text_input(
+            str(key),
+            value="" if value is None else str(value),
+            key=field_key,
+        )
+    return updated
 
 
 def _save_upload(uploaded_file) -> Path:
@@ -82,7 +179,7 @@ def _find_existing_video(video_name: str) -> Optional[Path]:
     return None
 
 
-def _has_pre_adk_outputs(video_root: Path) -> bool:
+def _has_preprocess_outputs(video_root: Path) -> bool:
     return (
         (video_root / "stt.json").exists()
         and (video_root / "manifest.json").exists()
@@ -257,14 +354,14 @@ def main() -> None:
         st.session_state.uploaded_video_path = None
     if "uploaded_video_signature" not in st.session_state:
         st.session_state.uploaded_video_signature = None
-    if "pre_adk_status" not in st.session_state:
-        st.session_state.pre_adk_status = "idle"
-    if "pre_adk_error" not in st.session_state:
-        st.session_state.pre_adk_error = None
-    if "pre_adk_signature" not in st.session_state:
-        st.session_state.pre_adk_signature = None
-    if "pre_adk_result" not in st.session_state:
-        st.session_state.pre_adk_result = None
+    if "preprocess_status" not in st.session_state:
+        st.session_state.preprocess_status = "idle"
+    if "preprocess_error" not in st.session_state:
+        st.session_state.preprocess_error = None
+    if "preprocess_signature" not in st.session_state:
+        st.session_state.preprocess_signature = None
+    if "preprocess_result" not in st.session_state:
+        st.session_state.preprocess_result = None
     if "adk_session" not in st.session_state:
         st.session_state.adk_session = None
     if "chat_mode" not in st.session_state:
@@ -283,6 +380,10 @@ def main() -> None:
         st.session_state.selected_source = None
     if "chat_session_video_name" not in st.session_state:
         st.session_state.chat_session_video_name = None
+    if "config_overrides" not in st.session_state:
+        st.session_state.config_overrides = {}
+    if "use_config_override" not in st.session_state:
+        st.session_state.use_config_override = False
 
     source = st.radio(
         "Video source",
@@ -327,10 +428,10 @@ def main() -> None:
                 if candidate.exists():
                     st.session_state.video_root = str(candidate)
                     st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
-                    st.session_state.pre_adk_status = "done"
-                    st.session_state.pre_adk_error = None
-                    st.session_state.pre_adk_signature = None
-                    st.session_state.pre_adk_result = None
+                    st.session_state.preprocess_status = "done"
+                    st.session_state.preprocess_error = None
+                    st.session_state.preprocess_signature = None
+                    st.session_state.preprocess_result = None
                     st.session_state.adk_session = None
                     st.session_state.chat_mode_signature = None
                     st.session_state.chat_messages = []
@@ -347,70 +448,124 @@ def main() -> None:
             st.session_state.selected_video = str(video_path)
             st.session_state.video_root = None
             st.session_state.run_meta = None
-            st.session_state.pre_adk_status = "idle"
-            st.session_state.pre_adk_error = None
-            st.session_state.pre_adk_signature = None
-            st.session_state.pre_adk_result = None
+            st.session_state.preprocess_status = "idle"
+            st.session_state.preprocess_error = None
+            st.session_state.preprocess_signature = None
+            st.session_state.preprocess_result = None
             st.session_state.adk_session = None
             st.session_state.chat_mode_signature = None
             st.session_state.chat_messages = []
         st.session_state.preview_video_path = str(video_path)
 
     with st.sidebar:
-        st.header("Pipeline options")
-        st.subheader("Pre-ADK")
-        st.text_input("Output base", value=DEFAULT_OUTPUT_BASE_STR, disabled=True)
-        st.caption("ADK output base is fixed to data/outputs.")
-        stt_backend = st.selectbox("STT backend", ["clova"])
-        parallel = st.checkbox("Parallel STT + capture", value=True)
-        capture_threshold = st.number_input("Capture threshold", min_value=0.1, value=3.0, step=0.1)
-        capture_dedupe_threshold = st.number_input(
-            "Capture dedupe threshold",
-            min_value=0.1,
-            value=3.0,
-            step=0.1,
+        use_override = st.toggle(
+            "Temporary override (session only)",
+            value=st.session_state.use_config_override,
+            key="use_config_override",
         )
-        capture_min_interval = st.number_input("Capture min interval (sec)", min_value=0.1, value=0.5, step=0.1)
-        rerun_pre_adk = st.button("Rerun Pre-ADK", disabled=video_path is None)
+        if use_override:
+            if st.button("Reset overrides"):
+                st.session_state.config_overrides = {}
+                st.rerun()
+        overrides = st.session_state.config_overrides
+
+        pipeline_settings_path = CONFIG_ROOT / "pipeline" / "settings.yaml"
+        pipeline_settings = _load_config(pipeline_settings_path, overrides, use_override)
+        pipeline_settings.setdefault("parallel", True)
+        audio_settings = _load_config(CONFIG_ROOT / "audio" / "settings.yaml", overrides, use_override)
+        stt_settings = audio_settings.get("stt", {})
+        if not isinstance(stt_settings, dict):
+            stt_settings = {}
+        stt_providers = [
+            key
+            for key, value in stt_settings.items()
+            if key != "default_provider" and isinstance(value, dict)
+        ]
+        if not stt_providers:
+            stt_providers = ["clova"]
+        default_provider = stt_settings.get("default_provider", stt_providers[0])
+        if default_provider not in stt_providers:
+            default_provider = stt_providers[0]
+
+        stt_backend = default_provider
+        parallel = bool(pipeline_settings.get("parallel", True))
+        capture_threshold = _coerce_float(pipeline_settings.get("capture_threshold"), 3.0)
+        capture_dedupe_threshold = _coerce_float(
+            pipeline_settings.get("capture_dedupe_threshold"), 3.0
+        )
+        capture_min_interval = _coerce_float(
+            pipeline_settings.get("capture_min_interval"), 0.5
+        )
+
+        st.header("Config")
+        if use_override:
+            st.caption("Overrides apply to this session only unless you save.")
+        else:
+            st.caption("Edit config settings below. Changes apply after saving.")
+        rerun_preprocess = False
+
+        settings_sections = {
+            "Pipeline settings": CONFIG_ROOT / "pipeline" / "settings.yaml",
+            "Audio settings": CONFIG_ROOT / "audio" / "settings.yaml",
+            "Capture settings": CONFIG_ROOT / "capture" / "settings.yaml",
+            "VLM settings": CONFIG_ROOT / "vlm" / "settings.yaml",
+            "Fusion settings": CONFIG_ROOT / "fusion" / "settings.yaml",
+            "Judge settings": CONFIG_ROOT / "judge" / "settings.yaml",
+        }
+        for section, path in settings_sections.items():
+            with st.expander(section, expanded=False):
+                if not path.exists():
+                    st.info(f"Missing: {path}")
+                    continue
+                payload = _load_config(path, overrides, use_override)
+                if not isinstance(payload, dict):
+                    st.info("Settings file is not a YAML mapping.")
+                    continue
+                editor_key = _normalize_config_key(str(path))
+                updated = _render_config_fields(payload, editor_key)
+                if section == "Pipeline settings":
+                    rerun_preprocess = st.button(
+                        "Rerun preprocess",
+                        disabled=video_path is None,
+                        key="rerun_preprocess",
+                    )
+                if use_override:
+                    if st.button(f"Apply {path.name}", key=f"apply_{editor_key}"):
+                        overrides[str(path)] = updated
+                        st.success(f"Applied {path.name} for this session.")
+                else:
+                    if st.button(f"Save {path.name}", key=f"save_{editor_key}"):
+                        _write_yaml(path, updated)
+                        st.success(f"Saved {path.name}.")
 
         st.markdown("---")
-        st.subheader("Existing outputs")
-        if st.button("Load outputs for selected video", disabled=video_path is None):
-            if not video_path:
-                st.error("Select a video first.")
-            else:
-                candidate = ADK_OUTPUT_BASE / sanitize_video_name(video_path.stem)
-                if candidate.exists():
-                    st.session_state.video_root = str(candidate)
-                    st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
-                    st.session_state.pre_adk_status = "done"
-                    st.session_state.adk_session = None
-                    st.session_state.chat_mode_signature = None
-                    st.session_state.chat_messages = []
-                    st.session_state.preview_video_path = str(video_path)
-                else:
-                    st.warning("No outputs found for selected video.")
-
-        existing_output_path = st.text_input("Output folder path", value="")
-        if st.button("Load output folder"):
-            if not existing_output_path:
-                st.error("Enter an output folder path.")
-            else:
-                candidate = Path(existing_output_path).expanduser().resolve()
-                if candidate.exists():
-                    st.session_state.video_root = str(candidate)
-                    st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
-                    if _has_pre_adk_outputs(candidate):
-                        st.session_state.pre_adk_status = "done"
-                    st.session_state.adk_session = None
-                    st.session_state.chat_mode_signature = None
-                    st.session_state.chat_messages = []
-                    preview_candidate = _find_existing_video(candidate.name)
-                    st.session_state.preview_video_path = (
-                        str(preview_candidate) if preview_candidate else None
-                    )
-                else:
-                    st.error("Output folder does not exist.")
+        st.subheader("Prompts (raw)")
+        prompt_sections = {
+            "VLM prompts": CONFIG_ROOT / "vlm" / "prompts.yaml",
+            "Fusion prompts": CONFIG_ROOT / "fusion" / "prompts.yaml",
+            "Judge prompts": CONFIG_ROOT / "judge" / "prompts.yaml",
+        }
+        for section, path in prompt_sections.items():
+            with st.expander(section, expanded=False):
+                if not path.exists():
+                    st.info(f"Missing: {path}")
+                    continue
+                raw_text = _read_text(path) or ""
+                field_key = f"prompt_{_normalize_config_key(str(path))}"
+                content = st.text_area(
+                    path.name,
+                    value=raw_text,
+                    height=220,
+                    key=field_key,
+                )
+                if st.button(f"Save {path.name}", key=f"save_{field_key}"):
+                    try:
+                        yaml.safe_load(content)
+                    except yaml.YAMLError as exc:
+                        st.error(f"YAML error: {exc}")
+                    else:
+                        path.write_text(content, encoding="utf-8")
+                        st.success(f"Saved {path.name}.")
 
     video_root_value = st.session_state.video_root
     video_name = _resolve_video_name(video_path, video_root_value)
@@ -422,20 +577,20 @@ def main() -> None:
         st.session_state.adk_busy = False
 
     if video_path:
-        pre_adk_signature: Tuple[str] = (str(video_path),)
-        should_run_pre_adk = st.session_state.pre_adk_signature != pre_adk_signature
-        if rerun_pre_adk:
-            should_run_pre_adk = True
+        preprocess_signature: Tuple[str] = (str(video_path),)
+        should_run_preprocess = st.session_state.preprocess_signature != preprocess_signature
+        if rerun_preprocess:
+            should_run_preprocess = True
 
-        if should_run_pre_adk:
-            st.session_state.pre_adk_status = "running"
-            st.session_state.pre_adk_error = None
+        if should_run_preprocess:
+            st.session_state.preprocess_status = "running"
+            st.session_state.preprocess_error = None
             st.session_state.adk_session = None
             st.session_state.chat_mode_signature = None
             st.session_state.chat_messages = []
-            with st.spinner("Running Pre-ADK..."):
+            with st.spinner("Running preprocess..."):
                 try:
-                    result = run_pre_adk_pipeline(
+                    result = run_preprocess_pipeline(
                         video_path=video_path,
                         output_base=ADK_OUTPUT_BASE,
                         stt_backend=stt_backend,
@@ -443,26 +598,26 @@ def main() -> None:
                         capture_threshold=capture_threshold,
                         capture_dedupe_threshold=capture_dedupe_threshold,
                         capture_min_interval=capture_min_interval,
-                        force=rerun_pre_adk,
+                        force=rerun_preprocess,
                     )
                 except Exception as exc:
-                    st.session_state.pre_adk_status = "error"
-                    st.session_state.pre_adk_error = str(exc)
+                    st.session_state.preprocess_status = "error"
+                    st.session_state.preprocess_error = str(exc)
                 else:
-                    st.session_state.pre_adk_status = "done"
-                    st.session_state.pre_adk_signature = pre_adk_signature
-                    st.session_state.pre_adk_result = result
+                    st.session_state.preprocess_status = "done"
+                    st.session_state.preprocess_signature = preprocess_signature
+                    st.session_state.preprocess_result = result
                     st.session_state.video_root = result.get("video_root")
                     video_root_value = st.session_state.video_root
 
     if (
-        st.session_state.pre_adk_status == "idle"
+        st.session_state.preprocess_status == "idle"
         and video_root_value
-        and _has_pre_adk_outputs(Path(video_root_value))
+        and _has_preprocess_outputs(Path(video_root_value))
     ):
-        st.session_state.pre_adk_status = "done"
+        st.session_state.preprocess_status = "done"
 
-    if video_name and st.session_state.pre_adk_status == "done":
+    if video_name and st.session_state.preprocess_status == "done":
         if st.session_state.adk_session is None:
             st.session_state.adk_session = AdkSession(
                 root_agent=chatbot_root_agent,
@@ -472,12 +627,12 @@ def main() -> None:
             )
             st.session_state.chat_mode_signature = None
 
-    if st.session_state.pre_adk_status == "running":
-        st.info("Pre-ADK is running. This can take a while for long videos.")
-    elif st.session_state.pre_adk_status == "error":
-        st.error(f"Pre-ADK failed: {st.session_state.pre_adk_error}")
-    elif st.session_state.pre_adk_status == "done":
-        st.success("Pre-ADK completed.")
+    if st.session_state.preprocess_status == "running":
+        st.info("Preprocess is running. This can take a while for long videos.")
+    elif st.session_state.preprocess_status == "error":
+        st.error(f"Preprocess failed: {st.session_state.preprocess_error}")
+    elif st.session_state.preprocess_status == "done":
+        st.success("Preprocess completed.")
 
     if st.session_state.show_chat:
         main_col, chat_col = st.columns([2, 1], gap="large")
@@ -528,11 +683,11 @@ def main() -> None:
             if not video_name:
                 st.info("Upload a video or load outputs to start.")
                 return
-            if st.session_state.pre_adk_status == "running":
-                st.info("Pre-ADK is running. Chat will be ready after it finishes.")
+            if st.session_state.preprocess_status == "running":
+                st.info("Preprocess is running. Chat will be ready after it finishes.")
                 return
-            if st.session_state.pre_adk_status == "error":
-                st.error("Pre-ADK failed. Fix the error and rerun.")
+            if st.session_state.preprocess_status == "error":
+                st.error("Preprocess failed. Fix the error and rerun.")
                 return
             if st.session_state.adk_session is None:
                 st.info("Chatbot session is not ready yet.")
