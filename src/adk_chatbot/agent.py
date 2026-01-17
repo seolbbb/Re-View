@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from google.adk.agents import Agent
 from google.adk.tools import ToolContext
 from google.genai import types
 
-from src.adk_pipeline.paths import DEFAULT_OUTPUT_BASE
-from src.adk_pipeline.store import VideoStore
+from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE
+from src.adk_chatbot.store import VideoStore
 
 
 def select_chat_mode(tool_context: ToolContext, mode: str) -> Dict[str, Any]:
@@ -21,19 +24,114 @@ def select_chat_mode(tool_context: ToolContext, mode: str) -> Dict[str, Any]:
     return {"success": True, "chat_mode": normalized}
 
 
+def _process_api_base() -> str:
+    return os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
+
+
+def _call_process_api(method: str, path: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    url = f"{_process_api_base()}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib_request.Request(
+        url,
+        data=data,
+        method=method.upper(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=5) as resp:
+            status_code = resp.status
+            body = resp.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        body = exc.read().decode("utf-8") if hasattr(exc, "read") else ""
+        return {
+            "success": False,
+            "status_code": exc.code,
+            "error": body or exc.reason,
+        }
+    except urllib_error.URLError as exc:
+        return {"success": False, "error": str(exc.reason)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        payload = {"raw": body}
+    return {"success": True, "status_code": status_code, "payload": payload}
+
+
 def start_summary_job(tool_context: ToolContext) -> Dict[str, Any]:
     video_name = tool_context.state.get("video_name")
     if not video_name:
         return {"success": False, "error": "video_name is not set"}
+
+    payload: Dict[str, Any] = {"video_name": video_name}
+    video_id = tool_context.state.get("video_id")
+    if video_id:
+        payload["video_id"] = video_id
+
+    response = _call_process_api("POST", "/process", payload)
+    if not response.get("success"):
+        return {
+            "success": False,
+            "error": response.get("error", "process_api request failed"),
+            "status_code": response.get("status_code"),
+        }
+    api_payload = response.get("payload", {})
     return {
-        "success": False,
-        "error": "Summary API is not wired yet.",
-        "video_name": video_name,
+        "success": True,
+        "status": api_payload.get("status", "started"),
+        "message": api_payload.get("message"),
     }
 
 
 def get_summary_status(tool_context: ToolContext) -> Dict[str, Any]:
-    return {"success": False, "error": "Summary API is not wired yet."}
+    video_name = tool_context.state.get("video_name")
+    if not video_name:
+        return {"success": False, "error": "video_name is not set"}
+
+    response = _call_process_api("GET", f"/runs/{video_name}")
+    if not response.get("success"):
+        if response.get("status_code") == 404:
+            return {"success": True, "status": "not_started", "has_summaries": False}
+        return {
+            "success": False,
+            "status": "error",
+            "error": response.get("error", "process_api request failed"),
+            "status_code": response.get("status_code"),
+        }
+
+    run_meta = response.get("payload", {})
+    raw_status = run_meta.get("status")
+    pipeline_type = None
+    if isinstance(run_meta.get("args"), dict):
+        pipeline_type = run_meta["args"].get("pipeline_type")
+    pipeline_type = pipeline_type or run_meta.get("pipeline_type")
+
+    if pipeline_type == "preprocess":
+        if raw_status == "running":
+            normalized_status = "running"
+        elif raw_status == "error":
+            normalized_status = "error"
+        else:
+            normalized_status = "not_started"
+    else:
+        normalized_status = raw_status
+        if raw_status == "ok":
+            normalized_status = "completed"
+        elif raw_status is None:
+            normalized_status = "unknown"
+
+    store = VideoStore(output_base=DEFAULT_OUTPUT_BASE, video_name=video_name)
+    has_summaries = store.segment_summaries_jsonl().exists()
+    return {
+        "success": True,
+        "status": normalized_status,
+        "raw_status": raw_status,
+        "pipeline_type": pipeline_type,
+        "has_summaries": has_summaries,
+        "processing_stats": run_meta.get("processing_stats"),
+    }
 
 
 def get_video_name(tool_context: ToolContext) -> Dict[str, Any]:
@@ -163,17 +261,23 @@ summary_chat_agent = Agent(
     description="Chatbot for summary questions (API-backed).",
     instruction=(
         "You are the Summary Chatbot.\n"
-        "IMPORTANT: You MUST call get_summary_updates FIRST before responding to ANY user message.\n"
+        "Always respond in Korean.\n"
         "Workflow:\n"
-        "1) Call get_summary_updates.\n"
-        "   - If it returns 'video_name is not set', tell the user to select a video in the UI and stop.\n"
+        "1) Call get_summary_status when you need summary generation status.\n"
+        "   - If status is not_started and the user asked to start summaries or asked a summary question, call start_summary_job and tell the user the summary has started.\n"
         "2) If the user asks which video is selected, call get_video_name and reply with it.\n"
-        "3) Otherwise, call get_summary_context to fetch summary_cache for answering.\n"
+        "3) If the user asks about summary generation status, reply with the status from get_summary_status.\n"
+        "4) If the user explicitly asks to start or regenerate the summary, check the latest status.\n"
+        "   - If status is running, tell the user it is already running and do not call start_summary_job.\n"
+        "   - Otherwise call start_summary_job and reply with it.\n"
+        "5) For summary questions, first call get_summary_updates.\n"
+        "   - If it returns 'video_name is not set', tell the user to select a video in the UI and stop.\n"
+        "6) Then call get_summary_context to fetch summary_cache for answering.\n"
         "   - If the user message includes [time_ms=...], pass time_ms to get_summary_context.\n"
         "   - If matches is available, prioritize it and use summary_cache only for context.\n"
         "   - If out_of_range is true, say the summary is not updated for that time yet.\n"
         "   - If summary_cache is empty, say no summaries are available yet.\n"
-        "4) Answer using ONLY summary_cache or matches. Do not guess beyond them."
+        "7) Answer using ONLY summary_cache or matches. Do not guess beyond them."
     ),
     tools=[
         get_video_name,
@@ -192,6 +296,7 @@ partial_summary_chat_agent = Agent(
     description="Placeholder for partial-summary chatbot.",
     instruction=(
         "You are the Partial Summary Chatbot.\n"
+        "Always respond in Korean.\n"
         "Always call partial_not_implemented and relay the message."
     ),
     tools=[partial_not_implemented],
@@ -205,13 +310,18 @@ root_agent = Agent(
     description="Root agent that routes users to the proper chatbot.",
     instruction=(
         "You are the routing agent for the ADK chatbot.\n"
+        "Always respond in Korean.\n"
         "Workflow:\n"
         "1) Ask the user to choose a chat mode: 'full' or 'partial'.\n"
         "2) Call select_chat_mode with the user's choice.\n"
-        "3) Transfer to the matching sub-agent.\n"
+        "3) If the user chose 'full', call get_summary_status.\n"
+        "   - If the tool returns 'video_name is not set', tell the user to select a video in the UI and stop.\n"
+        "   - If status is not_started, call start_summary_job and tell the user the summary has started.\n"
+        "   - If status is running or completed, do not call start_summary_job.\n"
+        "4) Transfer to the matching sub-agent.\n"
         "If the user asks to change modes, repeat the selection flow."
     ),
-    tools=[select_chat_mode],
+    tools=[select_chat_mode, get_summary_status, start_summary_job],
     sub_agents=[summary_chat_agent, partial_summary_chat_agent],
     generate_content_config=types.GenerateContentConfig(temperature=0.2),
 )

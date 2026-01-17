@@ -50,7 +50,7 @@ def run_processing_pipeline(
     video_name: Optional[str],
     video_id: Optional[str] = None,
     output_base: str = "data/outputs",
-    batch_mode: bool = False,
+    batch_mode: Optional[bool] = None,
     batch_size: Optional[int] = None,
     vlm_batch_size: Optional[int] = None,
     vlm_concurrency: Optional[int] = None,
@@ -70,14 +70,16 @@ def run_processing_pipeline(
     if not isinstance(settings, dict):
         raise ValueError("pipeline settings must be a mapping.")
 
+    if batch_mode is None:
+        batch_mode = settings.get("batch_mode", False)
+    if batch_size is None:
+        batch_size = settings.get("batch_size", 10)
     if vlm_batch_size is None:
         vlm_batch_size = settings.get("vlm_batch_size", 2)
     if vlm_concurrency is None:
         vlm_concurrency = settings.get("vlm_concurrency", 3)
     if vlm_show_progress is None:
         vlm_show_progress = settings.get("vlm_show_progress", True)
-    if batch_size is None:
-        batch_size = settings.get("batch_size", 10)
 
     output_base_path = (ROOT / Path(output_base)).resolve()
     safe_video_name = _sanitize_video_name(video_name) if video_name else None
@@ -410,7 +412,9 @@ def main() -> None:
     parser.add_argument("--video-name", default=None, help="Video name (videos.name)")
     parser.add_argument("--video-id", default=None, help="Video ID (videos.id)")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
-    parser.add_argument("--batch-mode", action="store_true", default=False, help="Enable batch mode")
+    parser.add_argument("--batch-mode", dest="batch_mode", action="store_true", help="Enable batch mode")
+    parser.add_argument("--no-batch-mode", dest="batch_mode", action="store_false", help="Disable batch mode")
+    parser.set_defaults(batch_mode=None)
     parser.add_argument("--limit", type=int, default=None, help="Limit segments")
     parser.add_argument("--force-db", action="store_true", help="Force DB download even if local exists")
     parser.add_argument("--sync-to-db", action="store_true", help="Upload processing outputs to Supabase")
