@@ -553,15 +553,12 @@ def run_processing_pipeline(
                 workers=2,
                 command=f"run_process_pipeline --video-name {safe_video_name}",
                 component="run_process_pipeline",
-                judged=bool(scores),
                 # Module timings
                 stt_sec=stt_sec,
                 capture_sec=capture_sec,
                 vlm_sec=vlm_elapsed,
                 summarizer_sec=fusion_info.get("timings", {}).get("summarizer_sec", 0.0),
                 judge_elapsed_sec=fusion_info.get("timings", {}).get("judge_sec", 0.0),
-                judge_input_tokens=last_judge.get("input_tokens", 0),
-                judge_output_tokens=last_judge.get("output_tokens", 0)
             )
             print("Logged experiment result to csv.")
         except Exception as e:
