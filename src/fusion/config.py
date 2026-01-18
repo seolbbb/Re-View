@@ -91,12 +91,25 @@ class LlmGeminiConfig(BaseModel):
     vertex_ai: VertexAiConfig
 
 
+class RenderGroupsConfig(BaseModel):
+    """마크다운 렌더링의 그룹별 표시 순서와 헤더를 설정한다."""
+    model_config = ConfigDict(extra="forbid")
+
+    order: List[str] = ["direct", "background", "inferred"]
+    headers: dict = Field(default_factory=lambda: {
+        "direct": "핵심 내용 (Direct / Recall)",
+        "background": "배경 지식 (Background)",
+        "inferred": "심화/추론 (Inferred / Logic)"
+    })
+
+
 class RenderConfig(BaseModel):
     """최종 마크다운 리포트 생성 시 포맷팅 옵션을 설정한다."""
     model_config = ConfigDict(extra="forbid")
 
     include_sources: bool = False
     md_wrap_width: int = Field(..., ge=0)
+    groups: Optional[RenderGroupsConfig] = None
 
 
 class FinalSummaryStyleConfig(BaseModel):

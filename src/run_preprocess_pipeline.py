@@ -155,7 +155,7 @@ def run_preprocess_pipeline(
     try:
         stt_json = video_root / "stt.json"
         captures_dir = video_root / "captures"
-        manifest_json = video_root / "manifest.json"
+        manifest_json = video_root / "capture.json"
 
         print(f"\nStarting preprocessing (parallel={parallel})...")
         print("-" * 50)

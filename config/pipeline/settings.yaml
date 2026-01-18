@@ -1,6 +1,9 @@
 # 파이프라인 런타임 설정
-batch_mode: true               # 배치 모드 기본값
-vlm_batch_size: 2              # VLM 요청 배치 크기
+capture_threshold: 3.0         # 캡처 민감도(diff)
+capture_dedupe_threshold: 3.0  # 캡처 중복 제거 임계값
+capture_min_interval: 0.5      # 캡처 최소 간격(초)
+batch_mode: false             # 배치 모드 기본값
+vlm_batch_size: 4              # VLM 요청 배치 크기
 vlm_concurrency: 3             # VLM 병렬 요청 수
 vlm_show_progress: true        # VLM 진행 로그
 batch_size: 4                  # 캡처 배치 크기(VLM/Sync/Summarize/Judge까지 처리됨)
