@@ -391,6 +391,93 @@ def run_processing_pipeline(
         print(f"Outputs: {video_root}")
         print(f"Benchmark: {report_path}")
 
+        # Log to experiment_summary.csv (Added for consistency with run_video_pipeline)
+        try:
+            from src.dev.utils import ExperimentLogger
+            logger = ExperimentLogger()
+            token_usage_path = video_root / "fusion" / "token_usage.json"
+            judge_json_path = video_root / "fusion" / "judge.json"
+            token_data = {}
+            
+            if token_usage_path.exists():
+                with token_usage_path.open("r", encoding="utf-8") as f:
+                    token_data = json.load(f)
+            
+            # Try to read the detailed judge report first
+            judge_report_path = video_root / "fusion" / "judge" / "judge_report.json"
+            judge_data = {}
+            scores = {}
+            
+            if judge_report_path.exists():
+                with judge_report_path.open("r", encoding="utf-8") as f:
+                    report_content = json.load(f)
+                    judge_data = report_content.get("meta", {})
+                    # Add model from meta if present, or fallback
+                    if "model" in report_content.get("meta", {}):
+                        judge_data["model"] = report_content["meta"]["model"]
+                    scores = report_content.get("scores", {})
+            elif judge_json_path.exists():
+                with judge_json_path.open("r", encoding="utf-8") as f:
+                    judge_data = json.load(f)
+                scores = {"final": judge_data.get("final_score", 0)}
+            
+            # token_usage stores arrays, get last entry
+            summarizer_tokens = token_data.get("summarizer", [])
+            last_summarizer = summarizer_tokens[-1] if summarizer_tokens else {}
+            
+            # Also try to read judge token usage from verify step
+            judge_verify_tokens_path = video_root / "fusion" / "judge" / "token_usage.json"
+            last_judge = {}
+            if judge_verify_tokens_path.exists():
+                try:
+                    v_usage = json.loads(judge_verify_tokens_path.read_text(encoding="utf-8"))
+                    v_judge = v_usage.get("judge", [])
+                    if v_judge:
+                       total_j_input = sum(x.get("input_tokens", 0) for x in v_judge)
+                       total_j_output = sum(x.get("output_tokens", 0) for x in v_judge)
+                       last_judge = {"input_tokens": total_j_input, "output_tokens": total_j_output}
+                except:
+                    pass
+
+            # Try to read preprocess timings from pipeline_run.json
+            run_meta_path = video_root / "pipeline_run.json"
+            stt_sec = 0.0
+            capture_sec = 0.0
+            if run_meta_path.exists():
+                try:
+                    prev_meta = json.loads(run_meta_path.read_text(encoding="utf-8"))
+                    durations = prev_meta.get("durations_sec", {})
+                    stt_sec = durations.get("stt_sec", 0.0)
+                    capture_sec = durations.get("capture_sec", 0.0)
+                except:
+                    pass
+
+            logger.log(
+                prompt_version=judge_data.get("prompt_version", "v2"),
+                scores=scores,
+                input_tokens=last_summarizer.get("input_tokens", 0),
+                elapsed_sec=timer.get_total_elapsed(),
+                note=f"Process pipeline run: {safe_video_name}",
+                model=judge_data.get("model", ""),
+                temperature=0.2,
+                segments_count=segment_count,
+                workers=2,
+                command=f"run_process_pipeline --video-name {safe_video_name}",
+                component="run_process_pipeline",
+                judged=bool(scores),
+                # Module timings
+                stt_sec=stt_sec,
+                capture_sec=capture_sec,
+                vlm_sec=vlm_elapsed,
+                summarizer_sec=fusion_info.get("timings", {}).get("summarizer_sec", 0.0),
+                judge_elapsed_sec=fusion_info.get("timings", {}).get("judge_sec", 0.0),
+                judge_input_tokens=last_judge.get("input_tokens", 0),
+                judge_output_tokens=last_judge.get("output_tokens", 0)
+            )
+            print("Logged experiment result to csv.")
+        except Exception as e:
+            print(f"Warning: Failed to log experiment summary: {e}")
+
     except Exception as exc:
         timer.end_total()
         run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()

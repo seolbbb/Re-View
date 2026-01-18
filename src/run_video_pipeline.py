@@ -340,12 +340,25 @@ def run_pipeline(
                 with token_usage_path.open("r", encoding="utf-8") as f:
                     token_data = json.load(f)
             
-            if judge_json_path.exists():
+            # Try to read the detailed judge report first
+            judge_report_path = video_root / "fusion" / "judge" / "judge_report.json"
+            judge_data = {}
+            scores = {}
+            
+            if judge_report_path.exists():
+                with judge_report_path.open("r", encoding="utf-8") as f:
+                    report_content = json.load(f)
+                    judge_data = report_content.get("meta", {})
+                    # Add model from meta if present, or fallback
+                    if "model" in report_content.get("meta", {}):
+                        judge_data["model"] = report_content["meta"]["model"]
+                    scores = report_content.get("scores", {})
+            elif judge_json_path.exists():
+                # Fallback to simplified judge.json
                 with judge_json_path.open("r", encoding="utf-8") as f:
                     judge_data = json.load(f)
-            
-            # Extract scores from judge.json
-            scores = {"final": judge_data.get("final_score", 0)}
+                scores = {"final": judge_data.get("final_score", 0)}
+
             timings = fusion_info.get("timings", {})
             
             # token_usage stores arrays, get last entry
@@ -354,6 +367,20 @@ def run_pipeline(
             last_summarizer = summarizer_tokens[-1] if summarizer_tokens else {}
             last_judge = judge_tokens[-1] if judge_tokens else {}
             
+            # Also try to read judge token usage from verify step (fusion/judge/token_usage.json)
+            judge_verify_tokens_path = video_root / "fusion" / "judge" / "token_usage.json"
+            if judge_verify_tokens_path.exists():
+                try:
+                    v_usage = json.loads(judge_verify_tokens_path.read_text(encoding="utf-8"))
+                    v_judge = v_usage.get("judge", [])
+                    if v_judge:
+                       # Sum up if multiple or take last
+                       total_j_input = sum(x.get("input_tokens", 0) for x in v_judge)
+                       total_j_output = sum(x.get("output_tokens", 0) for x in v_judge)
+                       last_judge = {"input_tokens": total_j_input, "output_tokens": total_j_output}
+                except:
+                    pass
+
             logger.log(
                 prompt_version=judge_data.get("prompt_version", "v2"),
                 scores=scores,

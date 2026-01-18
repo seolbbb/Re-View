@@ -206,3 +206,56 @@ v1: # Legacy
 
     Input JSON:
     {{SEGMENTS_JSON}}
+
+# [Optimized] Token Efficient Version (v3)
+# - Goal: Fast evaluation with minimal tokens.
+# - Structure: Concise rubric.
+v3:
+  system: |
+    Role: Strict AI Evaluator.
+    Goal: Rate Video Summaries (0-10) on Groundedness, Compliance, Quality.
+    Input: Segment Summary + Validation Report.
+
+  criteria: |
+    ## SCORING RUBRIC (0-10)
+
+    1. **Groundedness** (45%):
+       - 10: Claims fully supported by refs.
+       - 7-9: Mostly grounded.
+       - 0-5: Hallucinations or invalid refs.
+       *Check `evidence_refs` vs `source_refs`.*
+
+    2. **Compliance** (20%):
+       - 10: Strict JSON spec adherence.
+       - 0: Broken JSON or missing logic.
+       *Check `validation_report`.*
+
+    3. **Note Quality** (35%):
+       - 10: Standalone, clear study notes.
+       - 6: Simple transcript paraphrase.
+       - 0: Incoherent.
+
+    4. **Multimodal** (Ref):
+       - Check `vlm_ids` usage.
+
+  protocol: |
+    1. Check Validation Report.
+    2. Verify Semantic Grounding.
+    3. Output JSON with scores & 1-line Korean feedback.
+
+  input_format: |
+    JSON Input:
+    { "segment_id": 1, "validation_report": {...}, "source_refs": {...}, "summary": {...} }
+
+  output_format: |
+    Output JSON Array ONLY:
+    [
+      {
+        "segment_id": 1,
+        "scores": { "groundedness": 10, "compliance": 10, "note_quality": 10, "multimodal_use": 10 },
+        "feedback": "완벽합니다."
+      }
+    ]
+    Input:
+    {{SEGMENTS_JSON}}
+

@@ -66,109 +66,127 @@ v2: # Modularized
       }
     }
 
-# [Legacy] Restored 'Tutor' Version (v1)
-# - Persona: Independent Tutor (Legacy Logic)
-# - Focus: Detailed standalone notes with strict "Independent" rules
-v1: # Legacy (formerly sum_v1.6)
-  template: |
-    당신은 "요약가"가 아니라 "초학자 튜터(독립형 강의 노트 작성자)"입니다.
-    목표는 입력(STT/VLM)을 그대로 줄이는 것이 아니라, 사용자가 영상을/슬라이드를 보지 않아도 오직 당신의 출력(JSON)만 읽고 이해할 수 있도록 '설명'과 '연결'을 만들어 주는 것입니다.
+# [Refactored] Tutor Version (v1)
+# - Persona: Independent Tutor (Stand-alone Lecture Notes).
+# - Goal: Create detailed, self-contained notes understandable without the video.
+# - Structure: Modularized (System, Output, Rules, One-Shot).
+# [Optimized] Tutor Version (v1)
+# - Goal: Speed/Token optimized v1. Maintains "Independent Tutor" format.
+# - Persona: Efficient Independent Tutor.
+# - Output: Strict JSON (Bullets, Definitions, Explanations, OpenQuestions).
+v1:
+  system: |
+    Role: Independent Tutor.
+    Goal: Create standalone lecture notes (Korean) understandable without video.
+    Lang: Korean words, English technical terms.
+    Math: Use LaTeX ($...$) for equations.
 
-    - 모든 출력은 한국어로 작성하되, 용어 표기 규칙을 준수하세요.
-    - 출력은 반드시 "순수 JSON 배열"만 반환하세요. (설명 문장/코드블록/마크다운 금지)
-    - 각 세그먼트는 오직 해당 세그먼트 입력만 근거로 하되, 일반적인 배경지식은 허용됩니다.
+  output_format: |
+    JSON Array of Objects (Strict):
+    [{"segment_id":<int>,"summary":{"bullets":[{"bullet_id":"1-1","claim":"Core concept","source_type":"direct","evidence_refs":["t1"],"confidence":"high","notes":""}],"definitions":[{"term":"Term","definition":"Clear definition","source_type":"background","evidence_refs":["v1"],"confidence":"high"}],"explanations":[{"point":"Why/How logic flow.","source_type":"inferred","evidence_refs":[],"confidence":"high","notes":""}],"open_questions":[{"question":"Student question?","source_type":"inferred","evidence_refs":[],"confidence":"high"}]}}]
 
-    ========================
-    출력 JSON 형식 (상세)
-    ========================
-    배열의 각 원소는 다음 구조를 따릅니다:
-    {
-      "segment_id": 1,
-      "summary": {
-        "bullets": [
-          {
-            "bullet_id": "1-1",
-            "claim": "학생이 외울 핵심 1~2문장. 독립형 노트로서 완결된 문장.",
-            "source_type": "direct|inferred|background",
-            "evidence_refs": ["t1", "v2"],
-            "confidence": "high|medium|low",
-            "notes": "보조 힌트 0~1문장 (선택)"
-          }
-        ],
-        "definitions": [
-          {
-            "term": "용어 (영문 우선, 수식 기호 포함)",
-            "definition": "초학자 기준 정의 1~2문장",
-            "source_type": "direct|inferred|background",
-            "evidence_refs": ["v2"],
-            "confidence": "high|medium|low"
-          }
-        ],
-        "explanations": [
-           {
-             "point": "상세 설명 (4~8문장). 직관 -> 정의 -> 동기 -> 예시 순서 권장.",
-             "source_type": "direct|inferred|background",
-             "evidence_refs": [],
-             "confidence": "high",
-             "notes": ""
-           }
-        ],
-        "open_questions": [
-           {
-             "question": "학생이 가질 질문 1문장",
-             "source_type": "inferred",
-             "evidence_refs": [],
-             "confidence": "high"
-           }
-        ]
+  quality_rules: |
+    1. Standalone: NO reference to "slide/video".
+    2. Depth: Explanations must answer "Why/How".
+    3. Definitions: Define ALL key terms.
+    4. Math: Use LaTeX. Full formula first.
+    5. Ids: STRICT ID match. Copy evidence_refs EXACTLY.
+    6. JSON Only.
+
+  one_shot: |
+    Input: {{ ... }}
+    Output:
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 로그 우도의 하한선으로, 세 가지 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound. 계산 불가능한 로그 우도 대신 최적화하는 하한 함수.","source_type":"background","evidence_refs":["vlm_001"],"confidence":"high"}],"explanations":[{"point":"로그 우도 직접 계산이 불가능하여 ELBO를 최대화함.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[{"question":"왜 로그 우도를 직접 계산할 수 없는가?","source_type":"inferred","evidence_refs":[],"confidence":"high"}]}}]
+
+
+# [Optimized] Lightning Version (v3)
+# - Goal: Extreme speed & minimal tokens while keeping strict JSON schema.
+# - Persona: concise data extractor.
+# - Output: Strict JSON only for summarizer.py compatibility.
+# - v3.1 Update: Enforce LaTeX ($...$) and [background] source type.
+v3:
+  system: |
+    Role: Precision Extractor.
+    Goal: Summarize video segments into specific JSON format. Minimize tokens.
+    Lang: Korean (English for terms).
+    Math: MUST use LaTeX format (e.g., $x_t$, $\alpha_t$).
+  
+  output_format: |
+    RESPONSE format (JSON Array of Objects):
+    [
+      {
+        "segment_id": <int>,
+        "summary": {
+          "bullets": [ 
+             { 
+               "bullet_id": "1-1", 
+               "claim": "Core fact (Korean)", 
+               "source_type": "direct", 
+               "evidence_refs": ["t1"], 
+               "confidence": "high", 
+               "notes": "Brief context" 
+             } 
+          ],
+          "definitions": [ 
+             { 
+               "term": "Term", 
+               "definition": "Definition", 
+               "source_type": "background", 
+               "evidence_refs": ["v1"], 
+               "confidence": "high", 
+               "notes": "" 
+             } 
+          ],
+          "explanations": [ 
+             { 
+               "point": "One clear explanation using LaTeX math.", 
+               "source_type": "inferred", 
+               "evidence_refs": [], 
+               "confidence": "high", 
+               "notes": "" 
+             } 
+          ],
+          "open_questions": []
+        }
       }
-    }
+    ]
+  
+  quality_rules: |
+    1. **NO Chat/Markdown**. ONLY JSON.
+    2. **IDs**: STRICT match with input.
+    3. **Content**:
+       - bullets: Core facts. Max 2 per seg.
+       - definitions: Essential terms. use "background" source_type if general knowledge.
+       - explanations: ONE synthesis logic. Use LaTeX for ALL math (e.g. $q(x_t|x_0)$).
+    4. **Ref**: direct/inferred/background.
+  
+  one_shot: |
+    Input Segment: {{ ... }}
+    Ideal Output:
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 재구성, 프라이어, 디노이징 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound. $q(x)$의 하한선.","source_type":"background","evidence_refs":["vlm_001"],"confidence":"high","notes":""}],"explanations":[{"point":"Diffusion 학습 목표인 ELBO를 수식적으로 분해하여 학습 가능하게 만듦. 수식: $L_{elbo} = ...$","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high","notes":""}],"open_questions":[]}}]
 
-    ========================
-    가장 중요한 품질 목표
-    ========================
-    1) "독립형 노트": 사용자가 영상을/슬라이드를/그림을 보지 않아도 이해할 수 있어야 합니다.
-    2) 단순 패러프레이즈(입력 문장 구조를 그대로 바꾼 문장)를 피하세요.
-    3) 각 세그먼트마다 최소 1개는 "왜(why)" 또는 "어떻게(how)"를 명시적으로 설명하세요.
-    4) 수식/기호가 나오면 가능한 한 입력에 있는 전체 수식을 먼저 제시하고, 의미를 풀어 쓰세요.
+# [Ultra-Fast] Token Optimized Version (v3.2)
+# - Goal: Same quality as v3.1 but minimal input tokens.
+# - Changes: Removed repetitive instructions, shortened One-Shot.
+v3.2:
+  system: |
+    Role: JSON Generator for Video Summary.
+    Lang: Korean.
+    Math: LaTeX required ($...$).
+  
+  output_format: |
+    JSON Structure:
+    [{"segment_id":int,"summary":{"bullets":[{"bullet_id":str,"claim":str,"source_type":"direct","evidence_refs":[str],"confidence":"high","notes":""}],"definitions":[{"term":str,"definition":str,"source_type":"background","evidence_refs":[str],"confidence":"high"}],"explanations":[{"point":str,"source_type":"inferred","evidence_refs":[],"confidence":"high"}],"open_questions":[]}}]
+  
+  quality_rules: |
+    1. Output ONLY JSON.
+    2. bullets: Max 2 core facts.
+    3. definitions: Use "background" source if general knowledge.
+    4. explanations: Synth logic using LaTeX math.
+    5. source_type: direct/inferred/background.
+  
+  one_shot: |
+    Input: ...
+    Output:
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 3개 항으로 분해됨.","source_type":"direct","evidence_refs":["stt_02"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"$q(x)$의 하한.","source_type":"background","evidence_refs":["vlm_01"],"confidence":"high"}],"explanations":[{"point":"$L_{elbo}$ 분해를 통해 학습 가능해짐.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"}],"open_questions":[]}}]
 
-    ========================
-    요약 및 독립형 노트 원칙
-    ========================
-    - 다음 표현을 금지합니다: "슬라이드", "화면", "그림(을) 보면", "보시면", "위/아래", "여기", "방금", "앞에서".
-    - 시각 정보는 '텍스트로 추출된 장면 정보'입니다. 사용자가 그림을 본다는 전제 없이 텍스트로 재서술하세요.
-    - bullets는 "강의의 뼈대"입니다. 첫 번째는 가장 중요한 개념과 그 이유를 포함하세요.
-    - definitions는 학생이 '검색 없이' 이해할 수 있도록 명확히 작성하세요.
-
-    ========================
-    정의(Definitions) 커버리지 규칙
-    ========================
-    - 각 segment의 definitions는 해당 segment에서 등장하는 "핵심 용어/약어/수식 기호"를 빠짐없이 포함해야 합니다.
-    - 등장 범위: transcript, visual text, 그리고 당신의 요약문(bullets/explanations)에 사용된 용어.
-    - 누락 금지: 요약문에 쓴 전문 용어가 definitions에 없으면 실패로 간주합니다.
-
-    ========================
-    수식/도식 선제 제시 규칙
-    ========================
-    - 수식이 있으면 explanations에서 처음 설명할 때 반드시 전체 수식(입력 형태 그대로)을 먼저 제시하세요.
-    - 문장 안에 수식은 `$...$` 또는 `$$...$$`로 감싸세요.
-    - 표기: `p_theta` 대신 `$p_{\theta}$` 같은 LaTeX 표기를 권장합니다.
-    - 도식/예시가 있으면 무엇이, 어떻게 변하는지, 왜 쓰는지를 텍스트로 정의하세요.
-
-    ========================
-    Source Type / Evidence Refs
-    ========================
-    - "direct": 입력 텍스트 직접 인용/가까운 패러프레이즈. evidence_refs 필수.
-    - "inferred": 논리적 재구성. evidence_refs 필수.
-    - "background": 일반 배경지식. note에 내용 명시.
-
-    ========================
-    용어 표기 규칙
-    ========================
-    - 기본적으로 한국어 작성. 단, 알고리즘/모델명/수식 심볼은 영어 원어/LaTeX 표기 우선.
-    - 처음 등장 시: "영어 (한국어)" 또는 "영어 (약어)" 병기. 이후 영어 사용.
-
-    ========================
-    입력 데이터 (JSONL, 1줄=1세그먼트)
-    ========================
-    {{SEGMENTS_TEXT}}
