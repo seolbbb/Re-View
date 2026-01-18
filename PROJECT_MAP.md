@@ -2,16 +2,17 @@
 
 ## 제일 먼저 볼 파일
 
-- `src/run_video_pipeline.py`
-  - 현재 파이프라인의 메인 진입점.
-  - STT → Capture → VLM → Fusion → Judge 순서가 한 파일에 보입니다.
+- `src/run_preprocess_pipeline.py`
+  - 전처리(STT + Capture) 전용 메인 진입점.
+- `src/run_process_pipeline.py`
+  - 처리(VLM + Fusion + Judge) 전용 메인 진입점.
 
 ## 실행 흐름 핵심
 
 - `src/pipeline/stages.py`
   - 각 단계(STT/Capture/VLM/Fusion/Judge)를 실제로 호출하는 모듈.
   - 배치 모드 흐름도 여기에서 조립됩니다.
-  - run_video_pipeline.py를 중심으로 보면 되고 이 파일은 참고로 궁금하면 보시면 됩니다.
+  - 실제 실행은 `run_preprocess_pipeline.py` → `run_process_pipeline.py` 두 단계 기준으로 이해하면 됩니다.
 
 ## 모듈별 핵심 파일
 
