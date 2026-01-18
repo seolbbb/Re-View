@@ -14,6 +14,7 @@ ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[Dict[str, Any]]:
     """Clova 응답에서 세그먼트 목록을 추출해 표준 형태로 정리한다."""
     segments_out: List[Dict[str, Any]] = []
+    segment_index = 0
     for segment in raw.get("segments", []):
         if not isinstance(segment, dict):
             continue
@@ -23,6 +24,7 @@ def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[
         text = text.strip()
         if not text:
             continue
+        segment_index += 1
         try:
             start_ms = int(round(float(segment.get("start"))))
         except (TypeError, ValueError):
@@ -35,6 +37,7 @@ def _extract_segments(raw: Dict[str, Any], *, include_confidence: bool) -> List[
             "start_ms": start_ms,
             "end_ms": end_ms,
             "text": text,
+            "id": f"stt_{segment_index:03d}",
         }
         if include_confidence:
             try:
