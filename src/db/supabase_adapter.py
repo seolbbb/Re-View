@@ -43,7 +43,7 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
         분석 결과물을 관계형 DB 구조로 변환하여 순차적으로 업로드합니다.
         
         Process Flow:
-            1. Captures: manifest.json 읽어 'captures' 테이블 저장 + 이미지 Storage 업로드
+            1. Captures: capture.json 읽어 'captures' 테이블 저장 + 이미지 Storage 업로드
             2. STT: stt.json 읽어 'stt_results' 테이블 저장
             3. Segments: segments_units.jsonl 읽어 'segments' 테이블 저장 (Fusion 결과)
             4. Summaries: segment_summaries.jsonl 읽어 'summaries' 테이블 저장 (LLM 요약)
@@ -69,8 +69,8 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
             "errors": [],
         }
         
-        # 1. Captures (manifest.json) - 화면 캡처 정보 및 이미지 업로드
-        manifest_path = video_root / "manifest.json"
+        # 1. Captures (capture.json) - 화면 캡처 정보 및 이미지 업로드
+        manifest_path = video_root / "capture.json"
         if manifest_path.exists():
             try:
                 captures_dir = video_root / "captures"
