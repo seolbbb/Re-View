@@ -199,7 +199,8 @@ def _resolve_video_name(
 
 
 def _render_final_summaries(video_root: Path, *, scroll_height: int = 600) -> None:
-    summaries_dir = video_root / "fusion" / "outputs"
+    results_dir = video_root / "results"
+    summaries_dir = results_dir if results_dir.exists() else video_root / "fusion" / "outputs"
     summary_paths = sorted(summaries_dir.glob("final_summary_*.md")) if summaries_dir.exists() else []
     if not summary_paths:
         st.info("No final summaries found.")

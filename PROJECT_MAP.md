@@ -46,11 +46,15 @@
 
 기본 출력 폴더: `data/outputs/<video_name>/`
 
-- `stt.json` / `manifest.json` / `vlm.json`
-- `fusion/segments_units.jsonl`
-- `fusion/segment_summaries.jsonl`
-- `fusion/judge.json`
-- `benchmark_report.md`
+- `stt.json` / `manifest.json` / `captures/*.jpg`
+- `vlm.json` (배치 OFF만 생성, 배치 ON은 `batches/batch_N/vlm.json`)
+- `pipeline_run.json` / `benchmark_report.md`
+- `fusion/segments_units.jsonl` (배치 OFF만 생성, 배치 ON은 `batches/batch_N/segments_units.jsonl`)
+- `fusion/segment_summaries.jsonl` / `fusion/segment_summaries.md`
+- `results/final_summary_*.md`
+- Judge 결과
+  - 배치 OFF: `fusion/judge.json` + `fusion/judge_segment_reports.jsonl`
+  - 배치 ON: `batches/batch_N/judge.json` + `batches/batch_N/judge_segment_reports.jsonl`
 
 배치 모드는 `data/outputs/<video_name>/batches/` 아래에 배치별 결과가 쌓입니다.
 
@@ -65,10 +69,12 @@
 video.mp4
   ├─ STT → stt.json
   ├─ Capture → manifest.json (+ captures/*.jpg)
-  ├─ VLM → vlm_raw.json → vlm.json
+  ├─ VLM → (temp) vlm_raw.json → vlm.json
   ├─ Sync → fusion/segments_units.jsonl
   ├─ Summarize → fusion/segment_summaries.jsonl
-  ├─ Judge → fusion/judge.json
+  ├─ Judge → fusion/judge.json + fusion/judge_segment_reports.jsonl
+  ├─ Render → fusion/segment_summaries.md
+  ├─ Final → results/final_summary_*.md
   └─ Benchmark → benchmark_report.md
 ```
 
@@ -79,18 +85,18 @@ video.mp4
   ├─ STT → stt.json
   ├─ Capture → manifest.json (+ captures/*.jpg)
   ├─ For each batch in batches/batch_N/
-  │   ├─ VLM → vlm_raw.json → vlm.json
+  │   ├─ VLM → (temp) vlm_raw.json → vlm.json
   │   ├─ Sync → segments_units.jsonl
   │   ├─ Summarize → segment_summaries.jsonl
-  │   └─ Judge → judge.json
+  │   └─ Judge → judge.json + judge_segment_reports.jsonl
   ├─ Merge summaries → fusion/segment_summaries.jsonl
   ├─ Render → fusion/segment_summaries.md
-  ├─ Judge report (final) → fusion/judge.json
+  ├─ Final → results/final_summary_*.md
   └─ Benchmark → benchmark_report.md
 ```
 
 배치 모드에서는 배치별 결과를 만든 뒤, `fusion/`에 요약 결과를 누적하고
-렌더링/최종 Judge는 `fusion/` 기준으로 다시 수행합니다.
+렌더링/최종 요약은 `fusion/` 기준으로 수행합니다. (최종 Judge는 배치별만 수행)
 
 
 
@@ -101,27 +107,36 @@ video.mp4
 
 - `stt.json`: STT 세그먼트(시간/텍스트)
 - `manifest.json`: 캡처 이미지 목록(파일/시간)
-- `vlm.json`: 이미지별 VLM 텍스트
-- `pipeline_run.json`: 실행 메타(시간/옵션/통계)
-- `fusion/segments_units.jsonl`: STT+VLM 결합 세그먼트
 - `fusion/segment_summaries.jsonl`: 세그먼트 요약 결과
-- `fusion/judge.json`: PASS/FAIL + 점수
+- `results/final_summary_*.md`: 최종 요약 마크다운
+- `pipeline_run.json`: 실행 메타(시간/옵션/통계)
 
-## 배치 모드 OFF (`no batch`)
+## 배치 모드 OFF (`no batch`) 전용
 
 - 위 파일들이 `data/outputs/<video>/`와 `fusion/`에 직접 생성됨
-- `fusion/judge/*`와 `fusion/token_usage.json`은 상세 리포트/토큰 로그
+- `vlm.json`: 이미지별 VLM 텍스트
+- `fusion/segments_units.jsonl`: STT+VLM 결합 세그먼트
+- `fusion/judge.json`: PASS/FAIL + 평균 점수(`report.scores_avg`) + 요약 리포트
+- `fusion/judge_segment_reports.jsonl`: 세그먼트별 Judge 상세
+- `fusion/token_usage.json`: 토큰 로그
 
-## 배치 모드 ON (`diffusion_batch`)
+## 배치 모드 ON (`diffusion_batch`) 전용
 
 - 배치별 결과는 `batches/batch_N/`에 생성됨
 - 배치 요약은 마지막에 `fusion/segment_summaries.jsonl`로 합쳐짐
-
-
-## 기타 JSON (보조/참고용)
-
-- `fusion/judge/judge_report.json`: 점수 집계/메타 정보
-- `fusion/judge/judge_segment_reports.jsonl`: 세그먼트별 상세 평가
-- `fusion/token_usage.json`: LLM 입력 토큰 로그
-- `batches/batch_N/vlm_raw.json`: VLM 원본 응답(변환 전)
+- `batches/batch_N/vlm.json`: 배치별 VLM 결과
+- `batches/batch_N/segments_units.jsonl`: 배치별 동기화 결과
+- `batches/batch_N/judge.json`: 배치별 PASS/FAIL + 평균 점수
+- `batches/batch_N/judge_segment_reports.jsonl`: 배치별 Judge 상세
 - `batches/batch_N/token_usage.json`: 배치 요약/저지 토큰 로그
+- 배치 모드는 루트에 `vlm.json`을 만들지 않음
+
+
+## 기타 JSON (보조/참고/디버깅용)
+- `fusion/token_usage.json`: LLM 입력 토큰 로그
+- `vlm_raw.json`: 변환 후 삭제되는 임시 파일(기본은 저장하지 않음)
+
+## 기타 파일 (보조/참고/디버깅용)
+- 필요한 경우에만 확인하면 되는 파일들, `data/outputs/<video>/` 기준
+- `benchmark_report.md`: 시간 얼마 걸렸는지 확인할 때
+- `config.yaml`: config 정보들 모아 놓은 yaml 파일

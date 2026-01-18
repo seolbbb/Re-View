@@ -51,7 +51,7 @@ class VideoStore:
         return self.fusion_dir() / "segment_summaries.md"
 
     def final_outputs_dir(self) -> Path:
-        return self.fusion_dir() / "outputs"
+        return self.video_root() / "results"
 
     def pipeline_run_json(self) -> Path:
         return self.video_root() / "pipeline_run.json"

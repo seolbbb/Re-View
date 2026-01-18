@@ -44,7 +44,7 @@
       └─────────────────────────────────────────────────┘
                     │
                     ▼
-          [final_summary_*.md]
+          [results/final_summary_*.md]
 ```
 
 ### 1.2 핵심 컴포넌트
@@ -69,14 +69,23 @@ Re:View/
 │           ├── stt.json            # STT 결과 (Whisper/Clova)
 │           ├── manifest.json       # 캡처 메타데이터
 │           ├── captures/           # 캡처 이미지 파일
-│           ├── vlm.json            # VLM 분석 결과
+│           ├── vlm.json            # VLM 분석 결과 (배치 OFF만 생성)
 │           ├── config.yaml         # 파이프라인 설정
-│           └── fusion/
-│               ├── segments_units.jsonl      # 동기화된 단위 데이터
-│               ├── segment_summaries.jsonl   # 생성된 구간 요약
-│               ├── judge.json                # 품질 평가 결과
-│               └── outputs/
-│                   └── final_summary_*.md    # 최종 결과물
+│           ├── results/            # 최종 요약 출력
+│           │   └── final_summary_*.md
+│           ├── fusion/
+│           │   ├── segments_units.jsonl      # 동기화된 단위 데이터 (배치 OFF만 생성)
+│           │   ├── segment_summaries.jsonl   # 생성된 구간 요약
+│           │   ├── segment_summaries.md
+│           │   ├── judge.json                # 품질 평가 결과 (배치 OFF)
+│           │   └── judge_segment_reports.jsonl
+│           └── batches/            # 배치 모드 결과
+│               └── batch_N/
+│                   ├── vlm.json
+│                   ├── segments_units.jsonl
+│                   ├── segment_summaries.jsonl
+│                   ├── judge.json
+│                   └── judge_segment_reports.jsonl
 ├── src/
 │   ├── run_video_pipeline.py       # End-to-End CLI (벤치마크 용)
 │   ├── run_preprocess_pipeline.py  # Preprocess CLI (STT+Capture)
