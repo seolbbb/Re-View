@@ -66,13 +66,11 @@ def run_processing_pipeline(
     vlm_concurrency: Optional[int] = None,
     vlm_show_progress: Optional[bool] = None,
     limit: Optional[int] = None,
-    sync_to_db: bool = False,
-    force_db: bool = False,
+    sync_to_db: Optional[bool] = None,
+    force_db: Optional[bool] = None,
+    use_db: Optional[bool] = None,
 ) -> None:
     """DB 또는 로컬 입력을 사용해 VLM + Fusion을 실행한다."""
-    if not video_name and not video_id:
-        raise ValueError("video_name or video_id is required.")
-
     # 파이프라인 기본 설정을 읽어 CLI 인자에 적용한다.
     settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
     if not settings_path.exists():
@@ -80,6 +78,17 @@ def run_processing_pipeline(
     settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
     if not isinstance(settings, dict):
         raise ValueError("pipeline settings must be a mapping.")
+
+    video_settings = settings.get("video", {})
+    if not isinstance(video_settings, dict):
+        video_settings = {}
+    if not video_name or not str(video_name).strip():
+        candidate = video_settings.get("process_name")
+        if candidate and str(candidate).strip():
+            video_name = str(candidate).strip()
+
+    if not video_name and not video_id:
+        raise ValueError("video_name or video_id is required (CLI or config/pipeline/settings.yaml).")
 
     # 명시적으로 전달되지 않은 값만 기본값을 채운다.
     if batch_mode is None:
@@ -92,6 +101,24 @@ def run_processing_pipeline(
         vlm_concurrency = settings.get("vlm_concurrency", 3)
     if vlm_show_progress is None:
         vlm_show_progress = settings.get("vlm_show_progress", True)
+
+    db_settings = settings.get("db", {})
+    if not isinstance(db_settings, dict):
+        db_settings = {}
+    if use_db is None:
+        use_db = db_settings.get("use_db", True)
+    if force_db is None:
+        force_db = db_settings.get("force_db", False)
+    if sync_to_db is None:
+        sync_to_db = db_settings.get("sync_to_db_process", db_settings.get("sync_to_db"))
+        if sync_to_db is None:
+            sync_to_db = False
+    if not isinstance(use_db, bool):
+        use_db = True
+    if not isinstance(force_db, bool):
+        force_db = False
+    if not isinstance(sync_to_db, bool):
+        sync_to_db = False
 
     # 출력 경로와 안전한 영상 이름을 계산한다.
     output_base_path = (ROOT / Path(output_base)).resolve()
@@ -113,9 +140,23 @@ def run_processing_pipeline(
         and captures_dir.exists()
     )
 
+    input_source = "local"
+    input_reason = "local artifacts present"
+    if force_db:
+        input_source = "db"
+        input_reason = "forced"
+    elif not local_ready:
+        input_source = "db"
+        input_reason = "local artifacts missing"
+
     # DB에서 가져온 경우 duration 정보를 보존한다.
     db_duration = None
+    if force_db:
+        use_db = True
     if force_db or not local_ready:
+        if not use_db:
+            raise ValueError("DB usage is disabled and local artifacts are missing.")
+        print(f"[Input] Using Supabase artifacts ({input_reason}).")
         # Supabase 설정이 없으면 DB 모드를 사용할 수 없다.
         adapter = get_supabase_adapter()
         if not adapter:
@@ -270,6 +311,8 @@ def run_processing_pipeline(
         )
 
         db_duration = video_row.get("duration_sec")
+    else:
+        print("[Input] Using local artifacts.")
 
     # 입력 아티팩트 경로가 모두 준비되었는지 확인한다.
     if not (stt_json and manifest_json and captures_dir):
@@ -299,6 +342,8 @@ def run_processing_pipeline(
         "video_id": video_id,
         "video_root": str(video_root),
         "output_base": str(output_base_path),
+        "input_source": input_source,
+        "input_reason": input_reason,
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "args": run_args,
         "durations_sec": {},
@@ -454,8 +499,12 @@ def main() -> None:
     parser.add_argument("--no-batch-mode", dest="batch_mode", action="store_false", help="Disable batch mode")
     parser.set_defaults(batch_mode=None)
     parser.add_argument("--limit", type=int, default=None, help="Limit segments")
-    parser.add_argument("--force-db", action="store_true", help="Force DB download even if local exists")
-    parser.add_argument("--sync-to-db", action="store_true", help="Upload processing outputs to Supabase")
+    parser.add_argument("--force-db", dest="force_db", action="store_true", help="Force DB download even if local exists")
+    parser.add_argument("--no-force-db", dest="force_db", action="store_false", help="Disable DB download")
+    parser.set_defaults(force_db=None)
+    parser.add_argument("--sync-to-db", dest="sync_to_db", action="store_true", help="Upload processing outputs to Supabase")
+    parser.add_argument("--no-sync-to-db", dest="sync_to_db", action="store_false", help="Skip Supabase upload")
+    parser.set_defaults(sync_to_db=None)
     args = parser.parse_args()
 
     run_processing_pipeline(

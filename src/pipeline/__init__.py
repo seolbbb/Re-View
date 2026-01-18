@@ -1,5 +1,3 @@
-"""파이프라인 실행 유틸을 내보내는 모듈."""
+"""파이프라인 모듈 진입점."""
 
-from src.run_video_pipeline import parse_args, run_pipeline
-
-__all__ = ["parse_args", "run_pipeline"]
+__all__: list[str] = []

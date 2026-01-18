@@ -473,6 +473,9 @@ def main() -> None:
         pipeline_settings_path = CONFIG_ROOT / "pipeline" / "settings.yaml"
         pipeline_settings = _load_config(pipeline_settings_path, overrides, use_override)
         pipeline_settings.setdefault("parallel", True)
+        capture_settings = _load_config(CONFIG_ROOT / "capture" / "settings.yaml", overrides, use_override)
+        if not isinstance(capture_settings, dict):
+            capture_settings = {}
         audio_settings = _load_config(CONFIG_ROOT / "audio" / "settings.yaml", overrides, use_override)
         stt_settings = audio_settings.get("stt", {})
         if not isinstance(stt_settings, dict):
@@ -490,12 +493,12 @@ def main() -> None:
 
         stt_backend = default_provider
         parallel = bool(pipeline_settings.get("parallel", True))
-        capture_threshold = _coerce_float(pipeline_settings.get("capture_threshold"), 3.0)
+        capture_threshold = _coerce_float(capture_settings.get("sensitivity_diff"), 3.0)
         capture_dedupe_threshold = _coerce_float(
-            pipeline_settings.get("capture_dedupe_threshold"), 3.0
+            capture_settings.get("sensitivity_sim"), 0.8
         )
         capture_min_interval = _coerce_float(
-            pipeline_settings.get("capture_min_interval"), 0.5
+            capture_settings.get("min_interval"), 0.5
         )
 
         st.header("Config")

@@ -27,6 +27,7 @@ if ENV_PATH.exists():
 else:
     load_dotenv()
 
+from src.capture.settings import load_capture_settings
 from src.db import sync_pipeline_results_to_db
 from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
 from src.pipeline.stages import run_capture, run_stt
@@ -54,7 +55,7 @@ def _append_benchmark_report(path: Path, report_md: str, pipeline_label: str) ->
 
 def run_preprocess_pipeline(
     *,
-    video: str,
+    video: Optional[str],
     output_base: str = "data/outputs",
     stt_backend: str = "clova",
     parallel: bool = True,
@@ -63,14 +64,9 @@ def run_preprocess_pipeline(
     capture_min_interval: Optional[float] = None,
     capture_verbose: bool = False,
     limit: Optional[int] = None,
-    sync_to_db: bool = True,
+    sync_to_db: Optional[bool] = None,
 ) -> None:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
-    # 부분 출력이 생기기 전에 입력 경로를 먼저 확정한다.
-    video_path = Path(video).expanduser().resolve()
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video file not found: {video_path}")
-
     # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
     settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
     if not settings_path.exists():
@@ -79,13 +75,37 @@ def run_preprocess_pipeline(
     if not isinstance(settings, dict):
         raise ValueError("pipeline settings must be a mapping.")
 
-    # 값이 명시되지 않은 경우에만 설정 기본값을 적용한다.
+    video_value = video
+    if not video_value or not str(video_value).strip():
+        video_settings = settings.get("video", {})
+        if isinstance(video_settings, dict):
+            video_value = video_settings.get("preprocess_path")
+    if not video_value or not str(video_value).strip():
+        raise ValueError("video path is required (CLI --video or config/pipeline/settings.yaml: video.preprocess_path)")
+
+    # 부분 출력이 생기기 전에 입력 경로를 먼저 확정한다.
+    video_path = Path(str(video_value)).expanduser().resolve()
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    # 캡처 설정은 config/capture/settings.yaml에서 기본값을 가져온다.
+    capture_settings = load_capture_settings()
     if capture_threshold is None:
-        capture_threshold = float(settings.get("capture_threshold", 3.0))
+        capture_threshold = float(capture_settings.sensitivity_diff)
     if capture_dedupe_threshold is None:
-        capture_dedupe_threshold = float(settings.get("capture_dedupe_threshold", 3.0))
+        capture_dedupe_threshold = float(capture_settings.sensitivity_sim)
     if capture_min_interval is None:
-        capture_min_interval = float(settings.get("capture_min_interval", 0.5))
+        capture_min_interval = float(capture_settings.min_interval)
+
+    db_settings = settings.get("db", {})
+    if not isinstance(db_settings, dict):
+        db_settings = {}
+    if sync_to_db is None:
+        sync_to_db = db_settings.get("sync_to_db_preprocess")
+        if sync_to_db is None:
+            sync_to_db = True
+    if not isinstance(sync_to_db, bool):
+        sync_to_db = True
 
     # 이번 비디오 실행에 대한 출력 루트를 만든다.
     output_base_path = (ROOT / Path(output_base)).resolve()
@@ -262,7 +282,7 @@ def run_preprocess_pipeline(
 def main() -> None:
     """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
     parser = argparse.ArgumentParser(description="Preprocess pipeline (STT + Capture only)")
-    parser.add_argument("--video", required=True, help="Input video file path")
+    parser.add_argument("--video", default=None, help="Input video file path (or config/pipeline/settings.yaml)")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
     parser.add_argument("--stt-backend", choices=["clova"], default="clova", help="STT backend")
     parser.add_argument(
@@ -272,7 +292,9 @@ def main() -> None:
         help="Run STT and Capture in parallel",
     )
     parser.add_argument("--capture-verbose", action="store_true", help="Enable capture logs")
-    parser.add_argument("--no-db-sync", action="store_true", help="Skip Supabase sync")
+    parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
+    parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
+    parser.set_defaults(db_sync=None)
     args = parser.parse_args()
 
     run_preprocess_pipeline(
@@ -281,7 +303,7 @@ def main() -> None:
         stt_backend=args.stt_backend,
         parallel=args.parallel,
         capture_verbose=args.capture_verbose,
-        sync_to_db=not args.no_db_sync,
+        sync_to_db=args.db_sync,
     )
 
 

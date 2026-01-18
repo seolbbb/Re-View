@@ -1,6 +1,6 @@
 """
 캡쳐 단계에서 비디오 1건을 처리해 슬라이드 캡쳐와 manifest.json을 만든다.
-run_video_pipeline에서 호출되며 설정은 config/capture/settings.yaml에서 로드한다.
+run_preprocess_pipeline에서 호출되며 설정은 config/capture/settings.yaml에서 로드한다.
 """
 
 import json
@@ -20,7 +20,7 @@ def process_single_video_capture(
     min_interval: Optional[float] = None,
 ) -> list:
     """
-    run_video_pipeline.py에서 호출되는 캡쳐 인터페이스.
+    run_preprocess_pipeline.py에서 호출되는 캡쳐 인터페이스.
 
     지연 저장 로직으로 슬라이드를 추출한다.
 

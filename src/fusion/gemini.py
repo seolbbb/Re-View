@@ -17,8 +17,54 @@ logger = logging.getLogger(__name__)
 class GeminiClientBundle:
     """Gemini 클라이언트와 모델 메타데이터 묶음."""
     client: Any
+    clients: List[Any]
     backend: str
     model: str
+
+
+def _split_env_list(value: str) -> List[str]:
+    """환경변수 문자열을 키 리스트로 분해한다."""
+    items: List[str] = []
+    for part in value.replace(",", " ").split():
+        if part.strip():
+            items.append(part.strip())
+    return items
+
+
+def _load_gemini_keys(env_candidates: List[str]) -> List[str]:
+    """환경변수에서 Gemini API 키 목록을 구성한다."""
+    keys: List[str] = []
+    for base_name in env_candidates:
+        if not isinstance(base_name, str):
+            continue
+        base = base_name.strip()
+        if not base:
+            continue
+
+        list_env = os.getenv(f"{base}S", "")
+        if list_env:
+            keys.extend(_split_env_list(list_env))
+
+        index = 1
+        while True:
+            key = os.getenv(f"{base}_{index}")
+            if not key:
+                break
+            keys.append(key.strip())
+            index += 1
+
+        single_key = os.getenv(base)
+        if single_key:
+            keys.append(single_key.strip())
+
+    seen = set()
+    deduped = []
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
 
 
 def load_genai() -> Any:
@@ -38,18 +84,18 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
     llm_cfg = config.raw.llm_gemini
     
     if llm_cfg.backend == "developer_api":
-        api_key = None
-        for env_name in llm_cfg.developer_api.api_key_env_candidates:
-            api_key = os.getenv(env_name)
-            if api_key:
-                break
-        if not api_key:
+        api_keys = _load_gemini_keys(llm_cfg.developer_api.api_key_env_candidates)
+        if not api_keys:
             raise ValueError(
                 "Developer API key is missing. Set GOOGLE_API_KEY or GEMINI_API_KEY."
             )
-        client = genai.Client(api_key=api_key)
+        clients = [genai.Client(api_key=api_key) for api_key in api_keys]
+        client = clients[0]
         return GeminiClientBundle(
-            client=client, backend="developer_api", model=llm_cfg.model
+            client=client,
+            clients=clients,
+            backend="developer_api",
+            model=llm_cfg.model,
         )
 
     if llm_cfg.backend == "vertex_ai":
@@ -68,8 +114,12 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
             client = genai.Client(
                 vertexai=True, project=project, location=location, api_key=api_key
             )
+        clients = [client]
         return GeminiClientBundle(
-            client=client, backend="vertex_ai", model=llm_cfg.model
+            client=client,
+            clients=clients,
+            backend="vertex_ai",
+            model=llm_cfg.model,
         )
 
     raise ValueError(f"Unsupported backend: {llm_cfg.backend}")
@@ -101,9 +151,11 @@ def generate_content(
     temperature: float,
     response_mime_type: str,
     timeout_sec: int,
+    *,
+    client_override: Optional[Any] = None,
 ) -> str:
     """Gemini 호출 결과의 텍스트를 반환한다."""
-    client = client_bundle.client
+    client = client_override or client_bundle.client
     config = {
         "temperature": temperature,
         "response_mime_type": response_mime_type,
@@ -140,28 +192,44 @@ def run_with_retries(
     backoff_sec: List[int],
 ) -> str:
     """오류 시 Gemini 호출을 재시도한다."""
-    attempt = 0
-    while True:
-        try:
-            return generate_content(
-                client_bundle,
-                prompt,
-                response_schema,
-                temperature,
-                response_mime_type,
-                timeout_sec,
-            )
-        except Exception as exc:
-            if attempt >= max_retries:
-                logger.error(f"GenerateContent failed after {max_retries} retries: {exc}")
-                raise
-            
-            sleep_for = (
-                backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
-            )
-            logger.warning(
-                f"GenerateContent failed (attempt {attempt+1}/{max_retries}). "
-                f"Retrying in {sleep_for}s. Error: {exc}"
-            )
-            time.sleep(max(sleep_for, 0))
-            attempt += 1
+    clients = getattr(client_bundle, "clients", None) or [client_bundle.client]
+    total_clients = len(clients)
+    last_error: Optional[Exception] = None
+
+    for idx, client in enumerate(clients, start=1):
+        attempt = 0
+        while True:
+            try:
+                return generate_content(
+                    client_bundle,
+                    prompt,
+                    response_schema,
+                    temperature,
+                    response_mime_type,
+                    timeout_sec,
+                    client_override=client,
+                )
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max_retries:
+                    if total_clients > 1 and idx < total_clients:
+                        logger.warning(
+                            f"GenerateContent failed after {max_retries} retries on key "
+                            f"{idx}/{total_clients}. Switching keys."
+                        )
+                    break
+
+                sleep_for = (
+                    backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
+                )
+                logger.warning(
+                    f"GenerateContent failed (attempt {attempt+1}/{max_retries}). "
+                    f"Retrying in {sleep_for}s. Error: {exc}"
+                )
+                time.sleep(max(sleep_for, 0))
+                attempt += 1
+
+    if last_error:
+        logger.error(f"GenerateContent failed after {max_retries} retries: {last_error}")
+        raise last_error
+    raise RuntimeError("GenerateContent failed with no response.")

@@ -528,7 +528,7 @@ def run_batch_fusion_pipeline(
         print(f"🔄 Pipeline batch {batch_idx + 1}/{total_batches} in progress...")
         print(f"   Capture range: {batch_info['start_idx'] + 1} ~ {batch_info['end_idx']}")
 
-        batch_dir = batches_dir / f"batch_{batch_idx}"
+        batch_dir = batches_dir / f"batch_{batch_idx + 1}"
         batch_dir.mkdir(parents=True, exist_ok=True)
 
         batch_manifest = sorted_manifest[batch_info["start_idx"] : batch_info["end_idx"]]

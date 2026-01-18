@@ -141,3 +141,31 @@ video.mp4
 - 필요한 경우에만 확인하면 되는 파일들, `data/outputs/<video>/` 기준
 - `benchmark_report.md`: 시간 얼마 걸렸는지 확인할 때
 - `config.yaml`: config 정보들 모아 놓은 yaml 파일
+
+## .env 형식 (예시)
+
+프로젝트 루트 `.env`를 읽습니다. 필요한 값만 설정하세요.
+
+```env
+# OpenRouter (VLM)
+OPENROUTER_API_KEYS=key1,key2
+# 또는
+OPENROUTER_API_KEY_1=key1
+OPENROUTER_API_KEY_2=key2
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+
+# Gemini Developer API (Summarizer/Judge)
+GOOGLE_API_KEYS=key1,key2
+# 또는
+GOOGLE_API_KEY_1=key1
+GOOGLE_API_KEY_2=key2
+GEMINI_API_KEY=key1
+
+# Supabase (DB sync)
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_KEY=your_key
+
+# Clova STT
+CLOVA_SPEECH_URL=https://api.clova.ai/...
+CLOVA_SPEECH_API_KEY=your_key
+```

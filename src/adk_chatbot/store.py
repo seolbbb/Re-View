@@ -66,8 +66,8 @@ class VideoStore:
         return self.video_root() / "batches"
 
     def batch_dir(self, batch_index: int) -> Path:
-        """특정 배치의 결과 디렉토리."""
-        return self.batches_dir() / f"batch_{batch_index}"
+        """특정 배치(0-based index)의 결과 디렉토리."""
+        return self.batches_dir() / f"batch_{batch_index + 1}"
 
     def batch_vlm_json(self, batch_index: int) -> Path:
         """배치별 VLM 결과 파일."""

@@ -187,13 +187,16 @@ ADK의 `ToolContext`를 통해 세션 상태를 공유합니다.
 
 아래 런타임 파라미터는 `config/pipeline/settings.yaml`에서 관리합니다:
 
-- `capture_threshold`
-- `capture_dedupe_threshold`
-- `capture_min_interval`
 - `vlm_batch_size`
 - `vlm_concurrency`
 - `vlm_show_progress`
 - `batch_size`
+
+캡처 관련 파라미터는 `config/capture/settings.yaml`에서 관리합니다:
+
+- `sensitivity_diff`
+- `sensitivity_sim`
+- `min_interval`
 
 ### 5.2 Preprocess 실행 (`run_preprocess_pipeline.py`)
 

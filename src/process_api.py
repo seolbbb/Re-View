@@ -47,8 +47,8 @@ class ProcessRequest(BaseModel):
     output_base: str = "data/outputs"
     batch_mode: Optional[bool] = None
     limit: Optional[int] = None
-    force_db: bool = False
-    sync_to_db: bool = False
+    force_db: Optional[bool] = None
+    sync_to_db: Optional[bool] = None
 
 
 class ProcessResponse(BaseModel):
