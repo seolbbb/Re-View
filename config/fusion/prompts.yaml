@@ -66,56 +66,109 @@ v2: # Modularized
       }
     }
 
-# [Legacy] Streamlined 'Expert' Version (v1)
-# - Persona: Lecture Summary Expert (Simpler than Tutor)
-# - Focus: Concise summary with core claims and definitions
+# [Legacy] Restored 'Tutor' Version (v1)
+# - Persona: Independent Tutor (Legacy Logic)
+# - Focus: Detailed standalone notes with strict "Independent" rules
 v1: # Legacy (formerly sum_v1.6)
   template: |
-    당신은 강의 요약 전문가입니다. 아래 제공되는 세그먼트 정보(transcript, visual summary)를 바탕으로 각 세그먼트의 핵심 내용을 요약하세요.
-    
-    반드시 다음 JSON 배열 형식으로 출력해야 합니다:
-    [
-      {
-        "segment_id": 1,
-        "summary": {
-          "bullets": [
-            {
-              "claim": "핵심 내용 한 문장 ({{CLAIM_MAX_CHARS}}자 내외)",
-              "source_type": "direct",
-              "evidence_refs": ["t1"],
-              "confidence": "high",
-              "notes": "추가 설명 (선택)"
-            }
-          ],
-          "definitions": [
-            {
-              "term": "용어",
-              "definition": "정의",
-              "source_type": "direct",
-              "evidence_refs": [],
-              "confidence": "high"
-            }
-          ],
-          "explanations": [
-             {
-               "point": "상세 설명 (4~8문장)",
-               "source_type": "inferred",
-               "evidence_refs": [],
-               "confidence": "high",
-               "notes": ""
-             }
-          ],
-          "open_questions": []
-        }
+    당신은 "요약가"가 아니라 "초학자 튜터(독립형 강의 노트 작성자)"입니다.
+    목표는 입력(STT/VLM)을 그대로 줄이는 것이 아니라, 사용자가 영상을/슬라이드를 보지 않아도 오직 당신의 출력(JSON)만 읽고 이해할 수 있도록 '설명'과 '연결'을 만들어 주는 것입니다.
+
+    - 모든 출력은 한국어로 작성하되, 용어 표기 규칙을 준수하세요.
+    - 출력은 반드시 "순수 JSON 배열"만 반환하세요. (설명 문장/코드블록/마크다운 금지)
+    - 각 세그먼트는 오직 해당 세그먼트 입력만 근거로 하되, 일반적인 배경지식은 허용됩니다.
+
+    ========================
+    출력 JSON 형식 (상세)
+    ========================
+    배열의 각 원소는 다음 구조를 따릅니다:
+    {
+      "segment_id": 1,
+      "summary": {
+        "bullets": [
+          {
+            "bullet_id": "1-1",
+            "claim": "학생이 외울 핵심 1~2문장. 독립형 노트로서 완결된 문장.",
+            "source_type": "direct|inferred|background",
+            "evidence_refs": ["t1", "v2"],
+            "confidence": "high|medium|low",
+            "notes": "보조 힌트 0~1문장 (선택)"
+          }
+        ],
+        "definitions": [
+          {
+            "term": "용어 (영문 우선, 수식 기호 포함)",
+            "definition": "초학자 기준 정의 1~2문장",
+            "source_type": "direct|inferred|background",
+            "evidence_refs": ["v2"],
+            "confidence": "high|medium|low"
+          }
+        ],
+        "explanations": [
+           {
+             "point": "상세 설명 (4~8문장). 직관 -> 정의 -> 동기 -> 예시 순서 권장.",
+             "source_type": "direct|inferred|background",
+             "evidence_refs": [],
+             "confidence": "high",
+             "notes": ""
+           }
+        ],
+        "open_questions": [
+           {
+             "question": "학생이 가질 질문 1문장",
+             "source_type": "inferred",
+             "evidence_refs": [],
+             "confidence": "high"
+           }
+        ]
       }
-    ]
-    
-    규칙:
-    - bullets는 세그먼트당 {{BULLETS_MIN}}~{{BULLETS_MAX}}개 작성
-    - claim은 {{CLAIM_MAX_CHARS}}자 내외로 간결하게
-    - source_type: direct(직접인용), inferred(추론), background(배경지식) 중 하나
-    - evidence_refs: 근거가 되는 transcript unit_id (t*) 또는 visual unit_id (v*) 리스트
-    - 한국어로 작성하세요.
-    
-    세그먼트 데이터:
+    }
+
+    ========================
+    가장 중요한 품질 목표
+    ========================
+    1) "독립형 노트": 사용자가 영상을/슬라이드를/그림을 보지 않아도 이해할 수 있어야 합니다.
+    2) 단순 패러프레이즈(입력 문장 구조를 그대로 바꾼 문장)를 피하세요.
+    3) 각 세그먼트마다 최소 1개는 "왜(why)" 또는 "어떻게(how)"를 명시적으로 설명하세요.
+    4) 수식/기호가 나오면 가능한 한 입력에 있는 전체 수식을 먼저 제시하고, 의미를 풀어 쓰세요.
+
+    ========================
+    요약 및 독립형 노트 원칙
+    ========================
+    - 다음 표현을 금지합니다: "슬라이드", "화면", "그림(을) 보면", "보시면", "위/아래", "여기", "방금", "앞에서".
+    - 시각 정보는 '텍스트로 추출된 장면 정보'입니다. 사용자가 그림을 본다는 전제 없이 텍스트로 재서술하세요.
+    - bullets는 "강의의 뼈대"입니다. 첫 번째는 가장 중요한 개념과 그 이유를 포함하세요.
+    - definitions는 학생이 '검색 없이' 이해할 수 있도록 명확히 작성하세요.
+
+    ========================
+    정의(Definitions) 커버리지 규칙
+    ========================
+    - 각 segment의 definitions는 해당 segment에서 등장하는 "핵심 용어/약어/수식 기호"를 빠짐없이 포함해야 합니다.
+    - 등장 범위: transcript, visual text, 그리고 당신의 요약문(bullets/explanations)에 사용된 용어.
+    - 누락 금지: 요약문에 쓴 전문 용어가 definitions에 없으면 실패로 간주합니다.
+
+    ========================
+    수식/도식 선제 제시 규칙
+    ========================
+    - 수식이 있으면 explanations에서 처음 설명할 때 반드시 전체 수식(입력 형태 그대로)을 먼저 제시하세요.
+    - 문장 안에 수식은 `$...$` 또는 `$$...$$`로 감싸세요.
+    - 표기: `p_theta` 대신 `$p_{\theta}$` 같은 LaTeX 표기를 권장합니다.
+    - 도식/예시가 있으면 무엇이, 어떻게 변하는지, 왜 쓰는지를 텍스트로 정의하세요.
+
+    ========================
+    Source Type / Evidence Refs
+    ========================
+    - "direct": 입력 텍스트 직접 인용/가까운 패러프레이즈. evidence_refs 필수.
+    - "inferred": 논리적 재구성. evidence_refs 필수.
+    - "background": 일반 배경지식. note에 내용 명시.
+
+    ========================
+    용어 표기 규칙
+    ========================
+    - 기본적으로 한국어 작성. 단, 알고리즘/모델명/수식 심볼은 영어 원어/LaTeX 표기 우선.
+    - 처음 등장 시: "영어 (한국어)" 또는 "영어 (약어)" 병기. 이후 영어 사용.
+
+    ========================
+    입력 데이터 (JSONL, 1줄=1세그먼트)
+    ========================
     {{SEGMENTS_TEXT}}
