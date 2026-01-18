@@ -5,4 +5,4 @@ batch_size: 4             # LLM 배치 크기
 workers: 2                # 병렬 요청 수
 json_repair_attempts: 1   # JSON 복구 재시도 횟수
 verbose: true             # 배치 로그 출력 여부
-prompt_version: "v2"      # 프롬프트 버전 override(null=기본)
+prompt_version: "v2"      # 프롬프트 버전 override(v2=Modular Standard)

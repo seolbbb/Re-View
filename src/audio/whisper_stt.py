@@ -60,16 +60,19 @@ class WhisperSTTClient:
         )
 
         segments_out: List[Dict[str, Any]] = []
+        segment_index = 0
         for segment in result.get("segments", []):
             if not isinstance(segment, dict):
                 continue
             text = str(segment.get("text", "")).strip()
             if not text:
                 continue
+            segment_index += 1
             item: Dict[str, Any] = {
                 "start_ms": int(round(float(segment.get("start", 0.0)) * 1000)),
                 "end_ms": int(round(float(segment.get("end", 0.0)) * 1000)),
                 "text": text,
+                "id": f"stt_{segment_index:03d}",
             }
             if include_confidence:
                 confidence = _segment_confidence(segment)

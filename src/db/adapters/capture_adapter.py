@@ -27,7 +27,7 @@ class CaptureAdapterMixin:
         
         Args:
             video_id: 연관된 비디오 ID (FK)
-            captures: 저장할 캡처 정보 리스트 (manifest.json 형식)
+            captures: 저장할 캡처 정보 리스트 (capture.json 형식)
                 - file_name: 파일명
                 - start_ms, end_ms: 타임스탬프
                 - storage_path: (선택) 스토리지 경로
@@ -58,7 +58,7 @@ class CaptureAdapterMixin:
         video_id: str,
         manifest_json_path: Path,
     ) -> List[Dict[str, Any]]:
-        """로컬 manifest.json 파일을 읽어 캡처 정보를 DB에 저장합니다.
+        """로컬 capture.json 파일을 읽어 캡처 정보를 DB에 저장합니다.
         
         이 메서드는 이미지가 이미 업로드되어 있거나, 메타데이터만 저장할 때 유용합니다.
         """
@@ -189,7 +189,7 @@ class CaptureAdapterMixin:
         """캡처 이미지 업로드와 DB 메타데이터 저장을 통합 수행하는 편의 메서드입니다.
         
         Process:
-        1. manifest.json 파싱
+        1. capture.json 파싱
         2. 각 항목별 실제 이미지 파일 확인 및 업로드
         3. 업로드된 경로(storage_path)를 포함하여 DB에 메타데이터 저장
         
@@ -209,7 +209,7 @@ class CaptureAdapterMixin:
             "errors": []
         }
         
-        # 1. manifest.json 로드
+        # 1. capture.json 로드
         with open(manifest_json_path, "r", encoding="utf-8") as f:
             captures = json.load(f)
         

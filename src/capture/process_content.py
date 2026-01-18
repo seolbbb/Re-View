@@ -1,5 +1,5 @@
 """
-캡쳐 단계에서 비디오 1건을 처리해 슬라이드 캡쳐와 manifest.json을 만든다.
+캡쳐 단계에서 비디오 1건을 처리해 슬라이드 캡쳐와 capture.json을 만든다.
 run_video_pipeline에서 호출되며 설정은 config/capture/settings.yaml에서 로드한다.
 """
 
@@ -57,7 +57,11 @@ def process_single_video_capture(
     slides = extractor.process(video_name=video_name)
     elapsed = time.time() - start_time
 
-    manifest_path = output_root / "manifest.json"
+    # Assign IDs
+    for idx, slide in enumerate(slides, 1):
+        slide["id"] = f"cap_{idx:03d}"
+
+    manifest_path = output_root / "capture.json"
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(slides, handle, ensure_ascii=False, indent=2)
 

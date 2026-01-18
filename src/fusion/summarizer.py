@@ -128,16 +128,66 @@ def load_prompt_template(
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Invalid summary prompt config format (must be a map).")
+    display_version = version_id
+    if version_id == "latest":
+        # Find the latest key starting with sum_v
+        keys = [k for k in payload.keys() if k.startswith("sum_v")]
+        if keys:
+            version_id = sorted(keys)[-1]
+            display_version = f"latest -> {version_id}"
+    
     prompt_block = payload.get(version_id)
     if not isinstance(prompt_block, dict):
         available = ", ".join(sorted(payload.keys()))
         raise ValueError(
-            f"Prompt version not found: {version_id} (available: {available})"
+            f"Prompt version not found: {display_version} (available: {available})"
         )
-    template = prompt_block.get("template")
-    if not isinstance(template, str) or not template.strip():
-        raise ValueError(f"Prompt template is empty: {version_id}")
-    return template.strip()
+
+    # 1. Legacy Monolithic Template
+    if "template" in prompt_block:
+        template = prompt_block["template"]
+        if isinstance(template, str) and template.strip():
+            return template.strip()
+
+    # 2. Modular Components Assembly
+    components = []
+    
+    # [SYSTEM]
+    if "system" in prompt_block:
+        components.append(f"[SYSTEM]\n{prompt_block['system'].strip()}")
+
+    # [OUTPUT FORMAT]
+    if "output_format" in prompt_block:
+        components.append(f"[OUTPUT FORMAT]\n{prompt_block['output_format'].strip()}")
+
+    # [QUALITY RULES] (List or String)
+    rules = prompt_block.get("quality_rules")
+    if rules:
+        if isinstance(rules, list):
+            rules_text = "\n".join(f"{idx}. {rule}" for idx, rule in enumerate(rules, 1))
+            components.append(f"[QUALITY RULES]\n{rules_text}")
+        elif isinstance(rules, str):
+            components.append(f"[QUALITY RULES]\n{rules.strip()}")
+
+    # [ONE-SHOT EXAMPLE]
+    if "one_shot" in prompt_block:
+        components.append(f"[ONE-SHOT EXAMPLE]\n{prompt_block['one_shot'].strip()}")
+
+    # [INPUT] (Default input format if not specified)
+    if "input_format" in prompt_block:
+        components.append(f"[INPUT]\n{prompt_block['input_format'].strip()}")
+    else:
+        # Fallback default input format block
+        components.append(
+            "[INPUT]\n"
+            "PREVIOUS_CONTEXT={context_section}\n"
+            "DATA={jsonl_text}"
+        )
+
+    if not components:
+        raise ValueError(f"Prompt output is empty (no template or components): {version_id}")
+
+    return "\n\n".join(components)
 
 
 def _render_prompt_template(template: str, replacements: Dict[str, str]) -> str:
@@ -253,7 +303,7 @@ def _normalize_evidence_refs(evidence_refs: Any) -> List[str]:
     normalized: List[str] = []
     seen = set()
     for item in candidates:
-        if not (item.startswith("t") or item.startswith("v")):
+        if not (item.startswith("t") or item.startswith("v") or item.startswith("s")):
             continue
         if item in seen:
             continue
@@ -579,13 +629,16 @@ def run_summarizer(
                         "run_id": segment.get("run_id"),
                         "segment_id": segment.get("segment_id"),
                         "start_ms": segment.get("start_ms"),
+                        "start_ms": segment.get("start_ms"),
                         "end_ms": segment.get("end_ms"),
+                        "source_refs": segment.get("source_refs"),
                         "summary": summary,
                         "version": {
                             "prompt_version": prompt_version,
                             "llm_model_id": config.raw.llm_gemini.model,
                             "temperature": config.raw.summarizer.temperature,
                             "backend": config.raw.llm_gemini.backend,
+                            "schema_version": 1,
                         },
                     }
                     output_handle.write(
@@ -743,12 +796,14 @@ def run_batch_summarizer(
                         "segment_id": segment.get("segment_id"),
                         "start_ms": segment.get("start_ms"),
                         "end_ms": segment.get("end_ms"),
+                        "source_refs": segment.get("source_refs"),
                         "summary": summary,
                         "version": {
                             "prompt_version": prompt_version,
                             "llm_model_id": config.raw.llm_gemini.model,
                             "temperature": config.raw.summarizer.temperature,
                             "backend": config.raw.llm_gemini.backend,
+                            "schema_version": 1,
                         },
                     }
                     output_handle.write(
