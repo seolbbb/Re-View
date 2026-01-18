@@ -85,7 +85,7 @@ def run_processing_pipeline(
 
     stt_json = video_root / "stt.json" if video_root else None
     captures_dir = video_root / "captures" if video_root else None
-    manifest_json = video_root / "manifest.json" if video_root else None
+    manifest_json = video_root / "capture.json" if video_root else None
 
     local_ready = (
         stt_json
@@ -143,7 +143,7 @@ def run_processing_pipeline(
         video_root = output_base_path / safe_video_name
         stt_json = video_root / "stt.json"
         captures_dir = video_root / "captures"
-        manifest_json = video_root / "manifest.json"
+        manifest_json = video_root / "capture.json"
         video_root.mkdir(parents=True, exist_ok=True)
 
         latest_run_id = None

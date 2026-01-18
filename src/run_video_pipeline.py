@@ -44,6 +44,7 @@ from src.pipeline.stages import (
     run_stt,
     run_vlm_openrouter,
 )
+from src.dev.utils import ExperimentLogger
 
 
 def _sanitize_video_name(stem: str) -> str:
@@ -159,7 +160,7 @@ def run_pipeline(
         # 각 단계별 결과물이 저장될 경로 정의
         stt_json = video_root / "stt.json"
         captures_dir = video_root / "captures"
-        manifest_json = video_root / "manifest.json"
+        manifest_json = video_root / "capture.json"
 
         print(f"\n🚀 Starting pipeline (parallel={parallel})...")
         print("-" * 50)
@@ -180,7 +181,7 @@ def run_pipeline(
 
                 def run_capture_timed():
                     """Capture 단계를 타이밍 포함으로 실행한다."""
-                    # Capture: 주요 장면을 이미지로 추출 (captures 폴더 및 manifest.json 생성)
+                    # Capture: 주요 장면을 이미지로 추출 (captures 폴더 및 capture.json 생성)
                     start = time.perf_counter()
                     result = run_capture(
                         video_path,
@@ -326,6 +327,55 @@ def run_pipeline(
         print("\n✅ Pipeline completed successfully!")
         print(f"   Outputs: {video_root}")
         print(f"   Benchmark: {report_path}")
+
+        # Log to experiment_summary.csv
+        try:
+            logger = ExperimentLogger()
+            token_usage_path = video_root / "fusion" / "token_usage.json"
+            judge_json_path = video_root / "fusion" / "judge.json"
+            token_data = {}
+            judge_data = {}
+            
+            if token_usage_path.exists():
+                with token_usage_path.open("r", encoding="utf-8") as f:
+                    token_data = json.load(f)
+            
+            if judge_json_path.exists():
+                with judge_json_path.open("r", encoding="utf-8") as f:
+                    judge_data = json.load(f)
+            
+            # Extract scores from judge.json
+            scores = {"final": judge_data.get("final_score", 0)}
+            timings = fusion_info.get("timings", {})
+            
+            # token_usage stores arrays, get last entry
+            summarizer_tokens = token_data.get("summarizer", [])
+            judge_tokens = token_data.get("judge", [])
+            last_summarizer = summarizer_tokens[-1] if summarizer_tokens else {}
+            last_judge = judge_tokens[-1] if judge_tokens else {}
+            
+            logger.log(
+                prompt_version=judge_data.get("prompt_version", "v2"),
+                scores=scores,
+                input_tokens=last_summarizer.get("input_tokens", 0),
+                elapsed_sec=timer.get_total_elapsed(),  # Total pipeline time
+                note=f"Full pipeline run: {video_path.name}",
+                model=judge_data.get("model", ""),
+                temperature=0.2,
+                segments_count=segment_count,
+                workers=2,
+                command=f"run_video_pipeline --video {video_path}",
+                component="run_video_pipeline",
+                # Module timings
+                stt_sec=stt_elapsed,
+                capture_sec=capture_elapsed,
+                vlm_sec=vlm_elapsed,
+                summarizer_sec=timings.get("llm_summarizer_sec", 0),
+                judge_elapsed_sec=timings.get("judge_sec", 0),
+            )
+            print("📊 Logged to experiment_summary.csv")
+        except Exception as e:
+            print(f"⚠️ Failed to log experiment: {e}")
 
         print("\n📤 Syncing results to Supabase...")
         # 최종 결과를 데이터베이스에 업로드
