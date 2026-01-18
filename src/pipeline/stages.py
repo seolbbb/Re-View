@@ -160,7 +160,7 @@ def run_vlm_openrouter(
 
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     if not isinstance(manifest_payload, list):
-        raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
+        raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
 
     image_paths: List[str] = []
     for item in sorted(
@@ -173,7 +173,7 @@ def run_vlm_openrouter(
         image_paths.append(str(captures_dir / file_name))
 
     if not image_paths:
-        raise ValueError("VLM 입력 이미지가 없습니다(manifest.json을 확인하세요).")
+        raise ValueError("VLM 입력 이미지가 없습니다(capture.json을 확인하세요).")
 
     results = extractor.extract_features(
         image_paths,
@@ -235,7 +235,7 @@ def run_vlm_for_batch(
 
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     if not isinstance(manifest_payload, list):
-        raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
+        raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
 
     if batch_manifest is not None:
         filtered_manifest_items = batch_manifest
@@ -393,6 +393,10 @@ def run_fusion_pipeline(
     fusion_info["timings"]["llm_summarizer_sec"] = summarizer_elapsed_total
     fusion_info["timings"]["judge_sec"] = judge_elapsed_total
 
+    groups_cfg = getattr(config.raw.render, "groups", None)
+    group_order = groups_cfg.order if groups_cfg else None
+    group_headers = groups_cfg.headers if groups_cfg else None
+
     _, render_elapsed = timer.time_stage(
         "fusion.renderer",
         render_segment_summaries_md,
@@ -402,6 +406,8 @@ def run_fusion_pipeline(
         sources_jsonl=output_dir / "segments_units.jsonl",
         md_wrap_width=config.raw.render.md_wrap_width,
         limit=limit,
+        group_order=group_order,
+        group_headers=group_headers,
     )
     fusion_info["timings"]["renderer_sec"] = render_elapsed
 
@@ -674,6 +680,10 @@ def run_batch_fusion_pipeline(
 
     if accumulated_summaries_path.exists():
         config = load_config(str(fusion_config_path))
+        groups_cfg = getattr(config.raw.render, "groups", None)
+        group_order = groups_cfg.order if groups_cfg else None
+        group_headers = groups_cfg.headers if groups_cfg else None
+
         _, render_elapsed = timer.time_stage(
             "fusion.renderer",
             render_segment_summaries_md,
@@ -685,6 +695,8 @@ def run_batch_fusion_pipeline(
             else None,
             md_wrap_width=config.raw.render.md_wrap_width,
             limit=limit,
+            group_order=group_order,
+            group_headers=group_headers,
         )
         fusion_info["timings"]["renderer_sec"] = render_elapsed
 

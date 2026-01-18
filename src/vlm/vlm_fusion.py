@@ -15,13 +15,13 @@ def build_fusion_vlm_payload(
     """manifest와 vlm_raw를 join해 fusion 입력 구조를 만든다.
 
     동작 방식:
-    1. manifest.json에서 (timestamp_ms, file_name) 쌍을 추출해 시간순 정렬.
+    1. capture.json에서 (timestamp_ms, file_name) 쌍을 추출해 시간순 정렬.
     2. vlm_raw.json에서 file_name(이미지 파일명)을 키로 하여 추출 텍스트를 매핑.
     3. manifest의 file_name으로 vlm_raw의 텍스트를 찾아 타임스탬프와 결합.
     4. 매칭되지 않는 이미지가 있으면 에러 발생.
 
     Args:
-        manifest_payload: manifest.json 로드 결과 (List[Dict])
+        manifest_payload: capture.json 로드 결과 (List[Dict])
         vlm_raw_payload: vlm_raw.json 로드 결과 (List[Dict])
 
     Returns:
@@ -40,7 +40,7 @@ def build_fusion_vlm_payload(
     """
     # 1. Manifest 검증 및 엔트리 추출
     if not isinstance(manifest_payload, list):
-        raise ValueError("Invalid manifest.json format (must be a list).")
+        raise ValueError("Invalid capture.json format (must be a list).")
 
     manifest_entries: List[Dict[str, Any]] = []
     for item in manifest_payload:
@@ -61,7 +61,7 @@ def build_fusion_vlm_payload(
         manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name})
 
     if not manifest_entries:
-        raise ValueError("No valid entries found in manifest.json.")
+        raise ValueError("No valid entries found in capture.json.")
     
     # 타임스탬프 기준 오름차순 정렬 (Fusion은 시간 순서 처리가 필수)
     manifest_entries.sort(key=lambda x: (int(x["timestamp_ms"]), str(x["file_name"])))
@@ -100,6 +100,7 @@ def build_fusion_vlm_payload(
     # 3. Join (Manifest + VLM Raw)
     missing: List[str] = []
     items: List[Dict[str, Any]] = []
+    vlm_index = 0
     
     for entry in manifest_entries:
         ts = int(entry["timestamp_ms"])
@@ -109,13 +110,18 @@ def build_fusion_vlm_payload(
         if file_name not in image_text:
             missing.append(file_name)
             continue
-            
-        items.append({"timestamp_ms": ts, "extracted_text": image_text[file_name]})
+        
+        vlm_index += 1
+        items.append({
+            "timestamp_ms": ts,
+            "extracted_text": image_text[file_name],
+            "id": f"vlm_{vlm_index:03d}",
+        })
 
     if missing:
         preview = ", ".join(missing[:10])
         raise ValueError(
-            f"Failed to join manifest.json and vlm_raw.json: {len(missing)} images are missing. Example: {preview}"
+            f"Failed to join capture.json and vlm_raw.json: {len(missing)} images are missing. Example: {preview}"
         )
         
     return {"items": items}
