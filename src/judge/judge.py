@@ -81,19 +81,52 @@ def _load_prompt_template(prompt_version: Optional[str]) -> Tuple[str, str]:
     if not isinstance(payload, dict) or not payload:
         raise ValueError("Judge prompt config must be a mapping.")
     selected_version = prompt_version or next(iter(payload.keys()))
+    display_version = selected_version
     entry = payload.get(selected_version)
     if entry is None:
-        available = ", ".join(payload.keys())
+        available = ", ".join(sorted(payload.keys()))
         raise ValueError(
-            f"Judge prompt template is missing: {selected_version} (available: {available})"
+            f"Judge prompt is missing: {display_version} (available: {available})"
         )
-    if isinstance(entry, dict):
-        template = entry.get("template")
-    else:
-        template = entry
-    if not isinstance(template, str) or not template.strip():
-        raise ValueError(f"Judge prompt template is empty: {selected_version}")
-    return selected_version, template.strip()
+    
+    # 1. Legacy Monolithic Template
+    if isinstance(entry, dict) and "template" in entry:
+        template = entry["template"]
+        if isinstance(template, str) and template.strip():
+            return selected_version, template.strip()
+    elif isinstance(entry, str):
+         return selected_version, entry.strip()
+
+    # 2. Modular Components Assembly
+    if not isinstance(entry, dict):
+        raise ValueError(f"Invalid prompt config format for {selected_version}")
+
+    components = []
+    
+    # [SYSTEM] / IDENTITY
+    if "system" in entry:
+        components.append(entry["system"].strip())
+    
+    # [CRITERIA] / OPERATIONAL FRAMEWORK
+    if "criteria" in entry:
+        components.append(entry["criteria"].strip())
+
+    # [PROTOCOL]
+    if "protocol" in entry:
+        components.append(entry["protocol"].strip())
+
+    # [INPUT]
+    if "input_format" in entry:
+        components.append(entry["input_format"].strip())
+
+    # [OUTPUT]
+    if "output_format" in entry:
+        components.append(entry["output_format"].strip())
+
+    if not components:
+        raise ValueError(f"Judge prompt is empty (no template or components): {selected_version}")
+    
+    return selected_version, "\n\n".join(components)
 
 
 def _evaluate_batch(
