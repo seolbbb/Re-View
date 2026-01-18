@@ -113,12 +113,17 @@ def run_processing_pipeline(
         sync_to_db = db_settings.get("sync_to_db_process", db_settings.get("sync_to_db"))
         if sync_to_db is None:
             sync_to_db = False
+    include_preprocess_in_process_sync = db_settings.get(
+        "include_preprocess_in_process_sync", False
+    )
     if not isinstance(use_db, bool):
         use_db = True
     if not isinstance(force_db, bool):
         force_db = False
     if not isinstance(sync_to_db, bool):
         sync_to_db = False
+    if not isinstance(include_preprocess_in_process_sync, bool):
+        include_preprocess_in_process_sync = False
 
     # 출력 경로와 안전한 영상 이름을 계산한다.
     output_base_path = (ROOT / Path(output_base)).resolve()
@@ -464,6 +469,7 @@ def run_processing_pipeline(
                 run_meta=run_meta,
                 duration_sec=db_duration,
                 provider="clova",
+                include_preprocess=include_preprocess_in_process_sync,
             )
             if db_success:
                 print("Database sync completed.")

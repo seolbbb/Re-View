@@ -7,10 +7,11 @@ batch_size: 4                  # 캡처 배치 크기(VLM/Sync/Summarize/Judge�
 
 video:
   preprocess_path: ""          # 전처리 입력 비디오 경로 (비워두면 CLI --video 사용)
-  process_name: ""          # 후처리 video_name (비워두면 CLI --video-name 사용)
+  process_name: "diffusion"          # 후처리 video_name (비워두면 CLI --video-name 사용)
 
 db:
   use_db: true                 # 로컬 산출물이 없을 때 DB 사용 여부
   force_db: false              # 로컬이 있어도 DB에서 강제 로드
   sync_to_db_preprocess: true  # 전처리 결과 DB 업로드
   sync_to_db_process: true     # 처리 결과 DB 업로드
+  include_preprocess_in_process_sync: false  # 처리 업로드 시 STT/캡처까지 포함할지 여부

@@ -22,7 +22,8 @@ def sync_pipeline_results_to_db(
     run_meta: Dict[str, Any],
     duration_sec: Optional[int] = None,
     provider: str = "clova",
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    include_preprocess: bool = True,
 ) -> bool:
     """
     파이프라인 실행 완료 후 생성된 결과물을 Supabase DB와 동기화합니다.
@@ -37,6 +38,7 @@ def sync_pipeline_results_to_db(
         duration_sec: 비디오 재생 시간 (초)
         provider: 사용된 STT 모델 제공자 (예: 'clova', 'openai')
         user_id: 비디오 소유자 ID (Optional, 멀티 유저 환경용)
+        include_preprocess: 캡처/음성 결과까지 업로드할지 여부
         
     Returns:
         bool: 동기화 성공 여부 (True: 성공, False: 실패)
@@ -96,7 +98,8 @@ def sync_pipeline_results_to_db(
             video_id=video_id,
             video_root=video_root,
             provider=provider,
-            pipeline_run_id=pipeline_run_id
+            pipeline_run_id=pipeline_run_id,
+            include_preprocess=include_preprocess,
         )
             
         # 4. 결과 요약 및 로그 출력

@@ -36,6 +36,7 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
         video_root: Path,
         provider: str = "clova",
         pipeline_run_id: Optional[str] = None,
+        include_preprocess: bool = True,
     ) -> Dict[str, Any]:
         """파이프라인 실행 완료 후 생성된 모든 결과물(JSON/JSONL)을 DB에 저장합니다.
         
@@ -54,6 +55,7 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
             video_root: 분석 결과 파일들이 위치한 디렉터리 경로 (예: ./captures/video_name)
             provider: STT 엔진 이름 (기본값: clova)
             pipeline_run_id: 파이프라인 실행 이력 ID (선택)
+            include_preprocess: 캡처/음성 결과까지 업로드할지 여부
             
         Returns:
             Dict: 저장된 레코드 수 및 발생한 에러 목록을 포함하는 요약 리포트
@@ -70,26 +72,28 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
         }
         
         # 1. Captures (manifest.json) - 화면 캡처 정보 및 이미지 업로드
-        manifest_path = video_root / "manifest.json"
-        if manifest_path.exists():
-            try:
-                captures_dir = video_root / "captures"
-                # 이미지 업로드와 메타데이터 저장을 동시에 수행
-                captures_result = self.save_captures_with_upload(video_id, manifest_path, captures_dir, pipeline_run_id=pipeline_run_id)
-                results["saved"]["captures"] = captures_result["db_saved"]
-                if captures_result["errors"]:
-                     results["errors"].extend(captures_result["errors"])
-            except Exception as e:
-                results["errors"].append(f"captures: {str(e)}")
+        if include_preprocess:
+            manifest_path = video_root / "manifest.json"
+            if manifest_path.exists():
+                try:
+                    captures_dir = video_root / "captures"
+                    # 이미지 업로드와 메타데이터 저장을 동시에 수행
+                    captures_result = self.save_captures_with_upload(video_id, manifest_path, captures_dir, pipeline_run_id=pipeline_run_id)
+                    results["saved"]["captures"] = captures_result["db_saved"]
+                    if captures_result["errors"]:
+                         results["errors"].extend(captures_result["errors"])
+                except Exception as e:
+                    results["errors"].append(f"captures: {str(e)}")
         
         # 2. STT Results (stt.json) - 음성 인식 결과
-        stt_path = video_root / "stt.json"
-        if stt_path.exists():
-            try:
-                stt = self.save_stt_from_file(video_id, stt_path, provider, pipeline_run_id)
-                results["saved"]["stt_results"] = len(stt) if stt else 0
-            except Exception as e:
-                results["errors"].append(f"stt_results: {str(e)}")
+        if include_preprocess:
+            stt_path = video_root / "stt.json"
+            if stt_path.exists():
+                try:
+                    stt = self.save_stt_from_file(video_id, stt_path, provider, pipeline_run_id)
+                    results["saved"]["stt_results"] = len(stt) if stt else 0
+                except Exception as e:
+                    results["errors"].append(f"stt_results: {str(e)}")
         
         # 3. Segments (fusion/segments_units.jsonl) - 시각/음성 통합 세그먼트
         # Summaries 저장 시 FK 연결을 위해 로컬 인덱스와 DB UUID 매핑이 필요함
