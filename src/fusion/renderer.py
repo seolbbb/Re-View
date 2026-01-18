@@ -70,162 +70,209 @@ def render_segment_summaries_md(
     sources_jsonl: Optional[Path] = None,
     md_wrap_width: int = 0,
     limit: Optional[int] = None,
+    group_order: Optional[List[str]] = None,
+    group_headers: Optional[Dict[str, str]] = None,
 ) -> None:
-    """세그먼트 요약 JSONL을 읽어 상세 마크다운 리포트를 생성한다."""
+    """세그먼트 요약 JSONL을 읽어 상세 마크다운 리포트를 생성한다. (Standardized V2 Format)"""
     sources_map = _load_sources_map(sources_jsonl) if include_sources else {}
     output_md.parent.mkdir(parents=True, exist_ok=True)
 
-    processed = 0
-    with output_md.open("w", encoding="utf-8") as handle:
-        for row in read_jsonl(summaries_jsonl):
-            if limit is not None and processed >= limit:
-                break
-            processed += 1
+    # Defaults
+    if group_order is None:
+        group_order = ["direct", "background", "inferred"]
+    
+    if group_headers is None:
+        group_headers = {
+            "direct": "핵심 내용 (Direct / Recall)",
+            "inferred": "심화/추론 (Inferred / Logic)",
+            "background": "배경 지식 (Background)"
+        }
 
+    # Read all lines first to count total
+    rows = list(read_jsonl(summaries_jsonl))
+    if limit is not None:
+        rows = rows[:limit]
+
+    with output_md.open("w", encoding="utf-8") as handle:
+        # Header
+        handle.write(f"# Segment Summaries Report\n\n")
+        handle.write(f"| Property | Value |\n")
+        handle.write(f"|:---|:---|\n")
+        handle.write(f"| Source File | `{summaries_jsonl.name}` |\n")
+        handle.write(f"| Total Segments | {len(rows)} |\n\n")
+
+        processed = 0
+        for row in rows:
+            processed += 1
             segment_id = int(row.get("segment_id"))
-            start_ms = int(row.get("start_ms"))
-            end_ms = int(row.get("end_ms"))
+            start_ms = int(row.get("start_ms", 0))
+            end_ms = int(row.get("end_ms", 0))
             summary = row.get("summary", {}) or {}
 
+            # Time formatting
+            start_sec = start_ms // 1000
+            end_sec = end_ms // 1000
+            start_str = f"{start_sec//60:02d}:{start_sec%60:02d}"
+            end_str = f"{end_sec//60:02d}:{end_sec%60:02d}"
+
             handle.write(
-                f"### Segment {segment_id} ({format_ms(start_ms)}–{format_ms(end_ms)})\n"
+                f"### Segment {segment_id} ({start_str}-{end_str})\n"
             )
-            handle.write("- 요약\n")
 
+            # Resolve Valid IDs for Evidence Validation
+            row_refs = row.get("source_refs", {})
+            valid_stt = set(row_refs.get("stt_ids", []))
+            valid_vlm = set(row_refs.get("vlm_ids", []))
+
+            # If not in row, check sources_map
+            if not valid_stt and not valid_vlm and segment_id in sources_map:
+                s_data = sources_map[segment_id]
+                t_units = s_data.get("transcript_units", [])
+                v_units = s_data.get("visual_units", [])
+                valid_stt = set(u.get("unit_id", "") for u in t_units if u.get("unit_id"))
+                valid_vlm = set(u.get("unit_id", "") for u in v_units if u.get("unit_id"))
+
+            def _validate_and_format(refs):
+                if not refs:
+                    return ""
+                
+                t_refs = []
+                v_refs = []
+                
+                for r in refs:
+                    r_str = str(r)
+                    if r_str in valid_stt:
+                        t_refs.append(r_str)
+                    elif r_str in valid_vlm:
+                        v_refs.append(r_str)
+                    else:
+                        # Heuristic fallback
+                        if r_str.startswith("t") or r_str.startswith("stt"):
+                            t_refs.append(r_str)
+                        elif r_str.startswith("v") or r_str.startswith("vlm"):
+                            v_refs.append(r_str)
+                
+                parts = []
+                t_refs_str = str(t_refs).replace("'", "")
+                v_refs_str = str(v_refs).replace("'", "")
+                parts.append(f"text_ids : {t_refs_str}")
+                parts.append(f"vlm_ids : {v_refs_str}")
+                return ", ".join(parts)
+
+            # Aggregation by Source Type
+            items_by_source: Dict[str, List[Dict[str, Any]]] = {}
+            for k in group_order:
+                items_by_source[k] = []
+            
+            # Default bucket for unknown types
+            items_by_source["unknown"] = []
+
+            def add_item(s_type, text, refs):
+                 # Normalize source type
+                s_type = str(s_type).lower().strip()
+                # Map known variations if needed, or just default
+                if s_type not in items_by_source:
+                    # Try to match case-insensitive or exact
+                    matched = False
+                    for key in items_by_source.keys():
+                        if key == s_type:
+                            items_by_source[key].append({
+                                "text": text,
+                                "refs": refs
+                            })
+                            matched = True
+                            break
+                    if not matched:
+                         # Fallback to first group if "direct" exists, or just append to unknown?
+                         # Let's map unknown to "direct" purely as a fallback if it exists, else 'unknown'
+                         if "direct" in items_by_source:
+                             items_by_source["direct"].append({"text": text, "refs": refs})
+                         else:
+                             items_by_source["unknown"].append({"text": text, "refs": refs})
+                else:
+                    items_by_source[s_type].append({
+                        "text": text,
+                        "refs": refs
+                    })
+
+            # 1. Bullets
             bullets = summary.get("bullets", []) or []
-            for bullet in bullets:
-                bullet_id = bullet.get("bullet_id", f"{segment_id}-?")
-                claim = str(bullet.get("claim", "")).strip()
-                source_type = str(bullet.get("source_type", "direct")).strip()
-                for line in _wrap_line(
-                    f"  - ({bullet_id}) [{source_type}] ", claim, md_wrap_width
-                ):
-                    handle.write(line + "\n")
-
-                t_refs_list, v_refs_list = _split_evidence_refs(
-                    bullet.get("evidence_refs")
-                )
-                t_refs = ",".join(t_refs_list)
-                v_refs = ",".join(v_refs_list)
-                handle.write(
-                    f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
-                )
-                handle.write(f"    - confidence: {bullet.get('confidence', '')}\n")
-                notes = str(bullet.get("notes", "")).strip()
+            for i, b in enumerate(bullets, 1):
+                claim = str(b.get("claim", "")).strip()
+                s_type = b.get("source_type", "direct")
+                notes = str(b.get("notes", "")).strip()
+                refs = b.get("evidence_refs", [])
+                
+                text = f"({segment_id}-{i}) {claim}"
                 if notes:
-                    handle.write(f"    - notes: {notes}\n")
+                    text += f"\n    - notes: {notes}"
+                add_item(s_type, text, refs)
 
+            # 2. Definitions
             definitions = summary.get("definitions", []) or []
-            if definitions:
-                handle.write("- 정의\n")
-                for item in definitions:
-                    term = str(item.get("term", "")).strip()
-                    definition = str(item.get("definition", "")).strip()
-                    source_type = str(item.get("source_type", "direct")).strip()
-                    for line in _wrap_line(
-                        "  - ", f"[{source_type}] {term}: {definition}", md_wrap_width
-                    ):
-                        handle.write(line + "\n")
-                    t_refs_list, v_refs_list = _split_evidence_refs(
-                        item.get("evidence_refs")
-                    )
-                    t_refs = ",".join(t_refs_list)
-                    v_refs = ",".join(v_refs_list)
-                    handle.write(
-                        f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
-                    )
-                    confidence = str(item.get("confidence", "")).strip()
-                    if confidence:
-                        handle.write(f"    - confidence: {confidence}\n")
-                    notes = str(item.get("notes", "")).strip()
-                    if notes:
-                        handle.write(f"    - notes: {notes}\n")
+            for d in definitions:
+                term = str(d.get("term", "")).strip()
+                defin = str(d.get("definition", "")).strip()
+                s_type = d.get("source_type", "background")
+                refs = d.get("evidence_refs", [])
+                
+                text = f"**{term}**: {defin}"
+                add_item(s_type, text, refs)
 
+            # 3. Explanations
             explanations = summary.get("explanations", []) or []
-            if explanations:
-                handle.write("- 해설\n")
-                for item in explanations:
-                    if isinstance(item, dict):
-                        point = str(item.get("point", "")).strip()
-                        source_type = str(item.get("source_type", "direct")).strip()
-                        evidence = item.get("evidence_refs")
-                        confidence = str(item.get("confidence", "")).strip()
-                        notes = str(item.get("notes", "")).strip()
-                    else:
-                        point = str(item).strip()
-                        source_type = "direct"
-                        evidence = None
-                        confidence = ""
-                        notes = ""
-                    if not point:
-                        continue
-                    for line in _wrap_line(
-                        "  - ", f"[{source_type}] {point}", md_wrap_width
-                    ):
-                        handle.write(line + "\n")
-                    t_refs_list, v_refs_list = _split_evidence_refs(evidence)
-                    t_refs = ",".join(t_refs_list)
-                    v_refs = ",".join(v_refs_list)
-                    handle.write(
-                        f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
-                    )
-                    if confidence:
-                        handle.write(f"    - confidence: {confidence}\n")
-                    if notes:
-                        handle.write(f"    - notes: {notes}\n")
-
+            for e in explanations:
+                # Handle both dict and string (though v2 prompt usually gives dict)
+                if isinstance(e, dict):
+                     point = str(e.get("point", "")).strip()
+                     s_type = e.get("source_type", "inferred")
+                     refs = e.get("evidence_refs", [])
+                else:
+                     point = str(e).strip()
+                     s_type = "inferred"
+                     refs = []
+                
+                add_item(s_type, point, refs)
+            
+            # 4. Open Questions (Optional - mostly inferred)
             questions = summary.get("open_questions", []) or []
-            if questions:
-                handle.write("- 확인 불가/열린 질문\n")
-                for question in questions:
-                    if isinstance(question, dict):
-                        text = str(question.get("question", "")).strip()
-                        source_type = str(question.get("source_type", "direct")).strip()
-                        evidence = question.get("evidence_refs")
-                        confidence = str(question.get("confidence", "")).strip()
-                        notes = str(question.get("notes", "")).strip()
-                    else:
-                        text = str(question).strip()
-                        source_type = "direct"
-                        evidence = None
-                        confidence = ""
-                        notes = ""
-                    if not text:
-                        continue
-                    for line in _wrap_line(
-                        "  - ", f"[{source_type}] {text}", md_wrap_width
-                    ):
-                        handle.write(line + "\n")
-                    t_refs_list, v_refs_list = _split_evidence_refs(evidence)
-                    t_refs = ",".join(t_refs_list)
-                    v_refs = ",".join(v_refs_list)
-                    handle.write(
-                        f"    - evidence: transcript=[{t_refs}], visual=[{v_refs}]\n"
-                    )
-                    if confidence:
-                        handle.write(f"    - confidence: {confidence}\n")
-                    if notes:
-                        handle.write(f"    - notes: {notes}\n")
+            for q in questions:
+                 if isinstance(q, dict):
+                     text = str(q.get("question", "")).strip()
+                     s_type = q.get("source_type", "inferred") 
+                     refs = q.get("evidence_refs", [])
+                 else:
+                     text = str(q).strip()
+                     s_type = "inferred"
+                     refs = []
+                 # Label as Question
+                 add_item(s_type, f"[Question] {text}", refs)
 
-            if include_sources:
-                sources = sources_map.get(segment_id, {})
-                t_units = sources.get("transcript_units", []) or []
-                v_units = sources.get("visual_units", []) or []
-                handle.write("- 근거 텍스트\n")
-                if t_units:
-                    transcript_parts = [
-                        f"[{u.get('unit_id')}] {u.get('text', '')}" for u in t_units
-                    ]
-                    handle.write(
-                        "  - Transcript Units: " + ", ".join(transcript_parts) + "\n"
-                    )
-                if v_units:
-                    visual_parts = [
-                        f"[{u.get('unit_id')}] {u.get('text', '')}" for u in v_units
-                    ]
-                    handle.write("  - Visual Units: " + ", ".join(visual_parts) + "\n")
+            # Render Groups
+            for key in group_order:
+                items = items_by_source.get(key, [])
+                if not items:
+                    continue
+                
+                header_title = group_headers.get(key, key.capitalize())
+                handle.write(f"- [{key}] {header_title}\n")
+                
+                for item in items:
+                    handle.write(f"  - {item['text']}\n")
+                    ev_str = _validate_and_format(item['refs'])
+                    if ev_str:
+                         handle.write(f"    - evidence: {ev_str}\n")
+            
+            # Explicitly handle unknown if not empty and not in order
+            if items_by_source.get("unknown"):
+                 handle.write(f"- [Other] Additional Items\n")
+                 for item in items_by_source["unknown"]:
+                     handle.write(f"  - {item['text']}\n")
+                     ev = _validate_and_format(item['refs'])
+                     if ev: handle.write(f"    - evidence: {ev}\n")
 
             handle.write("\n")
+
 
 
 def _truncate_lines(lines: List[str], max_chars: int) -> str:
