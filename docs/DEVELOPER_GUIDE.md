@@ -44,14 +44,14 @@
       └─────────────────────────────────────────────────┘
                     │
                     ▼
-          [final_summary_*.md]
+          [results/final_summary_*.md]
 ```
 
 ### 1.2 핵심 컴포넌트
 
 | 컴포넌트      | 역할                                                | 주요 파일                                               |
 | ------------- | --------------------------------------------------- | ------------------------------------------------------- |
-| **Pre-ADK**   | 오디오 추출, STT, 슬라이드 캡처 (병렬 실행)         | `src/pre_adk_pipeline.py`, `src/capture/`               |
+| **Preprocess** | 오디오 추출, STT, 슬라이드 캡처 (병렬 실행)        | `src/run_preprocess_pipeline.py`, `src/capture/`        |
 | **ADK Agent** | 파이프라인 오케스트레이션, 에러 핸들링, 재실행 로직 | `src/adk_pipeline/agent.py`                             |
 | **Fusion**    | STT/VLM 시간 동기화, 마크다운 요약 생성             | `src/fusion/sync_engine.py`, `src/fusion/summarizer.py` |
 | **Judge**     | 요약 품질(환각, 누락) 평가 및 피드백                | `src/judge/judge.py`                                    |
@@ -69,17 +69,26 @@ Re:View/
 │           ├── stt.json            # STT 결과 (Whisper/Clova)
 │           ├── manifest.json       # 캡처 메타데이터
 │           ├── captures/           # 캡처 이미지 파일
-│           ├── vlm.json            # VLM 분석 결과
+│           ├── vlm.json            # VLM 분석 결과 (배치 OFF만 생성)
 │           ├── config.yaml         # 파이프라인 설정
-│           └── fusion/
-│               ├── segments_units.jsonl      # 동기화된 단위 데이터
-│               ├── segment_summaries.jsonl   # 생성된 구간 요약
-│               ├── judge.json                # 품질 평가 결과
-│               └── outputs/
-│                   └── final_summary_*.md    # 최종 결과물
+│           ├── results/            # 최종 요약 출력
+│           │   └── final_summary_*.md
+│           ├── fusion/
+│           │   ├── segments_units.jsonl      # 동기화된 단위 데이터 (배치 OFF만 생성)
+│           │   ├── segment_summaries.jsonl   # 생성된 구간 요약
+│           │   ├── segment_summaries.md
+│           │   ├── judge.json                # 품질 평가 결과 (배치 OFF)
+│           │   └── judge_segment_reports.jsonl
+│           └── batches/            # 배치 모드 결과
+│               └── batch_N/
+│                   ├── vlm.json
+│                   ├── segments_units.jsonl
+│                   ├── segment_summaries.jsonl
+│                   ├── judge.json
+│                   └── judge_segment_reports.jsonl
 ├── src/
 │   ├── run_video_pipeline.py       # End-to-End CLI (벤치마크 용)
-│   ├── pre_adk_pipeline.py         # Pre-ADK CLI (STT+Capture)
+│   ├── run_preprocess_pipeline.py  # Preprocess CLI (STT+Capture)
 │   │
 │   ├── adk_pipeline/               # Google ADK 기반 에이전트
 │   │   ├── agent.py                # Agent 정의 (Root, Preprocessing, Summarize, Judge)
@@ -111,7 +120,7 @@ Re:View/
 
 ## 3. 상세 파이프라인 흐름
 
-### 3.1 1단계: Pre-ADK (데이터 확보)
+### 3.1 1단계: Preprocess (데이터 확보)
 
 - **입력**: MP4 비디오 파일
 - **오디오 추출**: ffmpeg를 사용하여 16kHz mono WAV 변환
@@ -186,17 +195,17 @@ ADK의 `ToolContext`를 통해 세션 상태를 공유합니다.
 - `vlm_show_progress`
 - `batch_size`
 
-### 5.2 Pre-ADK 실행 (`pre_adk_pipeline.py`)
+### 5.2 Preprocess 실행 (`run_preprocess_pipeline.py`)
 
 STT와 캡처만 수행하고 싶을 때 사용합니다.
 
 ```bash
-python src/pre_adk_pipeline.py --video "data/inputs/sample.mp4" --parallel
+python src/run_preprocess_pipeline.py --video "data/inputs/sample.mp4" --parallel
 ```
 
 ### 5.3 ADK Web UI 실행
 
-Pre-ADK가 완료된 상태에서, 에이전트와 대화하며 파이프라인을 진행합니다.
+Preprocess가 완료된 상태에서, 에이전트와 대화하며 파이프라인을 진행합니다.
 
 ```bash
 adk web src

@@ -31,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from src.run_process_pipeline import run_processing_pipeline
@@ -45,7 +45,7 @@ class ProcessRequest(BaseModel):
     video_name: Optional[str] = None
     video_id: Optional[str] = None
     output_base: str = "data/outputs"
-    batch_mode: bool = False
+    batch_mode: Optional[bool] = None
     limit: Optional[int] = None
     force_db: bool = False
     sync_to_db: bool = False
@@ -71,11 +71,12 @@ def get_last_run(video_name: str, output_base: str = "data/outputs") -> dict:
 
 
 @app.post("/process", response_model=ProcessResponse)
-def process_pipeline(request: ProcessRequest) -> ProcessResponse:
+def process_pipeline(request: ProcessRequest, background_tasks: BackgroundTasks) -> ProcessResponse:
     if not request.video_name and not request.video_id:
         raise HTTPException(status_code=400, detail="video_name or video_id is required.")
 
-    run_processing_pipeline(
+    background_tasks.add_task(
+        run_processing_pipeline,
         video_name=request.video_name,
         video_id=request.video_id,
         output_base=request.output_base,
@@ -85,4 +86,4 @@ def process_pipeline(request: ProcessRequest) -> ProcessResponse:
         sync_to_db=request.sync_to_db,
     )
 
-    return ProcessResponse(status="ok", message="processing completed")
+    return ProcessResponse(status="started", message="processing started")

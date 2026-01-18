@@ -419,7 +419,7 @@ def run_judge(
 
     report: Dict[str, Any] = {
         "score_scale": {"min": 0, "max": MAX_SCORE},
-        "scores": {
+        "scores_avg": {
             "groundedness": avg_groundedness,
             "compliance": avg_compliance,
             "note_quality": avg_note_quality,

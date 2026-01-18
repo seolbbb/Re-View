@@ -24,3 +24,4 @@ extract:
   channels: 1                  # 채널 수
   codec: pcm_s16le             # 출력 코덱
   mono_method: auto            # 모노 믹스 방식
+  keep_audio: false            # STT용 wav 저장 여부

@@ -61,8 +61,8 @@
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        Pre-ADK Pipeline (CLI)                               │
-│            python src/pre_adk_pipeline.py --video "xxx.mp4"                 │
+│                        Preprocess Pipeline (CLI)                            │
+│            python src/run_preprocess_pipeline.py --video "xxx.mp4"          │
 │                       또는                                                   │
 │            python src/run_video_pipeline.py --video "xxx.mp4"               │
 │                                                                             │
@@ -76,7 +76,7 @@
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    data/outputs/{video_name}/                               │
-│   Pre-ADK Outputs: stt.json, manifest.json, captures/                       │
+│   Preprocess Outputs: stt.json, manifest.json, captures/                    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -463,7 +463,7 @@
 ```
 src/
 ├── run_video_pipeline.py       # End-to-End CLI (벤치마크 포함)
-├── pre_adk_pipeline.py         # Pre-ADK CLI
+├── run_preprocess_pipeline.py  # Preprocess CLI
 │
 ├── adk_pipeline/               # ADK 멀티에이전트
 │   ├── agent.py                # Agent 정의 (Root + Sub-agents)

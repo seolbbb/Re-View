@@ -1,8 +1,4 @@
-"""
-Preprocessing pipeline entrypoint.
-
-Runs STT and Capture only, then optionally uploads the artifacts to Supabase.
-"""
+"""STT + 캡처 전처리 파이프라인 엔트리포인트 (선택적 DB 동기화 포함)."""
 
 from __future__ import annotations
 
@@ -19,10 +15,12 @@ import argparse
 from dotenv import load_dotenv
 import yaml
 
+# 스크립트 실행 시 로컬 import가 동작하도록 레포 루트를 설정한다.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
+# API 키와 로컬 설정을 위해 환경 변수를 로드한다.
 ENV_PATH = ROOT / ".env"
 if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
@@ -35,11 +33,23 @@ from src.pipeline.stages import run_capture, run_stt
 
 
 def _sanitize_video_name(stem: str) -> str:
+    """파일명 stem을 안전한 출력 폴더명으로 정규화한다."""
     value = stem.strip()
     value = re.sub(r"\s+", "_", value)
     value = re.sub(r"[^A-Za-z0-9가-힣._-]+", "_", value)
     value = re.sub(r"_+", "_", value).strip("._-")
     return value[:80] if value else "video"
+
+def _append_benchmark_report(path: Path, report_md: str, pipeline_label: str) -> None:
+    """기존 리포트가 있으면 구분선+타임스탬프로 이어 붙인다."""
+    timestamp = datetime.now(timezone.utc).isoformat()
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n\n---\n")
+            handle.write(f"Benchmark Append: {pipeline_label} | {timestamp}\n\n")
+            handle.write(report_md)
+    else:
+        path.write_text(report_md, encoding="utf-8")
 
 
 def run_preprocess_pipeline(
@@ -55,11 +65,13 @@ def run_preprocess_pipeline(
     limit: Optional[int] = None,
     sync_to_db: bool = True,
 ) -> None:
-    """Run STT + Capture and stop after uploading inputs."""
+    """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
+    # 부분 출력이 생기기 전에 입력 경로를 먼저 확정한다.
     video_path = Path(video).expanduser().resolve()
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
+    # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
     settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
     if not settings_path.exists():
         raise FileNotFoundError(f"pipeline settings file not found: {settings_path}")
@@ -67,6 +79,7 @@ def run_preprocess_pipeline(
     if not isinstance(settings, dict):
         raise ValueError("pipeline settings must be a mapping.")
 
+    # 값이 명시되지 않은 경우에만 설정 기본값을 적용한다.
     if capture_threshold is None:
         capture_threshold = float(settings.get("capture_threshold", 3.0))
     if capture_dedupe_threshold is None:
@@ -74,11 +87,13 @@ def run_preprocess_pipeline(
     if capture_min_interval is None:
         capture_min_interval = float(settings.get("capture_min_interval", 0.5))
 
+    # 이번 비디오 실행에 대한 출력 루트를 만든다.
     output_base_path = (ROOT / Path(output_base)).resolve()
     video_name = _sanitize_video_name(video_path.stem)
     video_root = output_base_path / video_name
     video_root.mkdir(parents=True, exist_ok=True)
 
+    # 벤치마크와 로그용 메타데이터를 수집한다.
     timer = BenchmarkTimer()
     video_info = get_video_info(video_path)
 
@@ -107,6 +122,7 @@ def run_preprocess_pipeline(
         "benchmark": {},
         "status": "running",
     }
+    # 진행 중에도 확인할 수 있도록 메타데이터를 먼저 저장한다.
     run_meta_path.parent.mkdir(parents=True, exist_ok=True)
     run_meta_path.write_text(
         json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
@@ -128,13 +144,16 @@ def run_preprocess_pipeline(
         capture_elapsed = 0.0
 
         if parallel:
+            # STT와 캡처를 동시에 실행한다.
             with ThreadPoolExecutor(max_workers=2) as executor:
                 def run_stt_timed() -> float:
+                    # 벤치마크를 위해 STT 실행 시간을 측정한다.
                     start = time.perf_counter()
                     run_stt(video_path, stt_json, backend=stt_backend)
                     return time.perf_counter() - start
 
                 def run_capture_timed():
+                    # 캡처 실행 시간을 측정하고 결과를 반환한다.
                     start = time.perf_counter()
                     result = run_capture(
                         video_path,
@@ -159,6 +178,7 @@ def run_preprocess_pipeline(
             print(f"  STT done in {format_duration(stt_elapsed)} (parallel)")
             print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
         else:
+            # 동일한 타이밍 측정을 유지하며 순차 실행한다.
             _, stt_elapsed = timer.time_stage("stt", run_stt, video_path, stt_json, backend=stt_backend)
             capture_result, capture_elapsed = timer.time_stage(
                 "capture",
@@ -175,6 +195,7 @@ def run_preprocess_pipeline(
 
         timer.end_total()
 
+        # 사람이 읽을 수 있는 벤치마크 리포트를 함께 저장한다.
         md_report = print_benchmark_report(
             video_info=video_info,
             timer=timer,
@@ -185,7 +206,7 @@ def run_preprocess_pipeline(
             parallel=parallel,
         )
         report_path = video_root / "benchmark_report.md"
-        report_path.write_text(md_report, encoding="utf-8")
+        _append_benchmark_report(report_path, md_report, "Preprocess")
 
         run_meta["durations_sec"] = {
             "stt_sec": round(stt_elapsed, 6),
@@ -198,12 +219,14 @@ def run_preprocess_pipeline(
         }
         run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = "ok"
+        # 선택적 DB 동기화 전에 최종 메타데이터를 저장한다.
         run_meta_path.write_text(
             json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
         if sync_to_db:
+            # 로컬 실행을 가볍게 유지하기 위해 동기화는 선택이다.
             print("\nSyncing preprocessing artifacts to Supabase...")
             db_success = sync_pipeline_results_to_db(
                 video_path=video_path,
@@ -222,6 +245,7 @@ def run_preprocess_pipeline(
         print(f"Benchmark: {report_path}")
 
     except Exception as exc:
+        # 재발생 전에 실패 메타데이터를 항상 기록한다.
         timer.end_total()
         run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
         run_meta["status"] = "error"
@@ -236,6 +260,7 @@ def run_preprocess_pipeline(
 
 
 def main() -> None:
+    """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
     parser = argparse.ArgumentParser(description="Preprocess pipeline (STT + Capture only)")
     parser.add_argument("--video", required=True, help="Input video file path")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")

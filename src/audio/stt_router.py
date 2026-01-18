@@ -102,6 +102,9 @@ class STTRouter:
     ) -> Dict[str, Any]:
         """오디오를 추출한 뒤 선택된 제공자로 STT를 실행한다."""
         extract_defaults = self._extract_settings
+        keep_audio = extract_defaults.get("keep_audio", True)
+        if not isinstance(keep_audio, bool):
+            keep_audio = True
         if sample_rate is None:
             sample_rate = int(extract_defaults.get("sample_rate", 16000))
         if channels is None:
@@ -118,5 +121,8 @@ class STTRouter:
             codec=codec,
             mono_method=mono_method,
         )
-        return self.transcribe(audio_path, provider=provider, **stt_kwargs)
-
+        try:
+            return self.transcribe(audio_path, provider=provider, **stt_kwargs)
+        finally:
+            if not keep_audio:
+                Path(audio_path).unlink(missing_ok=True)
