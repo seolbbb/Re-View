@@ -43,15 +43,15 @@ CLOVA_SPEECH_API_KEY=...    # STT (Clova 사용 시)
 python src/run_video_pipeline.py --video "data/inputs/my_lecture.mp4"
 ```
 
-#### Option B: 단계별 실행 (Pre-ADK → ADK)
+#### Option B: 단계별 실행 (Preprocess → ADK)
 
 데이터 추출과 요약 생성을 나누어 진행할 수 있습니다.
 
-**Step 1: 데이터 추출 (Pre-ADK)**
+**Step 1: 데이터 추출 (Preprocess)**
 STT와 슬라이드 캡처를 수행합니다.
 
 ```bash
-python src/pre_adk_pipeline.py --video "data/inputs/my_lecture.mp4"
+python src/run_preprocess_pipeline.py --video "data/inputs/my_lecture.mp4"
 ```
 
 **Step 2: 요약 및 검증 (ADK)**
@@ -79,7 +79,7 @@ adk web src/adk_pipeline
 
 간단한 실행 외에 다양한 옵션을 제공합니다.
 
-- **Pre-ADK 실행**: 데이터 추출(STT/Capture)만 따로 하고 싶을 때
+- **Preprocess 실행**: 데이터 추출(STT/Capture)만 따로 하고 싶을 때
 - **ADK Web UI**: 대화형으로 파이프라인을 제어하고 싶을 때
 - **벤치마크**: 성능 측정 및 최적화 테스트
 
