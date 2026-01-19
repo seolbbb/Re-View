@@ -1,8 +1,7 @@
-# Judge 점수/출력 설정
-min_score: 7.0            # PASS/FAIL 기준 점수(0-10)
-include_segments: false   # judge.json에 세그먼트 점수 포함 여부
-batch_size: 3             # LLM 배치 크기
-workers: 1                # 병렬 요청 수
-json_repair_attempts: 1   # JSON 복구 재시도 횟수
-verbose: false            # 배치 로그 출력 여부
-prompt_version: null      # 프롬프트 버전 override(null=기본)
+batch_size: 4
+include_segments: false
+json_repair_attempts: 1
+min_score: 7.0
+prompt_version: v3
+verbose: true
+workers: 2

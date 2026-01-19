@@ -1,3 +1,10 @@
+# 기본 경로 설정 (Sample 4 기준)
+paths:
+  stt_json: "data/outputs/sample4/stt.json"
+  vlm_json: "data/outputs/sample4/vlm.json"
+  captures_manifest_json: "data/outputs/sample4/capture.json"
+  output_root: "data/outputs/sample4"
+
 # STT/VLM 동기화 및 세그먼트 분할 설정
 sync_engine:
   boundary_source: "vlm_timestamps_visual_first"  # 세그먼트 경계 기준
@@ -16,7 +23,7 @@ summarizer:
   claim_max_chars: 0           # claim 최대 글자수(0=제한 없음)
   temperature: 0.2             # 생성 다양성
   json_repair_attempts: 2      # JSON 복구 재시도 횟수
-  prompt_version: "sum_v1.6"   # summarizer 프롬프트 버전
+  prompt_version: "v1.8"   # summarizer 프롬프트 버전 (Production: Benchmark Winner)
 
 # Gemini 호출 설정
 llm_gemini:
@@ -40,10 +47,16 @@ llm_gemini:
 render:
   include_sources: false  # 마크다운에 소스 포함 여부
   md_wrap_width: 0        # 마크다운 줄바꿈 너비(0=무제한)
+  groups:
+    order: ["direct", "background", "inferred"]
+    headers:
+      direct: "핵심 내용 (Direct / Recall)"
+      background: "배경 지식 (Background)"
+      inferred: "심화/추론 (Inferred / Logic)"
 
 # 최종 요약 출력 설정
 final_summary:
-  generate_formats: ["timeline", "tldr_timeline"]  # 생성할 최종 요약 포맷
+  generate_formats: ["tldr_timeline"]  # 생성할 최종 요약 포맷
   temperature: 0.2                                 # 생성 다양성
   max_chars_per_format: 0                          # 포맷별 최대 글자수(0=제한 없음)
   style:
