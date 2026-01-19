@@ -50,9 +50,9 @@ render:
   md_wrap_width: 0        # 마크다운 줄바꿈 너비(0=무제한)
   groups:
     headers:
-      direct: "🎯 Direct Evidence"
-      background: "🔍 Background Context"
-      inferred: "🧠 Inferred Insights"
+      direct: "Direct Evidence"
+      background: "Background Context"
+      inferred: "Inferred Insights"
     order: ["direct", "background", "inferred"]
 
 # 최종 요약 출력 설정
