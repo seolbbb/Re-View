@@ -23,6 +23,26 @@ from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
 
 
+def _read_latest_token_usage(token_usage_path: Path) -> Dict[str, int]:
+    """token_usage.json에서 최신 토큰 사용량을 읽어 반환한다."""
+    if not token_usage_path.exists():
+        return {}
+    try:
+        data = json.loads(token_usage_path.read_text(encoding="utf-8"))
+        result = {}
+        # Get latest summarizer tokens
+        summarizer_list = data.get("summarizer", [])
+        if summarizer_list:
+            result["summarizer"] = summarizer_list[-1].get("input_tokens", 0)
+        # Get latest judge tokens
+        judge_list = data.get("judge", [])
+        if judge_list:
+            result["judge"] = judge_list[-1].get("input_tokens", 0)
+        return result
+    except Exception:
+        return {}
+
+
 def _process_judge_result(
     judge_result: Dict[str, Any],
     config: Any,
@@ -161,7 +181,7 @@ def run_vlm_openrouter(
 
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     if not isinstance(manifest_payload, list):
-        raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
+        raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
 
     image_paths: List[str] = []
     for item in sorted(
@@ -174,7 +194,7 @@ def run_vlm_openrouter(
         image_paths.append(str(captures_dir / file_name))
 
     if not image_paths:
-        raise ValueError("VLM 입력 이미지가 없습니다(manifest.json을 확인하세요).")
+        raise ValueError("VLM 입력 이미지가 없습니다(capture.json을 확인하세요).")
 
     results = extractor.extract_features(
         image_paths,
@@ -236,7 +256,7 @@ def run_vlm_for_batch(
 
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     if not isinstance(manifest_payload, list):
-        raise ValueError("manifest.json 형식이 올바르지 않습니다(배열이어야 함).")
+        raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
 
     if batch_manifest is not None:
         filtered_manifest_items = batch_manifest
@@ -401,6 +421,10 @@ def run_fusion_pipeline(
     fusion_info["timings"]["llm_summarizer_sec"] = summarizer_elapsed_total
     fusion_info["timings"]["judge_sec"] = judge_elapsed_total
 
+    groups_cfg = getattr(config.raw.render, "groups", None)
+    group_order = groups_cfg.order if groups_cfg else None
+    group_headers = groups_cfg.headers if groups_cfg else None
+
     _, render_elapsed = timer.time_stage(
         "fusion.renderer",
         render_segment_summaries_md,
@@ -410,6 +434,24 @@ def run_fusion_pipeline(
         sources_jsonl=output_dir / "segments_units.jsonl",
         md_wrap_width=config.raw.render.md_wrap_width,
         limit=limit,
+        group_order=group_order,
+        group_headers=group_headers,
+        fusion_prompt_version=config.raw.summarizer.prompt_version,
+        judge_prompt_version=config.judge.prompt_version,
+        execution_time={
+            "summarizer": summarizer_elapsed_total,
+            "judge": judge_elapsed_total,
+        },
+        batch_config={
+            "batch_size": config.judge.batch_size,
+            "workers": config.judge.workers,
+        },
+        judge_stats={
+            "final_score": final_score,
+            "passed": passed,
+            "category_scores": latest_judge_result.get("report", {}).get("scores_avg", {}) if latest_judge_result else {},
+        },
+        token_usage=_read_latest_token_usage(output_dir / "token_usage.json"),
     )
     fusion_info["timings"]["renderer_sec"] = render_elapsed
 
@@ -516,6 +558,11 @@ def run_batch_fusion_pipeline(
         accumulated_summaries_path.unlink()
 
     total_vlm_elapsed = 0.0
+    total_summarizer_elapsed = 0.0
+    total_judge_elapsed = 0.0
+    total_judge_score = 0.0
+    all_batches_passed = True
+    processed_batches_count = 0
 
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
@@ -599,7 +646,7 @@ def run_batch_fusion_pipeline(
             stage_suffix = f"_retry_{attempt}" if is_retry else ""
             
             # 1. Summarizer 실행
-            summarize_result, _ = timer.time_stage(
+            summarize_result, sum_elapsed = timer.time_stage(
                 f"pipeline_batch_{batch_idx + 1}.summarize{stage_suffix}",
                 run_batch_summarizer,
                 segments_units_jsonl=batch_segments_path,
@@ -609,10 +656,14 @@ def run_batch_fusion_pipeline(
                 limit=limit,
                 feedback_map=feedback_map,
             )
+            if not is_retry:  # Only count first attempt or accumulated retries? usually we sum all attempts
+                # Actually, simple sum is fine.
+                pass
+            total_summarizer_elapsed += sum_elapsed
             new_context = summarize_result.get("context", "")
 
             # 2. Judge 실행
-            judge_result, _ = timer.time_stage(
+            judge_result, judge_elapsed = timer.time_stage(
                 f"pipeline_batch_{batch_idx + 1}.judge{stage_suffix}",
                 run_judge,
                 config=config,
@@ -627,6 +678,7 @@ def run_batch_fusion_pipeline(
                 verbose=config.judge.verbose,
                 write_outputs=False,
             )
+            total_judge_elapsed += judge_elapsed
             latest_judge_result = judge_result
 
             # 3. 결과 판정
@@ -674,6 +726,13 @@ def run_batch_fusion_pipeline(
             }
         )
 
+        if not passed:
+            all_batches_passed = False
+        
+        # passed is result of last attempt
+        total_judge_score += final_score
+        processed_batches_count += 1
+
         print(
             f"  ✅ Pipeline batch {batch_idx + 1} complete "
             f"(segments: {new_segment_count})"
@@ -687,6 +746,10 @@ def run_batch_fusion_pipeline(
 
     if accumulated_summaries_path.exists():
         config = load_config(str(fusion_config_path))
+        groups_cfg = getattr(config.raw.render, "groups", None)
+        group_order = groups_cfg.order if groups_cfg else None
+        group_headers = groups_cfg.headers if groups_cfg else None
+
         _, render_elapsed = timer.time_stage(
             "fusion.renderer",
             render_segment_summaries_md,
@@ -698,6 +761,23 @@ def run_batch_fusion_pipeline(
             else None,
             md_wrap_width=config.raw.render.md_wrap_width,
             limit=limit,
+            group_order=group_order,
+            group_headers=group_headers,
+            fusion_prompt_version=config.raw.summarizer.prompt_version,
+            judge_prompt_version=config.judge.prompt_version,
+            execution_time={
+                "summarizer": total_summarizer_elapsed,
+                "judge": total_judge_elapsed,
+            },
+            batch_config={
+                "batch_size": config.judge.batch_size,
+                "workers": config.judge.workers,
+            },
+            judge_stats={
+                "final_score": total_judge_score / processed_batches_count if processed_batches_count > 0 else 0.0,
+                "passed": all_batches_passed,
+                "category_scores": {},  # Note: Category breakdown not available in batch mode (averaged)
+            },
         )
         fusion_info["timings"]["renderer_sec"] = render_elapsed
 
