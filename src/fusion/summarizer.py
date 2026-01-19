@@ -120,7 +120,10 @@ def load_prompt_template(
     prompt_version: Optional[str] = None,
     prompt_path: Optional[Path] = None,
 ) -> str:
-    """프롬프트 템플릿을 설정 파일에서 읽는다."""
+    """프롬프트 템플릿을 설정 파일에서 읽는다.
+    
+    Legacy 형식 (template 키) 또는 Modular 형식 (system/output_format/quality_rules/one_shot 키)을 지원한다.
+    """
     version_id = prompt_version or DEFAULT_PROMPT_VERSION
     path = prompt_path or PROMPT_CONFIG_PATH
     if not path.exists():
@@ -134,10 +137,24 @@ def load_prompt_template(
         raise ValueError(
             f"Prompt version not found: {version_id} (available: {available})"
         )
+    
+    # Legacy 형식: template 키가 있는 경우
     template = prompt_block.get("template")
-    if not isinstance(template, str) or not template.strip():
-        raise ValueError(f"Prompt template is empty: {version_id}")
-    return template.strip()
+    if isinstance(template, str) and template.strip():
+        return template.strip()
+    
+    # Modular 형식: system/output_format/quality_rules/one_shot 키가 있는 경우
+    parts = []
+    for key in ["system", "output_format", "quality_rules", "one_shot"]:
+        if key in prompt_block:
+            value = prompt_block[key]
+            if isinstance(value, str) and value.strip():
+                parts.append(f"## {key.upper().replace('_', ' ')}\n{value.strip()}")
+    
+    if parts:
+        return "\n\n".join(parts)
+    
+    raise ValueError(f"Prompt template is empty: {version_id}")
 
 
 def _render_prompt_template(template: str, replacements: Dict[str, str]) -> str:
