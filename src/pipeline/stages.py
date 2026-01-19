@@ -564,6 +564,7 @@ def run_batch_fusion_pipeline(
     all_batches_passed = True
     processed_batches_count = 0
 
+    first_batch = True
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
             print("\n⏳ Waiting 5s to avoid API rate limiting...")

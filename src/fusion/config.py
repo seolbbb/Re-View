@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -91,12 +91,21 @@ class LlmGeminiConfig(BaseModel):
     vertex_ai: VertexAiConfig
 
 
+class RenderGroupsConfig(BaseModel):
+    """그룹 렌더링 설정을 정의한다."""
+    model_config = ConfigDict(extra="forbid")
+
+    order: Optional[List[str]] = None
+    headers: Optional[Dict[str, str]] = None
+
+
 class RenderConfig(BaseModel):
     """최종 마크다운 리포트 생성 시 포맷팅 옵션을 설정한다."""
     model_config = ConfigDict(extra="forbid")
 
     include_sources: bool = False
     md_wrap_width: int = Field(..., ge=0)
+    groups: Optional[RenderGroupsConfig] = None
 
 
 class FinalSummaryStyleConfig(BaseModel):
