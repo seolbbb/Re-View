@@ -7,7 +7,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 
 def format_duration(seconds: float) -> str:
@@ -231,6 +231,7 @@ def print_benchmark_report(
     printed_stages = set()
     skip_stages = set()
     display_entries: List[Tuple[str, str, float, Optional[str]]] = []
+    accounted_elapsed = 0.0
 
     has_batch = any(stage.startswith("pipeline_batch_") for stage in report["stages"])
     if has_batch:
@@ -257,6 +258,7 @@ def print_benchmark_report(
                 details,
             )
         )
+        accounted_elapsed += parallel_elapsed
         skip_stages.update({"stt", "capture"})
 
     for stage in stage_order:
@@ -266,6 +268,7 @@ def print_benchmark_report(
                 (stage, info["elapsed_formatted"], info["percentage"], None)
             )
             printed_stages.add(stage)
+            accounted_elapsed += info["elapsed_sec"]
 
     for stage in report["stages"]:
         if stage in printed_stages or stage in skip_stages:
@@ -273,6 +276,22 @@ def print_benchmark_report(
         info = report["stages"][stage]
         display_entries.append(
             (stage, info["elapsed_formatted"], info["percentage"], None)
+        )
+        accounted_elapsed += info["elapsed_sec"]
+
+    total_elapsed_sec = report["total_elapsed_sec"]
+    overhead_elapsed = max(0.0, total_elapsed_sec - accounted_elapsed)
+    if overhead_elapsed > 0.01:
+        overhead_pct = (
+            overhead_elapsed / total_elapsed_sec * 100 if total_elapsed_sec > 0 else 0.0
+        )
+        display_entries.append(
+            (
+                "overhead",
+                format_duration(overhead_elapsed),
+                overhead_pct,
+                None,
+            )
         )
 
     width = max(24, max((len(stage) for stage, _, _, _ in display_entries), default=0))
@@ -363,6 +382,11 @@ def print_benchmark_report(
         info = report["stages"][stage]
         md_lines.append(
             f"| {stage} | {info['elapsed_formatted']} | {info['percentage']:.1f}% |"
+        )
+
+    if overhead_elapsed > 0.01:
+        md_lines.append(
+            f"| overhead | {format_duration(overhead_elapsed)} | {overhead_pct:.1f}% |"
         )
 
     md_lines.extend(

@@ -6,10 +6,10 @@ import json
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import argparse
 from dotenv import load_dotenv
@@ -28,7 +28,11 @@ else:
     load_dotenv()
 
 from src.capture.settings import load_capture_settings
-from src.db import sync_pipeline_results_to_db
+from src.db.pipeline_sync import (
+    finalize_preprocess_db_sync,
+    prepare_preprocess_db_sync,
+    sync_preprocess_artifacts_to_db,
+)
 from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
 from src.pipeline.stages import run_capture, run_stt
 
@@ -149,6 +153,22 @@ def run_preprocess_pipeline(
         encoding="utf-8",
     )
 
+    db_context: Optional[Tuple[Any, str, Optional[str]]] = None
+    db_errors: List[str] = []
+    printed_db_errors: set[str] = set()
+    if sync_to_db:
+        db_context = prepare_preprocess_db_sync(
+            video_path=video_path,
+            video_root=video_root,
+            run_meta=run_meta,
+            duration_sec=video_info.get("duration_sec"),
+        )
+        if db_context:
+            _, _, pipeline_run_id = db_context
+            if pipeline_run_id:
+                run_meta["pipeline_run_id"] = pipeline_run_id
+            print("\nSyncing preprocessing artifacts to Supabase as stages complete...")
+
     timer.start_total()
     capture_count = 0
 
@@ -162,6 +182,33 @@ def run_preprocess_pipeline(
 
         stt_elapsed = 0.0
         capture_elapsed = 0.0
+
+        def _sync_stage(stage: str) -> None:
+            if not db_context:
+                return
+            adapter, video_id, pipeline_run_id = db_context
+            stage_results = sync_preprocess_artifacts_to_db(
+                adapter=adapter,
+                video_id=video_id,
+                video_root=video_root,
+                provider=stt_backend,
+                pipeline_run_id=pipeline_run_id,
+                include_stt=stage == "stt",
+                include_captures=stage == "capture",
+            )
+            saved = stage_results.get("saved", {})
+            errors = stage_results.get("errors", [])
+            if saved:
+                summary = ", ".join(f"{key}={value}" for key, value in saved.items())
+                print(f"[DB] {stage} upload: {summary}")
+            if errors:
+                print(f"[DB] {stage} upload had {len(errors)} errors.")
+                for err in errors:
+                    if err in printed_db_errors:
+                        continue
+                    printed_db_errors.add(err)
+                    print(f"[DB] {stage} error: {err}")
+                db_errors.extend(errors)
 
         if parallel:
             # STT와 캡처를 동시에 실행한다.
@@ -189,17 +236,27 @@ def run_preprocess_pipeline(
                 stt_future = executor.submit(run_stt_timed)
                 capture_future = executor.submit(run_capture_timed)
 
-                stt_elapsed = stt_future.result()
-                capture_result, capture_elapsed = capture_future.result()
-                capture_count = len(capture_result) if capture_result else 0
-
-            timer.record_stage("stt", stt_elapsed)
-            timer.record_stage("capture", capture_elapsed)
-            print(f"  STT done in {format_duration(stt_elapsed)} (parallel)")
-            print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
+                futures = {
+                    stt_future: "stt",
+                    capture_future: "capture",
+                }
+                for future in as_completed(futures):
+                    stage = futures[future]
+                    if stage == "stt":
+                        stt_elapsed = future.result()
+                        timer.record_stage("stt", stt_elapsed)
+                        print(f"  STT done in {format_duration(stt_elapsed)} (parallel)")
+                        _sync_stage("stt")
+                    else:
+                        capture_result, capture_elapsed = future.result()
+                        capture_count = len(capture_result) if capture_result else 0
+                        timer.record_stage("capture", capture_elapsed)
+                        print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
+                        _sync_stage("capture")
         else:
             # 동일한 타이밍 측정을 유지하며 순차 실행한다.
             _, stt_elapsed = timer.time_stage("stt", run_stt, video_path, stt_json, backend=stt_backend)
+            _sync_stage("stt")
             capture_result, capture_elapsed = timer.time_stage(
                 "capture",
                 run_capture,
@@ -212,6 +269,7 @@ def run_preprocess_pipeline(
                 video_name=video_name,
             )
             capture_count = len(capture_result) if capture_result else 0
+            _sync_stage("capture")
 
         timer.end_total()
 
@@ -246,17 +304,28 @@ def run_preprocess_pipeline(
         )
 
         if sync_to_db:
-            # 로컬 실행을 가볍게 유지하기 위해 동기화는 선택이다.
-            print("\nSyncing preprocessing artifacts to Supabase...")
-            db_success = sync_pipeline_results_to_db(
-                video_path=video_path,
-                video_root=video_root,
-                run_meta=run_meta,
-                duration_sec=video_info.get("duration_sec"),
-                provider=stt_backend,
-            )
-            if db_success:
-                print("Database sync completed.")
+            if db_context:
+                try:
+                    adapter, video_id, pipeline_run_id = db_context
+                    finalize_preprocess_db_sync(
+                        adapter=adapter,
+                        video_id=video_id,
+                        pipeline_run_id=pipeline_run_id,
+                        run_meta=run_meta,
+                        errors=db_errors,
+                    )
+                except Exception as exc:
+                    db_errors.append(f"finalize: {exc}")
+
+                if db_errors:
+                    print(f"Database sync completed with {len(db_errors)} errors.")
+                    for err in db_errors:
+                        if err in printed_db_errors:
+                            continue
+                        printed_db_errors.add(err)
+                        print(f"[DB] error: {err}")
+                else:
+                    print("Database sync completed.")
             else:
                 print("Database sync skipped or failed (check logs above).")
 
@@ -275,6 +344,19 @@ def run_preprocess_pipeline(
             json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        if sync_to_db and db_context:
+            try:
+                adapter, video_id, pipeline_run_id = db_context
+                db_errors.append(f"pipeline: {exc}")
+                finalize_preprocess_db_sync(
+                    adapter=adapter,
+                    video_id=video_id,
+                    pipeline_run_id=pipeline_run_id,
+                    run_meta=run_meta,
+                    errors=db_errors,
+                )
+            except Exception:
+                pass
         print(f"\nPreprocessing failed: {exc}")
         raise
 
