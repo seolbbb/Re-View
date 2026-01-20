@@ -48,12 +48,6 @@ llm_gemini:
 render:
   include_sources: false  # 마크다운에 소스 포함 여부
   md_wrap_width: 0        # 마크다운 줄바꿈 너비(0=무제한)
-  groups:
-    headers:
-      direct: "Direct Evidence"
-      background: "Background Context"
-      inferred: "Inferred Insights"
-    order: ["direct", "background", "inferred"]
 
 # 최종 요약 출력 설정
 final_summary:
