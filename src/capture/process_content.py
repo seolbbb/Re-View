@@ -57,6 +57,10 @@ def process_single_video_capture(
     slides = extractor.process(video_name=video_name)
     elapsed = time.time() - start_time
 
+    # Assign IDs
+    for idx, slide in enumerate(slides, 1):
+        slide["id"] = f"cap_{idx:03d}"
+
     manifest_path = output_root / "manifest.json"
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(slides, handle, ensure_ascii=False, indent=2)
