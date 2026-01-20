@@ -74,7 +74,10 @@ def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]
 
 
 def _load_prompt_template(prompt_version: Optional[str]) -> Tuple[str, str]:
-    """config/judge/prompts.yaml에서 프롬프트 템플릿을 로드한다."""
+    """config/judge/prompts.yaml에서 프롬프트 템플릿을 로드한다.
+    
+    Legacy 형식 (template 키) 또는 Modular 형식 (system/criteria/protocol 등 키)을 지원한다.
+    """
     if not PROMPTS_PATH.exists():
         raise FileNotFoundError(f"Judge prompt config not found: {PROMPTS_PATH}")
     payload = yaml.safe_load(PROMPTS_PATH.read_text(encoding="utf-8"))
@@ -87,13 +90,27 @@ def _load_prompt_template(prompt_version: Optional[str]) -> Tuple[str, str]:
         raise ValueError(
             f"Judge prompt template is missing: {selected_version} (available: {available})"
         )
+    
+    # Legacy 형식: template 키가 있는 경우
     if isinstance(entry, dict):
         template = entry.get("template")
-    else:
-        template = entry
-    if not isinstance(template, str) or not template.strip():
-        raise ValueError(f"Judge prompt template is empty: {selected_version}")
-    return selected_version, template.strip()
+        if isinstance(template, str) and template.strip():
+            return selected_version, template.strip()
+        
+        # Modular 형식: system/criteria/protocol/input_format/output_format 키가 있는 경우
+        parts = []
+        for key in ["system", "criteria", "protocol", "input_format", "output_format"]:
+            if key in entry:
+                value = entry[key]
+                if isinstance(value, str) and value.strip():
+                    parts.append(f"## {key.upper().replace('_', ' ')}\n{value.strip()}")
+        
+        if parts:
+            return selected_version, "\n\n".join(parts)
+    elif isinstance(entry, str) and entry.strip():
+        return selected_version, entry.strip()
+    
+    raise ValueError(f"Judge prompt template is empty: {selected_version}")
 
 
 def _evaluate_batch(
