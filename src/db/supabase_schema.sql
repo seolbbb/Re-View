@@ -142,12 +142,13 @@ CREATE POLICY "Users can view segments of own videos" ON segments
 CREATE TABLE IF NOT EXISTS summaries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     summary JSONB,
+    summary_text TEXT,  -- 시맨틱 검색용 평문 텍스트
     video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
     segment_id UUID REFERENCES segments(id) ON DELETE CASCADE,
     pipeline_run_id UUID REFERENCES pipeline_runs(id) ON DELETE SET NULL,
     version JSONB,
-    -- [개선] 요약 내용에 대한 임베딩도 필요할 수 있음
-    embedding vector(1536),
+    -- Qwen3-Embedding-8B 모델 (1024차원)
+    embedding vector(1024),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -296,3 +297,42 @@ DELETE FROM stt_results WHERE segments IS NOT NULL;
 -- [Migration 2026-01-13] Remove segment_index from stt_results
 -- ============================================================================
 ALTER TABLE stt_results DROP COLUMN IF EXISTS segment_index;
+
+-- ============================================================================
+-- [Migration 2026-01-20] Semantic Search 지원
+-- ============================================================================
+
+-- HNSW 인덱스 (코사인 유사도 검색용)
+CREATE INDEX IF NOT EXISTS idx_summaries_embedding_hnsw 
+ON summaries USING hnsw (embedding vector_cosine_ops);
+
+-- 시맨틱 검색 RPC 함수 (사용자 필터링 지원)
+CREATE OR REPLACE FUNCTION match_summaries (
+    query_embedding vector(1024),
+    match_threshold float DEFAULT 0.4,
+    match_count int DEFAULT 5,
+    filter_user_id uuid DEFAULT NULL
+)
+RETURNS TABLE (
+    id uuid,
+    summary_text text,
+    video_id uuid,
+    segment_id uuid,
+    similarity float
+)
+LANGUAGE sql STABLE
+AS $$
+    SELECT
+        summaries.id,
+        summaries.summary_text,
+        summaries.video_id,
+        summaries.segment_id,
+        1 - (summaries.embedding <=> query_embedding) as similarity
+    FROM summaries
+    JOIN videos ON summaries.video_id = videos.id
+    WHERE summaries.embedding IS NOT NULL
+    AND 1 - (summaries.embedding <=> query_embedding) > match_threshold
+    AND (filter_user_id IS NULL OR videos.user_id = filter_user_id)
+    ORDER BY summaries.embedding <=> query_embedding ASC
+    LIMIT match_count;
+$$;
