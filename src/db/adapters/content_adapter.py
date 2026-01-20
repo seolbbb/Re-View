@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.fusion.renderer import render_summary_to_text
+
 
 class ContentAdapterMixin:
     """STT, Segments, Summaries 테이블 작업을 위한 Mixin 클래스.
@@ -182,9 +184,15 @@ class ContentAdapterMixin:
         """
         rows = []
         for summ in summaries:
+            summary_data = summ.get("summary", {})
+            
+            # JSONB -> 시맨틱 검색용 텍스트 렌더링
+            summary_text = render_summary_to_text(summary_data) if summary_data else ""
+            
             data = {
                 "video_id": video_id,
-                "summary": summ.get("summary"),
+                "summary": summary_data,
+                "summary_text": summary_text,  # 임베딩용 텍스트
                 "version": summ.get("version"),
                 "embedding": summ.get("embedding"),
                 "pipeline_run_id": pipeline_run_id,

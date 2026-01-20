@@ -63,6 +63,70 @@ def _split_evidence_refs(evidence: Any) -> tuple[List[str], List[str]]:
     return t_refs, v_refs
 
 
+def render_summary_to_text(summary: Dict[str, Any]) -> str:
+    """JSONB 요약 데이터를 시맨틱 검색용 평문 텍스트로 변환합니다.
+    
+    임베딩 벡터 생성에 적합한 형식으로 요약 내용을 라벨링하여 변환합니다.
+    마크다운 기호를 제거하고, 의미 구분을 위한 태그([핵심], [정의] 등)를 사용합니다.
+    
+    Args:
+        summary: segment_summaries.jsonl의 summary 필드 (JSONB 구조)
+            - bullets: 핵심 내용 리스트
+            - definitions: 정의 리스트
+            - explanations: 해설 리스트
+            - open_questions: 열린 질문 리스트
+        
+    Returns:
+        str: 시맨틱 검색에 최적화된 라벨링된 평문 텍스트
+        
+    Example:
+        >>> summary = {"bullets": [{"claim": "ELBO는..."}], "definitions": [...]}
+        >>> render_summary_to_text(summary)
+        "[핵심] ELBO는...\\n[정의] KL Divergence: ..."
+    """
+    if not summary:
+        return ""
+    
+    lines: List[str] = []
+    
+    # 1. Bullets (핵심 내용)
+    for bullet in summary.get("bullets", []) or []:
+        claim = str(bullet.get("claim", "")).strip()
+        if claim:
+            lines.append(f"[핵심] {claim}")
+    
+    # 2. Definitions (정의)
+    for defn in summary.get("definitions", []) or []:
+        term = str(defn.get("term", "")).strip()
+        definition = str(defn.get("definition", "")).strip()
+        if term and definition:
+            lines.append(f"[정의] {term}: {definition}")
+    
+    # 3. Explanations (해설)
+    for expl in summary.get("explanations", []) or []:
+        if isinstance(expl, dict):
+            point = str(expl.get("point", "")).strip()
+            notes = str(expl.get("notes", "")).strip()
+            if point:
+                text = f"[해설] {point}"
+                if notes:
+                    text += f" - {notes}"
+                lines.append(text)
+        elif isinstance(expl, str) and expl.strip():
+            lines.append(f"[해설] {expl.strip()}")
+    
+    # 4. Open Questions (질문)
+    for q in summary.get("open_questions", []) or []:
+        if isinstance(q, dict):
+            question = str(q.get("question", "")).strip()
+        else:
+            question = str(q).strip()
+        if question:
+            lines.append(f"[질문] {question}")
+    
+    return "\n".join(lines)
+
+
 def render_segment_summaries_md(
     summaries_jsonl: Path,
     output_md: Path,
