@@ -564,6 +564,7 @@ def run_batch_fusion_pipeline(
     all_batches_passed = True
     processed_batches_count = 0
 
+    first_batch = True
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
             print("\n⏳ Waiting 5s to avoid API rate limiting...")
@@ -632,6 +633,7 @@ def run_batch_fusion_pipeline(
         batch_summaries_path = batch_dir / "segment_summaries.jsonl"
 
         config = load_config(str(fusion_config_path))
+        print(f"   [Config] Summarizer Prompt: {config.raw.summarizer.prompt_version} | Judge Prompt: {config.judge.prompt_version}")
 
         # Judge 실패 시 재시도 로직 (Feedback Loop)
         max_attempts = 2

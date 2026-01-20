@@ -22,7 +22,7 @@ v2: # Modularized
     5.  **Evidence**: strict mapping to input IDs.
     6.  **IDs**:
         - Use the **EXACT** `segment_id` from the input (e.g., if input is 1, output 1).
-        - **CRITICAL**: Copy `evidence_refs` **EXACTLY** as they appear in the input source_refs (e.g., "stt_018", "vlm_005").
+        - **CRITICAL**: Copy `evidence_refs` **EXACTLY** as they appear in the input source_refs (e.g., "stt_018", "cap_005").
         - Do **NOT** shorten or modify IDs (e.g., do NOT change "stt_018" to "t18" or "t1").
         - If an ID is not in the input, do NOT invent it.
 
@@ -36,7 +36,7 @@ v2: # Modularized
           {
             "claim": "ELBO(Evidence Lower Bound)는 로그 우도의 하한선으로, 재구성(Reconstruction), 사전 분포 매칭(Prior matching), 노이즈 제거 매칭(Denoising matching)의 세 가지 핵심 항으로 분해되어 모델의 최적화 목표를 정의합니다.",
             "source_type": "direct",
-            "evidence_refs": ["stt_001", "stt_002", "vlm_001", "vlm_002"]
+            "evidence_refs": ["stt_001", "stt_002", "cap_001", "cap_002"]
           }
         ],
         "definitions": [
@@ -44,13 +44,13 @@ v2: # Modularized
             "term": "ELBO (Evidence Lower Bound)",
             "definition": "로그 우도의 하한선으로, 직접 최적화하기 어려운 우도 대신 모델의 학습 목표 함수로 사용됩니다.",
             "source_type": "direct",
-            "evidence_refs": ["vlm_001"]
+            "evidence_refs": ["cap_001"]
           },
           {
             "term": "KL Divergence (Kullback-Leibler Divergence)",
             "definition": "두 확률 분포 사이의 통계적 거리를 측정하여 분포의 유사성을 평가하는 지표입니다.",
             "source_type": "direct",
-            "evidence_refs": ["vlm_002"]
+            "evidence_refs": ["cap_002"]
           }
         ],
         "explanations": [
@@ -91,12 +91,14 @@ v1.6:
     3. Definitions: Define ALL key terms.
     4. Math: Use LaTeX. Full formula first.
     5. Ids: STRICT ID match. Copy evidence_refs EXACTLY.
-    6. JSON Only.
+    6. **ID Formatting**:
+       - Use **EXACT** input IDs (e.g., "cap_001", "stt_001").
+       - **Evidence**: `evidence_refs` MUST contain strings like "cap_001" or "stt_001".
 
   one_shot: |
     Input: {{ ... }}
     Output:
-    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 로그 우도의 하한선으로, 세 가지 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound. 계산 불가능한 로그 우도 대신 최적화하는 하한 함수.","source_type":"background","evidence_refs":["vlm_001"],"confidence":"high"}],"explanations":[{"point":"로그 우도 직접 계산이 불가능하여 ELBO를 최대화함.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[{"question":"왜 로그 우도를 직접 계산할 수 없는가?","source_type":"inferred","evidence_refs":[],"confidence":"high"}]}}]
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 로그 우도의 하한선으로, 세 가지 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound. 계산 불가능한 로그 우도 대신 최적화하는 하한 함수.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"로그 우도 직접 계산이 불가능하여 ELBO를 최대화함.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[{"question":"왜 로그 우도를 직접 계산할 수 없는가?","source_type":"inferred","evidence_refs":[],"confidence":"high"}]}}]
 
 
 # [Optimized] Lightning Version (v3)
@@ -122,7 +124,7 @@ v3:
                "bullet_id": "1-1", 
                "claim": "Core fact (Korean)", 
                "source_type": "direct", 
-               "evidence_refs": ["t1"], 
+               "evidence_refs": ["stt_001"], 
                "confidence": "high", 
                "notes": "Brief context" 
              } 
@@ -132,7 +134,7 @@ v3:
                "term": "Term", 
                "definition": "Definition", 
                "source_type": "background", 
-               "evidence_refs": ["v1"], 
+               "evidence_refs": ["cap_001"], 
                "confidence": "high", 
                "notes": "" 
              } 
@@ -153,7 +155,7 @@ v3:
   
   quality_rules: |
     1. **NO Chat/Markdown**. ONLY JSON.
-    2. **IDs**: STRICT match with input.
+    2. **IDs**: STRICT match with input (e.g., "cap_001", "stt_001").
     3. **Content**:
        - bullets: Core facts. Max 2 per seg.
        - definitions: Essential terms. use "background" source_type if general knowledge.
@@ -163,7 +165,7 @@ v3:
   one_shot: |
     Input Segment: {{ ... }}
     Ideal Output:
-    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 재구성, 프라이어, 디노이징 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound. $q(x)$의 하한선.","source_type":"background","evidence_refs":["vlm_001"],"confidence":"high","notes":""}],"explanations":[{"point":"Diffusion 학습 목표인 ELBO를 수식적으로 분해하여 학습 가능해짐. 수식: $L_{elbo} = ...$","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high","notes":""}],"open_questions":[]}}]
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 재구성, 프라이어, 디노이징 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound. $q(x)$의 하한선.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high","notes":""}],"explanations":[{"point":"Diffusion 학습 목표인 ELBO를 수식적으로 분해하여 학습 가능해짐. 수식: $L_{elbo} = ...$","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high","notes":""}],"open_questions":[]}}]
 
 # [Ultra-Fast] Token Optimized Version (v3.2)
 # - Goal: Same quality as v3.1 but minimal input tokens.
@@ -184,11 +186,12 @@ v3.2:
     3. definitions: Use "background" source if general knowledge.
     4. explanations: Synth logic using LaTeX math.
     5. source_type: direct/inferred/background.
+    6. IDs: Use exact input IDs (cap_001, stt_001).
   
   one_shot: |
     Input: ...
     Output:
-    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 3개 항으로 분해됨.","source_type":"direct","evidence_refs":["stt_02"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"$q(x)$의 하한.","source_type":"background","evidence_refs":["vlm_01"],"confidence":"high"}],"explanations":[{"point":"$L_{elbo}$ 분해를 통해 학습 가능해짐.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"}],"open_questions":[]}}]
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 3개 항으로 분해됨.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"$q(x)$의 하한.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"$L_{elbo}$ 분해를 통해 학습 가능해짐.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
 
 # [Refactored] Tutor v1.5 (English Instructions)
 # - Origin: Re-engineered from temp_v1_legacy.yaml (sum_v1.5)
@@ -271,6 +274,7 @@ v1.5:
     6. **JSON Safety**:
        - No double quotes inside strings. 
        - Double escape backslashes for LaTeX (e.g. $\\alpha$).
+    7. **ID Formatting**: Start IDs with 'cap_' or 'stt_'. Use EXACT match.
 
   one_shot: |
     Input: {{ ... }}
@@ -280,16 +284,16 @@ v1.5:
         "segment_id": 1,
         "summary": {
           "bullets": [
-             {"bullet_id": "1-1", "claim": "ELBO(Evidence Lower Bound) maximizes the lower bound of log-likelihood.", "source_type": "direct", "evidence_refs": ["stt_01"], "confidence": "high", "notes": ""}
+             {"bullet_id": "1-1", "claim": "ELBO(Evidence Lower Bound) maximizes the lower bound of log-likelihood.", "source_type": "direct", "evidence_refs": ["stt_001"], "confidence": "high", "notes": ""}
           ],
           "definitions": [
-             {"term": "ELBO", "definition": "Evidence Lower Bound. Optimization target roughly equivalent to log-likelihood.", "source_type": "background", "evidence_refs": ["vlm_01"], "confidence": "high"},
-             {"term": "$p_{\\theta}(x)$", "definition": "Parametric probability distribution.", "source_type": "background", "evidence_refs": ["vlm_01"], "confidence": "high"}
+             {"term": "ELBO", "definition": "Evidence Lower Bound. Optimization target roughly equivalent to log-likelihood.", "source_type": "background", "evidence_refs": ["cap_001"], "confidence": "high"},
+             {"term": "$p_{\\theta}(x)$", "definition": "Parametric probability distribution.", "source_type": "background", "evidence_refs": ["cap_001"], "confidence": "high"}
           ],
           "explanations": [
-             {"point": "(Type A) Math: The objective is $\\mathcal{L} = \\mathbb{E}[\\log p]$. This breaks down...", "source_type": "inferred", "evidence_refs": ["stt_01"], "confidence": "high"},
-             {"point": "(Type B) Motivation: We use ELBO because direct calculation is intractable.", "source_type": "inferred", "evidence_refs": ["stt_01"], "confidence": "high"},
-             {"point": "(Type C) Comparison: Unlike MLE, this method...", "source_type": "inferred", "evidence_refs": ["stt_01"], "confidence": "high"}
+             {"point": "(Type A) Math: The objective is $\\mathcal{L} = \\mathbb{E}[\\log p]$. This breaks down...", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"},
+             {"point": "(Type B) Motivation: We use ELBO because direct calculation is intractable.", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"},
+             {"point": "(Type C) Comparison: Unlike MLE, this method...", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"}
           ],
           "open_questions": []
         }
@@ -323,11 +327,12 @@ v1.7:
        - Bullets: Core Facts/Claims.
        - Explanations: Logic/Reasoning/Deep Dive.
     5. **JSON**: Valid JSON only. double-escape latex ($\\alpha$).
+    6. **ID Formatting**: Use exact input IDs (cap_XXX, stt_XXX).
 
   one_shot: |
     Input: {{ ... }}
     Output:
-    [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO decomposes into Reconstruction, Prior, and Denoising terms.","source_type":"direct","evidence_refs":["stt_01"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; tractable lower bound of log-likelihood.","source_type":"background","evidence_refs":["vlm_01"],"confidence":"high"}],"explanations":[{"point":"(Math) Derived as $\\log p(x) \\ge \\text{ELBO}$. $\\mathcal{L}$ allows gradient checks.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"},{"point":"(Motivation) Tractability: Direct $\\log p(x)$ integral is hard, so we optimize ELBO.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"},{"point":"(Contrast) VAE vs Diffusion: Reparameterization aligns $q$ differently.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"}],"open_questions":[]}}]
+    [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO decomposes into Reconstruction, Prior, and Denoising terms.","source_type":"direct","evidence_refs":["stt_001"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; tractable lower bound of log-likelihood.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"(Math) Derived as $\\log p(x) \\ge \\text{ELBO}$. $\\mathcal{L}$ allows gradient checks.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Motivation) Tractability: Direct $\\log p(x)$ integral is hard, so we optimize ELBO.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Contrast) VAE vs Diffusion: Reparameterization aligns $q$ differently.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
 
 # [VLM-Optimized] Performant Tutor (v1.8)
 # - Goal: Maximize VLM LaTeX utilization for math-heavy content.
@@ -349,7 +354,7 @@ v1.8:
     1. **Standalone**: NO deixis (slide/video/here/this). Narrate visuals as facts.
     2. **VLM-First Math**: 
        - COPY LaTeX equations from VLM input VERBATIM (do NOT paraphrase).
-       - Always include vlm_id in evidence_refs for any math explanation.
+       - Always include component ID (e.g. cap_001) in evidence_refs for any math explanation.
        - If VLM has equation, MUST appear in output.
     3. **3-Exp Rule**: EACH segment MUST have 3 Distinct Explanations:
        - (1) Math/Symbol: Full Formula from VLM -> Term breakdown.
@@ -362,9 +367,13 @@ v1.8:
        - definitions: background items (standard).
        - explanations: (Math) -> (Contrast) -> (Motivation) order.
     7. **JSON**: Valid JSON only. double-escape latex ($\\alpha$).
+    8. **ID Formatting**:
+       - Use **EXACT** input IDs (e.g., "cap_001", "stt_001").
+       - **Evidence**: `evidence_refs` MUST contain strings like "cap_001" or "stt_001".
+       - Do NOT use generic IDs like "v1", "t1", or "ref1".
 
   one_shot: |
     Input: {{ ... }}
     Output:
-    [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO는 Reconstruction, Prior, Denoising 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_01","vlm_01"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; $\\log p(x)$의 tractable 하한.","source_type":"background","evidence_refs":["vlm_01"],"confidence":"high"}],"explanations":[{"point":"(Math) VLM에서 유도된 수식: $\\mathcal{L} = \\mathbb{E}_{q(x_1|x_0)}[\\log p_\\theta(x_0|x_1)] - KL(q(x_T|x_0)||p(x_T)) - \\sum_{t=2}^T \\mathbb{E}_{q(x_t|x_0)}[KL(q(x_{t-1}|x_t,x_0)||p_\\theta(x_{t-1}|x_t))]$. 각 항은 복원, 사전분포, 디노이징을 담당.","source_type":"inferred","evidence_refs":["vlm_01"],"confidence":"high"},{"point":"(Motivation) $\\log p(x)$ 직접 계산이 intractable하므로 ELBO를 최적화.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"},{"point":"(Contrast) VAE는 단일 latent, Diffusion은 시점별 매칭 수행.","source_type":"inferred","evidence_refs":["stt_01"],"confidence":"high"}],"open_questions":[]}}]
+    [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO는 Reconstruction, Prior, Denoising 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; $\\log p(x)$의 tractable 하한.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"(Math) VLM에서 유도된 수식: $\\mathcal{L} = \\mathbb{E}_{q(x_1|x_0)}[\\log p_\\theta(x_0|x_1)] - KL(q(x_T|x_0)||p(x_T)) - \\sum_{t=2}^T \\mathbb{E}_{q(x_t|x_0)}[KL(q(x_{t-1}|x_t,x_0)||p_\\theta(x_{t-1}|x_t))]$. 각 항은 복원, 사전분포, 디노이징을 담당.","source_type":"inferred","evidence_refs":["cap_001"],"confidence":"high"},{"point":"(Motivation) $\\log p(x)$ 직접 계산이 intractable하므로 ELBO를 최적화.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Contrast) VAE는 단일 latent, Diffusion은 시점별 매칭 수행.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
 

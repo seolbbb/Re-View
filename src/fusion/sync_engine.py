@@ -37,7 +37,7 @@ def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[in
             raise ValueError(f"Invalid segment duration in stt.json: {seg}")
         if text:
             normalized.append(
-                {"start_ms": start_ms, "end_ms": end_ms, "text": text}
+                {"start_ms": start_ms, "end_ms": end_ms, "text": text, "id": seg.get("id")}
             )
     duration_ms = payload.get("duration_ms")
     duration_ms = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
@@ -58,7 +58,7 @@ def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]
             extracted_text = str(item.get("extracted_text", "")).strip()
         except KeyError as exc:
             raise ValueError(f"Missing required keys in vlm.json: {item}") from exc
-        normalized.append({"timestamp_ms": timestamp_ms, "extracted_text": extracted_text})
+        normalized.append({"timestamp_ms": timestamp_ms, "extracted_text": extracted_text, "id": item.get("id")})
     duration_ms = payload.get("duration_ms")
     duration_ms = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
     return sorted(normalized, key=lambda x: x["timestamp_ms"]), duration_ms
@@ -264,13 +264,13 @@ def _extract_visual_units(
             kept_lines.append(text)
             deduped_lines.append(text)
         if kept_lines:
-            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines})
+            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines, "id": item.get("id")})
 
     visual_units: List[Dict[str, object]] = []
     for idx, item in enumerate(item_buffers, start=1):
         visual_units.append(
             {
-                "unit_id": f"v{idx}",
+                "unit_id": item.get("id") or f"v{idx}",
                 "timestamp_ms": int(item["timestamp_ms"]),
                 "text": "\n".join(item["lines"]),
             }
@@ -298,7 +298,7 @@ def _build_transcript_units(
     for idx, seg in enumerate(selected, start=1):
         transcript_units.append(
             {
-                "unit_id": f"t{idx}",
+                "unit_id": seg.get("id") or f"t{idx}",
                 "start_ms": int(seg["start_ms"]),
                 "end_ms": int(seg["end_ms"]),
                 "text": seg["text"],
@@ -370,6 +370,9 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
                 config.raw.sync_engine.max_visual_chars,
             )
 
+            stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str) and (u["unit_id"].startswith("vlm_") or u["unit_id"].startswith("cap_"))]
+
             segments_units_handle.write(
                 json.dumps(
                     {
@@ -379,6 +382,10 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
                         "end_ms": segment.end_ms,
                         "transcript_units": transcript_units,
                         "visual_units": visual_units,
+                        "source_refs": {
+                            "stt_ids": stt_ids,
+                            "vlm_ids": vlm_ids
+                        },
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -531,6 +538,9 @@ def run_batch_sync_engine(
             for unit in visual_units:
                 unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
 
+            stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str) and (u["unit_id"].startswith("vlm_") or u["unit_id"].startswith("cap_"))]
+
             record = {
                 "run_id": run_id,
                 "segment_id": idx + segment_id_offset,
@@ -538,6 +548,10 @@ def run_batch_sync_engine(
                 "end_ms": actual_end_ms,
                 "transcript_units": transcript_units,
                 "visual_units": visual_units,
+                "source_refs": {
+                    "stt_ids": stt_ids,
+                    "vlm_ids": vlm_ids
+                },
             }
             f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 

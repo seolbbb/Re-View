@@ -57,8 +57,9 @@ def build_fusion_vlm_payload(
         file_name = str(item["file_name"]).strip()
         if not file_name:
             continue
-            
-        manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name})
+
+        entry_id = item.get("id")
+        manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name, "id": entry_id})
 
     if not manifest_entries:
         raise ValueError("No valid entries found in manifest.json.")
@@ -102,7 +103,7 @@ def build_fusion_vlm_payload(
     items: List[Dict[str, Any]] = []
     
     for entry in manifest_entries:
-        ts = int(entry["timestamp_ms"])
+        ts = int(entry.get("timestamp_ms", entry.get("start_ms", 0)))
         file_name = str(entry["file_name"])
         
         # Manifest에는 있는데 VLM 결과가 없으면 에러 (누락 방지)
@@ -110,7 +111,8 @@ def build_fusion_vlm_payload(
             missing.append(file_name)
             continue
             
-        items.append({"timestamp_ms": ts, "extracted_text": image_text[file_name]})
+        entry_id = entry.get("id")
+        items.append({"timestamp_ms": ts, "extracted_text": image_text[file_name], "id": entry_id})
 
     if missing:
         preview = ", ".join(missing[:10])
