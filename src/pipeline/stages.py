@@ -133,11 +133,11 @@ def generate_fusion_config(
 def run_stt(video_path: Path, output_stt_json: Path, *, backend: str) -> None:
     """음성 인식을 실행해 stt.json을 생성한다."""
     router = STTRouter(provider=backend)
-    audio_output_path = output_stt_json.with_name(f"{video_path.stem}.wav")
+    # extract_audio가 코덱에 맞는 확장자를 자동 결정하므로 output_path를 None으로 전달
     router.transcribe_media(
         video_path,
         provider=backend,
-        audio_output_path=audio_output_path,
+        audio_output_path=None,  # 코덱 설정에 따라 자동 결정
         mono_method="auto",
         output_path=output_stt_json,
     )

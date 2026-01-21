@@ -36,9 +36,11 @@ def _clear_preprocess_artifacts(
     if captures_dir.exists():
         shutil.rmtree(captures_dir)
 
-    audio_path = store.video_root() / f"{raw_stem}.wav"
-    if audio_path.exists():
-        audio_path.unlink()
+    # 다중 오디오 포맷 지원: wav, flac, mp3 모두 삭제
+    for ext in (".wav", ".flac", ".mp3"):
+        audio_path = store.video_root() / f"{raw_stem}{ext}"
+        if audio_path.exists():
+            audio_path.unlink()
 
 
 def run_preprocess_pipeline(
