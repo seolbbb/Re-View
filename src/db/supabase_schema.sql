@@ -302,7 +302,27 @@ ALTER TABLE stt_results DROP COLUMN IF EXISTS segment_index;
 -- [Migration 2026-01-20] Semantic Search 지원
 -- ============================================================================
 
--- HNSW 인덱스 (코사인 유사도 검색용)
+-- 1. summary_text 컬럼 추가 (기존 DB 업그레이드용)
+ALTER TABLE summaries ADD COLUMN IF NOT EXISTS summary_text TEXT;
+
+-- 2. embedding 차원 변경: 1536 -> 1024 (Qwen3-Embedding-8B 모델)
+-- 주의: 기존 1536차원 임베딩 데이터가 있다면 NULL로 초기화됩니다.
+DO $$
+BEGIN
+    -- 기존 embedding 컬럼이 1536차원이면 1024차원으로 변경
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'summaries' 
+        AND column_name = 'embedding'
+    ) THEN
+        -- 기존 임베딩 데이터 삭제 (차원 불일치 방지)
+        UPDATE summaries SET embedding = NULL WHERE embedding IS NOT NULL;
+        -- 컬럼 타입 변경
+        ALTER TABLE summaries ALTER COLUMN embedding TYPE vector(1024);
+    END IF;
+END $$;
+
+-- 3. HNSW 인덱스 (코사인 유사도 검색용)
 CREATE INDEX IF NOT EXISTS idx_summaries_embedding_hnsw 
 ON summaries USING hnsw (embedding vector_cosine_ops);
 
