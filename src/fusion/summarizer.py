@@ -201,6 +201,12 @@ def _build_batch_prompt(
                 f"!!! 이전 시도 피드백 (반영하여 개선할 것) !!!\n{fb_text}\n"
             )
             
+        # VLM ID 인용 강제 유도를 위한 동적 지시문 주입
+        vlm_ids = seg.get("source_refs", {}).get("vlm_ids", [])
+        if vlm_ids:
+            reminder = f"!!! [IMPORTANT] Segment {seg_id} contains visual data (VLM IDs: {vlm_ids}). YOU MUST cite these IDs in evidence_refs for any math or visual explanation. !!!"
+            segments_text_parts.append(reminder)
+
         segments_text_parts.append(json.dumps(seg, ensure_ascii=False))
     segments_text = "\n".join(segments_text_parts)
     jsonl_text = "\n".join(json.dumps(seg, ensure_ascii=False) for seg in segments)
@@ -270,7 +276,8 @@ def _normalize_evidence_refs(evidence_refs: Any) -> List[str]:
     normalized: List[str] = []
     seen = set()
     for item in candidates:
-        if not (item.startswith("t") or item.startswith("v")):
+        # stt_, cap_, vlm prefix 지원
+        if not (item.startswith("stt_") or item.startswith("cap_") or item.startswith("vlm")):
             continue
         if item in seen:
             continue
@@ -597,6 +604,7 @@ def run_summarizer(
                         "segment_id": segment.get("segment_id"),
                         "start_ms": segment.get("start_ms"),
                         "end_ms": segment.get("end_ms"),
+                        "source_refs": segment.get("source_refs"),
                         "summary": summary,
                         "version": {
                             "prompt_version": prompt_version,
@@ -760,6 +768,7 @@ def run_batch_summarizer(
                         "segment_id": segment.get("segment_id"),
                         "start_ms": segment.get("start_ms"),
                         "end_ms": segment.get("end_ms"),
+                        "source_refs": segment.get("source_refs"),
                         "summary": summary,
                         "version": {
                             "prompt_version": prompt_version,

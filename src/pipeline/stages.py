@@ -494,6 +494,7 @@ def run_batch_fusion_pipeline(
     vlm_show_progress: bool,
     limit: Optional[int],
     repo_root: Path,
+    skip_vlm: bool = False,
 ) -> Dict[str, Any]:
     """배치 단위로 동기화와 요약을 반복 실행한다."""
     from src.fusion.summarizer import run_batch_summarizer
@@ -581,18 +582,25 @@ def run_batch_fusion_pipeline(
 
         batch_manifest = sorted_manifest[batch_info["start_idx"] : batch_info["end_idx"]]
 
-        _, batch_vlm_elapsed = timer.time_stage(
-            f"pipeline_batch_{batch_idx + 1}.vlm",
-            run_vlm_for_batch,
-            captures_dir=captures_dir,
-            manifest_json=manifest_json,
-            video_name=video_name,
-            output_dir=batch_dir,
-            batch_manifest=batch_manifest,
-            batch_size=vlm_batch_size,
-            concurrency=vlm_concurrency,
-            show_progress=vlm_show_progress,
-        )
+        if skip_vlm:
+             # VLM 결과가 이미 존재하는지 확인
+            if not (batch_dir / "vlm.json").exists():
+                 # 배치가 없으면 빈 결과라도 생성해야 할 수 있음, 하지만 여기선 Warning 출력
+                 print(f"⚠️ Warning: VLM skipped but {batch_dir}/vlm.json not found.")
+            batch_vlm_elapsed = 0.0
+        else:
+            _, batch_vlm_elapsed = timer.time_stage(
+                f"pipeline_batch_{batch_idx + 1}.vlm",
+                run_vlm_for_batch,
+                captures_dir=captures_dir,
+                manifest_json=manifest_json,
+                video_name=video_name,
+                output_dir=batch_dir,
+                batch_manifest=batch_manifest,
+                batch_size=vlm_batch_size,
+                concurrency=vlm_concurrency,
+                show_progress=vlm_show_progress,
+            )
         total_vlm_elapsed += batch_vlm_elapsed
 
         if not fusion_config_path.exists():

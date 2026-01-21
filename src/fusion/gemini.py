@@ -12,6 +12,9 @@ from .config import ConfigBundle
 
 logger = logging.getLogger(__name__)
 
+# [TEST] Safety imports for fix
+from google.genai.types import SafetySetting, HarmCategory, HarmBlockThreshold
+
 
 @dataclass(frozen=True)
 class GeminiClientBundle:
@@ -161,6 +164,18 @@ def generate_content(
         "response_mime_type": response_mime_type,
         "response_schema": response_schema,
     }
+
+    # [TEST-START] Disable Safety Filters to fix 'Failed to extract text' error
+    # Original: (No safety settings, uses defaults)
+    # config['safety_settings'] = None 
+    
+    config['safety_settings'] = [
+        SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.BLOCK_NONE),
+        SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.BLOCK_NONE),
+        SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.BLOCK_NONE),
+        SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.BLOCK_NONE),
+    ]
+    # [TEST-END]
     
     # timeout 인자 지원 여부에 따른 처리
     try:
@@ -222,9 +237,28 @@ def run_with_retries(
                 sleep_for = (
                     backoff_sec[min(attempt, len(backoff_sec) - 1)] if backoff_sec else 1
                 )
+                # Error message simplification
+                error_msg = str(exc)
+                if "429" in error_msg:
+                    simplified_msg = "429 RESOURCE_EXHAUSTED"
+                elif "503" in error_msg:
+                    simplified_msg = "503 UNAVAILABLE"
+                else:
+                    try:
+                        import ast
+                        start = error_msg.find("{")
+                        if start != -1:
+                            err_dict = ast.literal_eval(error_msg[start:])
+                            code = err_dict.get('error', {}).get('code', 'Unknown')
+                            status = err_dict.get('error', {}).get('status', 'Unknown')
+                            simplified_msg = f"{code} {status}"
+                        else:
+                            simplified_msg = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+                    except:
+                        simplified_msg = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+
                 logger.warning(
-                    f"GenerateContent failed (attempt {attempt+1}/{max_retries}). "
-                    f"Retrying in {sleep_for}s. Error: {exc}"
+                    f"⚠️ Retry {attempt+1}/{max_retries}: {simplified_msg}"
                 )
                 time.sleep(max(sleep_for, 0))
                 attempt += 1
