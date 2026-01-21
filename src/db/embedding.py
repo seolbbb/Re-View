@@ -5,6 +5,7 @@ Qwen3-Embedding-8B 모델을 사용하여 텍스트를 1024차원 벡터로 변�
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -12,6 +13,9 @@ from typing import List
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
+
+logger = logging.getLogger(__name__)
 
 
 # .env 파일 로드
@@ -62,6 +66,12 @@ def get_embedding_client() -> OpenAI:
     )
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 def generate_embedding(
     text: str,
     model: str = DEFAULT_EMBEDDING_MODEL,
@@ -77,12 +87,16 @@ def generate_embedding(
     Returns:
         1024차원 임베딩 벡터
         
+    Raises:
+        Exception: 3회 재시도 후에도 API 호출 실패 시
+        
     Example:
         >>> embedding = generate_embedding("ELBO는 Evidence Lower Bound입니다.")
         >>> len(embedding)
         1024
     """
     if not text or not text.strip():
+        logger.debug("빈 텍스트 - 제로 벡터 반환")
         return [0.0] * dimensions
     
     client = get_embedding_client()
@@ -96,6 +110,12 @@ def generate_embedding(
     return response.data[0].embedding
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 def generate_embeddings_batch(
     texts: List[str],
     model: str = DEFAULT_EMBEDDING_MODEL,
@@ -110,6 +130,9 @@ def generate_embeddings_batch(
         
     Returns:
         임베딩 벡터 리스트
+        
+    Raises:
+        Exception: 3회 재시도 후에도 API 호출 실패 시
     """
     if not texts:
         return []
@@ -123,8 +146,10 @@ def generate_embeddings_batch(
             valid_texts.append(text)
     
     if not valid_texts:
+        logger.debug(f"유효한 텍스트 없음 - {len(texts)}개 제로 벡터 반환")
         return [[0.0] * dimensions for _ in texts]
     
+    logger.info(f"임베딩 배치 생성: {len(valid_texts)}/{len(texts)}개 텍스트")
     client = get_embedding_client()
     
     response = client.embeddings.create(
@@ -139,4 +164,5 @@ def generate_embeddings_batch(
         original_index = valid_indices[i]
         results[original_index] = embedding_data.embedding
     
+    logger.debug(f"임베딩 생성 완료: {len(valid_texts)}개")
     return results

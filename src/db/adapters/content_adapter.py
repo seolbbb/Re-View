@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.fusion.renderer import render_summary_to_text
 from src.db.embedding import generate_embedding, generate_embeddings_batch
 
+logger = logging.getLogger(__name__)
 
 class ContentAdapterMixin:
     """STT, Segments, Summaries 테이블 작업을 위한 Mixin 클래스.
@@ -216,7 +218,7 @@ class ContentAdapterMixin:
                 for i, emb in enumerate(embeddings):
                     rows[i]["embedding"] = emb
             except Exception as e:
-                print(f"[WARN] 임베딩 생성 실패: {e}")
+                logger.warning(f"임베딩 생성 실패, 요약 저장은 계속 진행: {e}")
         
         if rows:
             result = self.client.table("summaries").insert(rows).execute()
