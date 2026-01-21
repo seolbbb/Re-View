@@ -24,18 +24,25 @@ GET 실행
     curl http://localhost:8000/health
 마지막 실행 로그:
     curl http://localhost:8000/runs/diffusion
+비디오 상태:
+    curl http://localhost:8000/videos/{video_id}/status
+처리 진행률:
+    curl http://localhost:8000/videos/{video_id}/progress
+최신 요약:
+    curl http://localhost:8000/videos/{video_id}/summary
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from src.db import get_supabase_adapter
 from src.run_process_pipeline import run_processing_pipeline
-import json
 
 
 app = FastAPI(title="Screentime Processing API")
@@ -87,3 +94,170 @@ def process_pipeline(request: ProcessRequest, background_tasks: BackgroundTasks)
     )
 
     return ProcessResponse(status="started", message="processing started")
+
+
+# =============================================================================
+# 새 ERD 기반 엔드포인트
+# =============================================================================
+
+
+@app.get("/videos/{video_id}/status")
+def get_video_status(video_id: str) -> Dict[str, Any]:
+    """비디오 상태 및 현재 작업 정보 조회."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 정보 조회
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    result = {
+        "video_id": video_id,
+        "video_status": video.get("status"),
+        "error_message": video.get("error_message"),
+    }
+    
+    # 전처리 작업 정보
+    preprocess_job_id = video.get("current_preprocess_job_id")
+    if preprocess_job_id:
+        preprocess_job = adapter.get_preprocessing_job(preprocess_job_id)
+        if preprocess_job:
+            result["preprocess_job"] = {
+                "id": preprocess_job_id,
+                "status": preprocess_job.get("status"),
+                "started_at": preprocess_job.get("started_at"),
+                "ended_at": preprocess_job.get("ended_at"),
+            }
+    
+    # 처리 작업 정보
+    processing_job_id = video.get("current_processing_job_id")
+    if processing_job_id:
+        processing_job = adapter.get_processing_job(processing_job_id)
+        if processing_job:
+            result["processing_job"] = {
+                "id": processing_job_id,
+                "status": processing_job.get("status"),
+                "progress_current": processing_job.get("progress_current"),
+                "progress_total": processing_job.get("progress_total"),
+                "started_at": processing_job.get("started_at"),
+                "ended_at": processing_job.get("ended_at"),
+            }
+    
+    return result
+
+
+@app.get("/videos/{video_id}/progress")
+def get_video_progress(video_id: str) -> Dict[str, Any]:
+    """처리 진행률 조회 (폴링용)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 정보 조회
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    processing_job_id = video.get("current_processing_job_id")
+    if not processing_job_id:
+        return {
+            "video_id": video_id,
+            "has_processing_job": False,
+            "video_status": video.get("status"),
+        }
+    
+    processing_job = adapter.get_processing_job(processing_job_id)
+    if not processing_job:
+        return {
+            "video_id": video_id,
+            "has_processing_job": False,
+            "video_status": video.get("status"),
+        }
+    
+    progress_current = processing_job.get("progress_current") or 0
+    progress_total = processing_job.get("progress_total") or 1
+    progress_percent = round((progress_current / progress_total) * 100, 1) if progress_total > 0 else 0
+    
+    return {
+        "video_id": video_id,
+        "has_processing_job": True,
+        "processing_job_id": processing_job_id,
+        "status": processing_job.get("status"),
+        "progress_current": progress_current,
+        "progress_total": progress_total,
+        "progress_percent": progress_percent,
+        "is_complete": processing_job.get("status") in ("DONE", "FAILED"),
+    }
+
+
+@app.get("/videos/{video_id}/summary")
+def get_video_summary(video_id: str, format: Optional[str] = None) -> Dict[str, Any]:
+    """최신 요약 결과 조회 (IN_PROGRESS 포함)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 존재 확인
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    # 최신 summary_results 조회
+    summary_result = adapter.get_latest_summary_results(video_id, format)
+    if not summary_result:
+        return {
+            "video_id": video_id,
+            "has_summary": False,
+            "video_status": video.get("status"),
+        }
+    
+    return {
+        "video_id": video_id,
+        "has_summary": True,
+        "summary_id": summary_result.get("id"),
+        "format": summary_result.get("format"),
+        "status": summary_result.get("status"),
+        "is_complete": summary_result.get("status") == "DONE",
+        "payload": summary_result.get("payload"),
+        "created_at": summary_result.get("created_at"),
+    }
+
+
+@app.get("/videos/{video_id}/summaries")
+def get_video_summaries(video_id: str) -> Dict[str, Any]:
+    """세부 요약 세그먼트 리스트 조회 (Chatbot용)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    # summaries 테이블 조회 (segments 조인됨)
+    rows = adapter.get_summaries(video_id)
+    
+    # 응답 포맷 구성
+    items = []
+    for r in rows:
+        seg_info = r.get("segments") or {}
+        items.append({
+            "summary_id": r.get("id"),
+            "segment_id": r.get("segment_id"),
+            "segment_index": seg_info.get("segment_index"),
+            "start_ms": seg_info.get("start_ms"),
+            "end_ms": seg_info.get("end_ms"),
+            "summary": r.get("summary"),  # JSONB
+            "created_at": r.get("created_at"),
+        })
+        
+    # segment_index 기준 정렬
+    items.sort(key=lambda x: x.get("segment_index") or 0)
+    
+    return {
+        "video_id": video_id,
+        "count": len(items),
+        "items": items,
+    }

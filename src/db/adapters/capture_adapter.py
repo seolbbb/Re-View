@@ -184,9 +184,9 @@ class CaptureAdapterMixin:
         manifest_json_path: Path,
         captures_dir: Path,
         bucket: str = "captures",
-        pipeline_run_id: Optional[str] = None,
+        preprocess_job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """캡처 이미지 업로드와 DB 메타데이터 저장을 통합 수행하는 편의 메서드입니다.
+        """캡처 이미지 업로드와 DB 메타데이터 저장을 통합 수행하는 편의 메소드입니다.
         
         Process:
         1. manifest.json 파싱
@@ -198,7 +198,7 @@ class CaptureAdapterMixin:
             manifest_json_path: 메타데이터 파일 경로
             captures_dir: 이미지 파일이 있는 디렉토리
             bucket: 업로드할 버킷
-            pipeline_run_id: 파이프라인 실행 ID
+            preprocess_job_id: 전처리 작업 ID (ERD 기준)
             
         Returns:
             Dict: 전체 처리 결과 요약 (저장된 DB 수, 업로드된 파일 수, 에러 목록)
@@ -238,7 +238,7 @@ class CaptureAdapterMixin:
                 "start_ms": cap.get("start_ms"),
                 "end_ms": cap.get("end_ms"),
                 "storage_path": storage_path, # 업로드 성공 시 경로, 아니면 None
-                "pipeline_run_id": pipeline_run_id,
+                "preprocess_job_id": preprocess_job_id,
             })
         
         # 3. DB에 일괄 저장
@@ -257,7 +257,7 @@ class CaptureAdapterMixin:
         captures: List[Dict[str, Any]],
         captures_dir: Path,
         bucket: str = "captures",
-        pipeline_run_id: Optional[str] = None,
+        preprocess_job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """메타데이터 리스트로 캡처 업로드/저장을 수행한다."""
         results = {
@@ -289,7 +289,7 @@ class CaptureAdapterMixin:
                 "start_ms": cap.get("start_ms"),
                 "end_ms": cap.get("end_ms"),
                 "storage_path": storage_path,
-                "pipeline_run_id": pipeline_run_id,
+                "preprocess_job_id": preprocess_job_id,
             })
 
         if rows:

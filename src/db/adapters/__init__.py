@@ -4,10 +4,12 @@ from .base import BaseAdapter
 from .video_adapter import VideoAdapterMixin
 from .capture_adapter import CaptureAdapterMixin
 from .content_adapter import ContentAdapterMixin
+from .job_adapter import JobAdapterMixin
 
 __all__ = [
     "BaseAdapter",
     "VideoAdapterMixin",
     "CaptureAdapterMixin",
     "ContentAdapterMixin",
+    "JobAdapterMixin",
 ]

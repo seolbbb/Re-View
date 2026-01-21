@@ -25,7 +25,7 @@ if ENV_PATH.exists():
 else:
     load_dotenv()
 
-from src.db import get_supabase_adapter, sync_pipeline_results_to_db
+from src.db import get_supabase_adapter, sync_processing_results_to_db
 from src.pipeline.benchmark import BenchmarkTimer, print_benchmark_report
 from src.pipeline.stages import (
     generate_fusion_config,
@@ -213,26 +213,27 @@ def run_processing_pipeline(
         manifest_json = video_root / "manifest.json"
         video_root.mkdir(parents=True, exist_ok=True)
 
-        # 최신 파이프라인 실행 ID가 있으면 그 결과를 우선 사용한다.
-        latest_run_id = None
-        run_result = (
-            adapter.client.table("pipeline_runs")
+        # 최신 전처리 작업 ID가 있으면 그 결과를 우선 사용한다.
+        latest_preprocess_job_id = None
+        preprocess_result = (
+            adapter.client.table("preprocessing_jobs")
             .select("id,created_at")
             .eq("video_id", video_id)
+            .eq("status", "DONE")
             .order("created_at", desc=True)
             .limit(1)
             .execute()
         )
-        run_rows = run_result.data or []
-        if run_rows:
-            latest_run_id = run_rows[0].get("id")
+        preprocess_rows = preprocess_result.data or []
+        if preprocess_rows:
+            latest_preprocess_job_id = preprocess_rows[0].get("id")
 
-        # STT 결과를 우선 최신 실행 기준으로 가져온다.
+        # STT 결과를 우선 최신 전처리 작업 기준으로 가져온다.
         stt_query = adapter.client.table("stt_results").select("*").eq("video_id", video_id)
-        if latest_run_id:
-            stt_query = stt_query.eq("pipeline_run_id", latest_run_id)
+        if latest_preprocess_job_id:
+            stt_query = stt_query.eq("preprocess_job_id", latest_preprocess_job_id)
         stt_rows = stt_query.execute().data or []
-        if not stt_rows and latest_run_id:
+        if not stt_rows and latest_preprocess_job_id:
             stt_rows = (
                 adapter.client.table("stt_results")
                 .select("*")
@@ -268,13 +269,13 @@ def run_processing_pipeline(
 
         captures_query = (
             adapter.client.table("captures")
-            .select("file_name,start_ms,end_ms,storage_path,pipeline_run_id")
+            .select("file_name,start_ms,end_ms,storage_path,preprocess_job_id")
             .eq("video_id", video_id)
         )
-        if latest_run_id:
-            captures_query = captures_query.eq("pipeline_run_id", latest_run_id)
+        if latest_preprocess_job_id:
+            captures_query = captures_query.eq("preprocess_job_id", latest_preprocess_job_id)
         capture_rows = captures_query.execute().data or []
-        if not capture_rows and latest_run_id:
+        if not capture_rows and latest_preprocess_job_id:
             capture_rows = (
                 adapter.client.table("captures")
                 .select("file_name,start_ms,end_ms,storage_path")
@@ -327,6 +328,23 @@ def run_processing_pipeline(
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     capture_count = len(manifest_payload) if isinstance(manifest_payload, list) else 0
 
+    # processing_jobs 레코드 생성 (DB 사용 시)
+    processing_job_id = None
+    adapter_for_job = None
+    if sync_to_db or use_db:
+        adapter_for_job = get_supabase_adapter()
+        if adapter_for_job and video_id:
+            try:
+                job = adapter_for_job.create_processing_job(
+                    video_id,
+                    triggered_by="MANUAL",
+                )
+                processing_job_id = job.get("id")
+                if processing_job_id:
+                    print(f"[DB] Created processing_job: {processing_job_id}")
+            except Exception as e:
+                print(f"[DB] Warning: Failed to create processing_job: {e}")
+
     # 메타데이터와 타이머를 초기화한다.
     timer = BenchmarkTimer()
     run_meta_path = video_root / "pipeline_run.json"
@@ -334,6 +352,7 @@ def run_processing_pipeline(
         "pipeline_type": "process",
         "video_name": video_name or safe_video_name,
         "video_id": video_id,
+        "processing_job_id": processing_job_id,
         "output_base": str(output_base_path),
         "batch_mode": batch_mode,
         "batch_size": batch_size,
@@ -345,6 +364,7 @@ def run_processing_pipeline(
     run_meta: Dict[str, Any] = {
         "video_name": video_name or safe_video_name,
         "video_id": video_id,
+        "processing_job_id": processing_job_id,
         "video_root": str(video_root),
         "output_base": str(output_base_path),
         "input_source": input_source,
@@ -360,6 +380,14 @@ def run_processing_pipeline(
         json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+    # processing_job 상태를 VLM_RUNNING으로 업데이트
+    if processing_job_id and adapter_for_job:
+        try:
+            adapter_for_job.update_processing_job_status(processing_job_id, "VLM_RUNNING")
+            adapter_for_job.update_processing_job_progress(processing_job_id, 0, capture_count)
+        except Exception as e:
+            print(f"[DB] Warning: Failed to update processing_job status: {e}")
 
     timer.start_total()
     segment_count = 0
@@ -460,21 +488,36 @@ def run_processing_pipeline(
             encoding="utf-8",
         )
 
-        if sync_to_db:
+        if sync_to_db and processing_job_id:
             # 선택적으로 결과물을 DB에 업로드한다.
-            print("\nSyncing processing outputs to Supabase...")
-            db_success = sync_pipeline_results_to_db(
-                video_path=Path(video_name or safe_video_name or "video"),
+            print("\nSyncing processing outputs to Supabase (Processing Jobs)...")
+            db_results = sync_processing_results_to_db(
                 video_root=video_root,
-                run_meta=run_meta,
-                duration_sec=db_duration,
-                provider="clova",
-                include_preprocess=include_preprocess_in_process_sync,
+                video_id=video_id,
+                processing_job_id=processing_job_id,
             )
-            if db_success:
-                print("Database sync completed.")
+            saved = db_results.get("saved", {})
+            errors = db_results.get("errors", [])
+            
+            print(f"[DB] Upload Summary (Processing Job {processing_job_id}):")
+            for k, v in saved.items():
+                print(f"  - {k}: {v} records")
+            
+            if errors:
+                print(f"[DB] ⚠️ Completed with {len(errors)} errors:")
+                for e in errors:
+                    print(f"  - {e}")
             else:
-                print("Database sync skipped or failed (check logs above).")
+                print("[DB] ✅ Processing artifacts uploaded successfully.")
+
+        # processing_job 상태를 DONE으로 업데이트
+        if processing_job_id and adapter_for_job:
+            try:
+                adapter_for_job.update_processing_job_status(processing_job_id, "DONE")
+                adapter_for_job.update_processing_job_progress(processing_job_id, capture_count, capture_count)
+                print(f"[DB] processing_job {processing_job_id} marked as DONE")
+            except Exception as e:
+                print(f"[DB] Warning: Failed to update processing_job status: {e}")
 
         print("\nProcessing completed.")
         print(f"Outputs: {video_root}")
@@ -491,6 +534,16 @@ def run_processing_pipeline(
             json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        
+        # processing_job 상태를 FAILED로 업데이트
+        if processing_job_id and adapter_for_job:
+            try:
+                adapter_for_job.update_processing_job_status(
+                    processing_job_id, "FAILED", error_message=str(exc)
+                )
+                print(f"[DB] processing_job {processing_job_id} marked as FAILED")
+            except Exception:
+                pass
         print(f"\nProcessing failed: {exc}")
         raise
 

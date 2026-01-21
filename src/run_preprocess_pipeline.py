@@ -70,7 +70,7 @@ def run_preprocess_pipeline(
     limit: Optional[int] = None,
     write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
-) -> None:
+) -> Optional[str]:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
     # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
     settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
@@ -173,11 +173,12 @@ def run_preprocess_pipeline(
             video_root=video_root,
             run_meta=run_meta,
             duration_sec=video_info.get("duration_sec"),
+            stt_backend=stt_backend,
         )
         if db_context:
-            _, _, pipeline_run_id = db_context
-            if pipeline_run_id:
-                run_meta["pipeline_run_id"] = pipeline_run_id
+            _, _, preprocess_job_id = db_context
+            if preprocess_job_id:
+                run_meta["preprocess_job_id"] = preprocess_job_id
             print("\nSyncing preprocessing artifacts to Supabase as stages complete...")
 
     timer.start_total()
@@ -202,13 +203,13 @@ def run_preprocess_pipeline(
         ) -> None:
             if not db_context:
                 return
-            adapter, video_id, pipeline_run_id = db_context
+            adapter, video_id, preprocess_job_id = db_context
             stage_results = sync_preprocess_artifacts_to_db(
                 adapter=adapter,
                 video_id=video_id,
                 video_root=video_root,
                 provider=stt_backend,
-                pipeline_run_id=pipeline_run_id,
+                preprocess_job_id=preprocess_job_id,
                 include_stt=stage == "stt",
                 include_captures=stage == "capture",
                 stt_payload=stt_payload if stage == "stt" else None,
@@ -338,11 +339,11 @@ def run_preprocess_pipeline(
         if sync_to_db:
             if db_context:
                 try:
-                    adapter, video_id, pipeline_run_id = db_context
+                    adapter, video_id, preprocess_job_id = db_context
                     finalize_preprocess_db_sync(
                         adapter=adapter,
                         video_id=video_id,
-                        pipeline_run_id=pipeline_run_id,
+                        preprocess_job_id=preprocess_job_id,
                         run_meta=run_meta,
                         errors=db_errors,
                     )
@@ -364,6 +365,14 @@ def run_preprocess_pipeline(
         print("\nPreprocessing completed.")
         print(f"Outputs: {video_root}")
         print(f"Benchmark: {report_path}")
+        
+        if sync_to_db and db_context:
+            try:
+                _, video_id, _ = db_context
+                return video_id
+            except Exception:
+                pass
+        return None
 
     except Exception as exc:
         # 재발생 전에 실패 메타데이터를 항상 기록한다.
@@ -378,12 +387,12 @@ def run_preprocess_pipeline(
         )
         if sync_to_db and db_context:
             try:
-                adapter, video_id, pipeline_run_id = db_context
+                adapter, video_id, preprocess_job_id = db_context
                 db_errors.append(f"pipeline: {exc}")
                 finalize_preprocess_db_sync(
                     adapter=adapter,
                     video_id=video_id,
-                    pipeline_run_id=pipeline_run_id,
+                    preprocess_job_id=preprocess_job_id,
                     run_meta=run_meta,
                     errors=db_errors,
                 )

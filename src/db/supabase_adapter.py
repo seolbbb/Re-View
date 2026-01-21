@@ -11,10 +11,11 @@ from .adapters import (
     VideoAdapterMixin,
     CaptureAdapterMixin,
     ContentAdapterMixin,
+    JobAdapterMixin,
 )
 
 
-class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, ContentAdapterMixin):
+class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, ContentAdapterMixin, JobAdapterMixin):
     """Supabase 데이터베이스 통합 어댑터 클래스.
     
     이 클래스는 여러 Mixin을 상속받아 Supabase와의 모든 상호작용을 단일 인터페이스로 제공합니다.
