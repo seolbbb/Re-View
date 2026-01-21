@@ -41,6 +41,7 @@ class WhisperSTTClient:
         audio_path: str | Path,
         output_path: str | Path | None = None,
         *,
+        write_output: bool = True,
         include_confidence: bool = False,
         include_raw_response: bool = False,
         language: str = "ko",
@@ -87,12 +88,12 @@ class WhisperSTTClient:
         if include_raw_response:
             stt_data["raw_response"] = result
 
-        if output_path is None:
-            output_path = Path("src/data/output") / audio_path.stem / "stt.json"
-        else:
-            output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(stt_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if write_output:
+            if output_path is None:
+                output_path = Path("src/data/output") / audio_path.stem / "stt.json"
+            else:
+                output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(stt_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
         return stt_data
-

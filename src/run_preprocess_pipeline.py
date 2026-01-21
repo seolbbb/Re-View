@@ -68,6 +68,7 @@ def run_preprocess_pipeline(
     capture_min_interval: Optional[float] = None,
     capture_verbose: bool = False,
     limit: Optional[int] = None,
+    write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
 ) -> None:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
@@ -104,12 +105,21 @@ def run_preprocess_pipeline(
     db_settings = settings.get("db", {})
     if not isinstance(db_settings, dict):
         db_settings = {}
+    preprocess_settings = settings.get("preprocess", {})
+    if not isinstance(preprocess_settings, dict):
+        preprocess_settings = {}
     if sync_to_db is None:
         sync_to_db = db_settings.get("sync_to_db_preprocess")
         if sync_to_db is None:
             sync_to_db = True
     if not isinstance(sync_to_db, bool):
         sync_to_db = True
+    if write_local_json is None:
+        write_local_json = preprocess_settings.get("write_local_json")
+        if write_local_json is None:
+            write_local_json = True
+    if not isinstance(write_local_json, bool):
+        write_local_json = True
 
     # 이번 비디오 실행에 대한 출력 루트를 만든다.
     output_base_path = (ROOT / Path(output_base)).resolve()
@@ -133,6 +143,7 @@ def run_preprocess_pipeline(
         "capture_min_interval": capture_min_interval,
         "capture_verbose": capture_verbose,
         "limit": limit,
+        "write_local_json": write_local_json,
     }
     run_meta: Dict[str, Any] = {
         "video_path": str(video_path),
@@ -183,7 +194,12 @@ def run_preprocess_pipeline(
         stt_elapsed = 0.0
         capture_elapsed = 0.0
 
-        def _sync_stage(stage: str) -> None:
+        def _sync_stage(
+            stage: str,
+            *,
+            stt_payload: Optional[Dict[str, Any]] = None,
+            captures_payload: Optional[List[Dict[str, Any]]] = None,
+        ) -> None:
             if not db_context:
                 return
             adapter, video_id, pipeline_run_id = db_context
@@ -195,6 +211,8 @@ def run_preprocess_pipeline(
                 pipeline_run_id=pipeline_run_id,
                 include_stt=stage == "stt",
                 include_captures=stage == "capture",
+                stt_payload=stt_payload if stage == "stt" else None,
+                captures_payload=captures_payload if stage == "capture" else None,
             )
             saved = stage_results.get("saved", {})
             errors = stage_results.get("errors", [])
@@ -213,13 +231,18 @@ def run_preprocess_pipeline(
         if parallel:
             # STT와 캡처를 동시에 실행한다.
             with ThreadPoolExecutor(max_workers=2) as executor:
-                def run_stt_timed() -> float:
+                def run_stt_timed() -> Tuple[Dict[str, Any], float]:
                     # 벤치마크를 위해 STT 실행 시간을 측정한다.
                     start = time.perf_counter()
-                    run_stt(video_path, stt_json, backend=stt_backend)
-                    return time.perf_counter() - start
+                    stt_payload = run_stt(
+                        video_path,
+                        stt_json,
+                        backend=stt_backend,
+                        write_output=write_local_json,
+                    )
+                    return stt_payload, time.perf_counter() - start
 
-                def run_capture_timed():
+                def run_capture_timed() -> Tuple[List[Dict[str, Any]], float]:
                     # 캡처 실행 시간을 측정하고 결과를 반환한다.
                     start = time.perf_counter()
                     result = run_capture(
@@ -230,6 +253,7 @@ def run_preprocess_pipeline(
                         min_interval=capture_min_interval,
                         verbose=capture_verbose,
                         video_name=video_name,
+                        write_manifest=write_local_json,
                     )
                     return result, time.perf_counter() - start
 
@@ -243,20 +267,27 @@ def run_preprocess_pipeline(
                 for future in as_completed(futures):
                     stage = futures[future]
                     if stage == "stt":
-                        stt_elapsed = future.result()
+                        stt_payload, stt_elapsed = future.result()
                         timer.record_stage("stt", stt_elapsed)
                         print(f"  STT done in {format_duration(stt_elapsed)} (parallel)")
-                        _sync_stage("stt")
+                        _sync_stage("stt", stt_payload=stt_payload)
                     else:
                         capture_result, capture_elapsed = future.result()
                         capture_count = len(capture_result) if capture_result else 0
                         timer.record_stage("capture", capture_elapsed)
                         print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
-                        _sync_stage("capture")
+                        _sync_stage("capture", captures_payload=capture_result)
         else:
             # 동일한 타이밍 측정을 유지하며 순차 실행한다.
-            _, stt_elapsed = timer.time_stage("stt", run_stt, video_path, stt_json, backend=stt_backend)
-            _sync_stage("stt")
+            stt_payload, stt_elapsed = timer.time_stage(
+                "stt",
+                run_stt,
+                video_path,
+                stt_json,
+                backend=stt_backend,
+                write_output=write_local_json,
+            )
+            _sync_stage("stt", stt_payload=stt_payload)
             capture_result, capture_elapsed = timer.time_stage(
                 "capture",
                 run_capture,
@@ -267,9 +298,10 @@ def run_preprocess_pipeline(
                 min_interval=capture_min_interval,
                 verbose=capture_verbose,
                 video_name=video_name,
+                write_manifest=write_local_json,
             )
             capture_count = len(capture_result) if capture_result else 0
-            _sync_stage("capture")
+            _sync_stage("capture", captures_payload=capture_result)
 
         timer.end_total()
 
@@ -374,6 +406,12 @@ def main() -> None:
         help="Run STT and Capture in parallel",
     )
     parser.add_argument("--capture-verbose", action="store_true", help="Enable capture logs")
+    parser.add_argument(
+        "--local-json",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Write preprocess JSON artifacts to disk",
+    )
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
     parser.set_defaults(db_sync=None)
@@ -385,6 +423,7 @@ def main() -> None:
         stt_backend=args.stt_backend,
         parallel=args.parallel,
         capture_verbose=args.capture_verbose,
+        write_local_json=args.local_json,
         sync_to_db=args.db_sync,
     )
 

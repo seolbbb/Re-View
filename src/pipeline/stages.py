@@ -130,16 +130,23 @@ def generate_fusion_config(
     )
 
 
-def run_stt(video_path: Path, output_stt_json: Path, *, backend: str) -> None:
-    """음성 인식을 실행해 stt.json을 생성한다."""
+def run_stt(
+    video_path: Path,
+    output_stt_json: Optional[Path],
+    *,
+    backend: str,
+    write_output: bool = True,
+) -> Dict[str, Any]:
+    """음성 인식을 실행해 stt 결과를 반환한다."""
     router = STTRouter(provider=backend)
-    # extract_audio가 코덱에 맞는 확장자를 자동 결정하므로 output_path를 None으로 전달
-    router.transcribe_media(
+    audio_output_path = output_stt_json.with_name(f"{video_path.stem}.wav") if output_stt_json else None
+    return router.transcribe_media(
         video_path,
         provider=backend,
         audio_output_path=None,  # 코덱 설정에 따라 자동 결정
         mono_method="auto",
-        output_path=output_stt_json,
+        output_path=output_stt_json if write_output else None,
+        write_output=write_output,
     )
 
 
@@ -152,6 +159,7 @@ def run_capture(
     min_interval: float,
     verbose: bool,
     video_name: str,
+    write_manifest: bool = True,
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
     metadata = process_single_video_capture(
@@ -160,6 +168,7 @@ def run_capture(
         scene_threshold=threshold,
         dedupe_threshold=dedupe_threshold,
         min_interval=min_interval,
+        write_manifest=write_manifest,
     )
     return metadata
 
