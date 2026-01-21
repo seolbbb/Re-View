@@ -145,3 +145,21 @@ class VideoAdapterMixin:
         }
         result = self.client.table("pipeline_runs").insert(data).execute()
         return result.data[0] if result.data else {}
+
+    def update_pipeline_run(
+        self,
+        pipeline_run_id: str,
+        run_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """기존 pipeline_runs 레코드의 메타데이터를 갱신합니다."""
+        data: Dict[str, Any] = {"run_meta": run_meta}
+        status = run_meta.get("status") if isinstance(run_meta, dict) else None
+        if status:
+            data["status"] = status
+        result = (
+            self.client.table("pipeline_runs")
+            .update(data)
+            .eq("id", pipeline_run_id)
+            .execute()
+        )
+        return result.data[0] if result.data else {}

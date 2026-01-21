@@ -13,7 +13,7 @@ Supabase 데이터베이스로 전송하는 연결 고리 역할을 합니다.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from .supabase_adapter import get_supabase_adapter
 
 def sync_pipeline_results_to_db(
@@ -126,3 +126,130 @@ def sync_pipeline_results_to_db(
         # import traceback
         # traceback.print_exc()
         return False
+
+
+def prepare_preprocess_db_sync(
+    *,
+    video_path: Path,
+    video_root: Path,
+    run_meta: Dict[str, Any],
+    duration_sec: Optional[int] = None,
+    user_id: Optional[str] = None,
+) -> Optional[Tuple[Any, str, Optional[str]]]:
+    """전처리 단계의 부분 업로드를 위한 DB 컨텍스트를 준비한다."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        print("[DB] Supabase adapter not configured (check .env). Skipping upload.")
+        return None
+    try:
+        # preprocess 단계에서 재사용할 video_id/pipeline_run_id를 미리 만든다.
+        if duration_sec is not None:
+            try:
+                duration_sec = int(float(str(duration_sec)))
+            except (ValueError, TypeError):
+                duration_sec = None
+
+        video_id = None
+        if user_id:
+            # 동일 파일명의 기존 video 레코드를 재사용한다.
+            existing_video = adapter.get_video_by_filename(user_id, video_path.name)
+            if existing_video:
+                video_id = existing_video["id"]
+
+        if not video_id:
+            # 없으면 새로 만들고 이후 단계에서 재사용한다.
+            video_data = adapter.create_video(
+                name=video_path.stem,
+                original_filename=video_path.name,
+                storage_path=str(video_root),
+                duration_sec=duration_sec,
+                user_id=user_id,
+            )
+            video_id = video_data["id"]
+
+        pipeline_run_id = None
+        if run_meta:
+            # 전처리 시작 시점의 run_meta를 먼저 저장해 run_id를 확보한다.
+            run_data = adapter.save_pipeline_run(video_id, run_meta)
+            pipeline_run_id = run_data.get("id")
+
+        return adapter, video_id, pipeline_run_id
+    except Exception as exc:
+        print(f"[DB] ❌ Sync init failed: {exc}")
+        return None
+
+
+def sync_preprocess_artifacts_to_db(
+    *,
+    adapter: Any,
+    video_id: str,
+    video_root: Path,
+    provider: str,
+    pipeline_run_id: Optional[str],
+    include_stt: bool,
+    include_captures: bool,
+) -> Dict[str, Any]:
+    """STT/캡처 아티팩트를 부분 업로드한다."""
+    results: Dict[str, Any] = {"saved": {}, "errors": []}
+
+    if include_captures:
+        manifest_path = video_root / "manifest.json"
+        if manifest_path.exists():
+            try:
+                # manifest.json + captures/ 이미지를 읽어 업로드한다.
+                captures_dir = video_root / "captures"
+                captures_result = adapter.save_captures_with_upload(
+                    video_id,
+                    manifest_path,
+                    captures_dir,
+                    pipeline_run_id=pipeline_run_id,
+                )
+                results["saved"]["captures"] = captures_result.get("db_saved", 0)
+                results["errors"].extend(captures_result.get("errors", []))
+            except Exception as e:
+                results["errors"].append(f"captures: {str(e)}")
+
+    if include_stt:
+        stt_path = video_root / "stt.json"
+        if stt_path.exists():
+            try:
+                # stt.json을 읽어 DB에 직접 저장한다.
+                stt_rows = adapter.save_stt_from_file(
+                    video_id,
+                    stt_path,
+                    provider=provider,
+                    pipeline_run_id=pipeline_run_id,
+                )
+                results["saved"]["stt_results"] = len(stt_rows) if stt_rows else 0
+            except Exception as e:
+                results["errors"].append(f"stt_results: {str(e)}")
+
+    return results
+
+
+def finalize_preprocess_db_sync(
+    *,
+    adapter: Any,
+    video_id: str,
+    pipeline_run_id: Optional[str],
+    run_meta: Dict[str, Any],
+    errors: List[str],
+) -> None:
+    """전처리 업로드 이후 상태/메타데이터를 갱신한다."""
+    if pipeline_run_id:
+        # 전처리 완료 시점의 run_meta로 최신 상태를 덮어쓴다.
+        adapter.update_pipeline_run(pipeline_run_id, run_meta)
+
+    run_status = run_meta.get("status") if isinstance(run_meta, dict) else None
+    error_message = "; ".join(errors) if errors else None
+    if run_status == "error":
+        # 파이프라인 자체 실패는 failed로 표시한다.
+        if not error_message and isinstance(run_meta, dict):
+            error_message = run_meta.get("error")
+        adapter.update_video_status(video_id, "failed", error=error_message)
+    elif errors:
+        # 부분 업로드 실패는 completed_with_errors로 표시한다.
+        adapter.update_video_status(video_id, "completed_with_errors", error=error_message)
+    else:
+        # 문제 없으면 completed로 마무리한다.
+        adapter.update_video_status(video_id, "completed")
