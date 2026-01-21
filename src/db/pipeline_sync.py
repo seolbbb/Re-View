@@ -188,41 +188,67 @@ def sync_preprocess_artifacts_to_db(
     pipeline_run_id: Optional[str],
     include_stt: bool,
     include_captures: bool,
+    stt_payload: Optional[Any] = None,
+    captures_payload: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """STT/캡처 아티팩트를 부분 업로드한다."""
     results: Dict[str, Any] = {"saved": {}, "errors": []}
 
     if include_captures:
-        manifest_path = video_root / "manifest.json"
-        if manifest_path.exists():
-            try:
-                # manifest.json + captures/ 이미지를 읽어 업로드한다.
-                captures_dir = video_root / "captures"
-                captures_result = adapter.save_captures_with_upload(
+        try:
+            captures_dir = video_root / "captures"
+            if captures_payload is not None:
+                captures_result = adapter.save_captures_with_upload_payload(
                     video_id,
-                    manifest_path,
+                    captures_payload,
                     captures_dir,
                     pipeline_run_id=pipeline_run_id,
                 )
+            else:
+                manifest_path = video_root / "manifest.json"
+                if not manifest_path.exists():
+                    captures_result = None
+                else:
+                    captures_result = adapter.save_captures_with_upload(
+                        video_id,
+                        manifest_path,
+                        captures_dir,
+                        pipeline_run_id=pipeline_run_id,
+                    )
+            if captures_result:
                 results["saved"]["captures"] = captures_result.get("db_saved", 0)
                 results["errors"].extend(captures_result.get("errors", []))
-            except Exception as e:
-                results["errors"].append(f"captures: {str(e)}")
+        except Exception as e:
+            results["errors"].append(f"captures: {str(e)}")
 
     if include_stt:
-        stt_path = video_root / "stt.json"
-        if stt_path.exists():
-            try:
-                # stt.json을 읽어 DB에 직접 저장한다.
-                stt_rows = adapter.save_stt_from_file(
+        try:
+            if stt_payload is not None:
+                segments = stt_payload.get("segments", stt_payload) if isinstance(stt_payload, dict) else stt_payload
+                if isinstance(segments, dict):
+                    segments = segments.get("segments", [])
+                if not isinstance(segments, list):
+                    segments = []
+                stt_rows = adapter.save_stt_result(
                     video_id,
-                    stt_path,
-                    provider=provider,
+                    segments,
                     pipeline_run_id=pipeline_run_id,
+                    provider=provider,
                 )
-                results["saved"]["stt_results"] = len(stt_rows) if stt_rows else 0
-            except Exception as e:
-                results["errors"].append(f"stt_results: {str(e)}")
+            else:
+                stt_path = video_root / "stt.json"
+                if not stt_path.exists():
+                    stt_rows = None
+                else:
+                    stt_rows = adapter.save_stt_from_file(
+                        video_id,
+                        stt_path,
+                        provider=provider,
+                        pipeline_run_id=pipeline_run_id,
+                    )
+            results["saved"]["stt_results"] = len(stt_rows) if stt_rows else 0
+        except Exception as e:
+            results["errors"].append(f"stt_results: {str(e)}")
 
     return results
 

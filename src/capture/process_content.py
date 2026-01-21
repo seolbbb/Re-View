@@ -18,6 +18,7 @@ def process_single_video_capture(
     scene_threshold: Optional[float] = None,
     dedupe_threshold: Optional[float] = None,
     min_interval: Optional[float] = None,
+    write_manifest: bool = True,
 ) -> list:
     """
     run_preprocess_pipeline.py에서 호출되는 캡쳐 인터페이스.
@@ -29,6 +30,7 @@ def process_single_video_capture(
     scene_threshold: 장면 전환 감지 임계값(None이면 설정값 사용).
     dedupe_threshold: 미사용 파라미터(호환 유지용).
     min_interval: 최소 캡처 간격(None이면 설정값 사용).
+    write_manifest: manifest.json 저장 여부.
 
     반환: 추출된 슬라이드 메타데이터 리스트.
     """
@@ -61,9 +63,10 @@ def process_single_video_capture(
     for idx, slide in enumerate(slides, 1):
         slide["id"] = f"cap_{idx:03d}"
 
-    manifest_path = output_root / "manifest.json"
-    with manifest_path.open("w", encoding="utf-8") as handle:
-        json.dump(slides, handle, ensure_ascii=False, indent=2)
+    if write_manifest:
+        manifest_path = output_root / "manifest.json"
+        with manifest_path.open("w", encoding="utf-8") as handle:
+            json.dump(slides, handle, ensure_ascii=False, indent=2)
 
     print(f"[Capture] Completed: {len(slides)} slides in {elapsed:.2f}s")
     return slides

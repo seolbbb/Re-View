@@ -67,6 +67,8 @@ class STTRouter:
         media_path: str | Path,
         *,
         provider: str | None = None,
+        output_path: str | Path | None = None,
+        write_output: bool = True,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """지정된 제공자로 STT를 실행한다."""
@@ -78,12 +80,20 @@ class STTRouter:
         kwargs = _merge_defaults(provider_defaults, kwargs)
 
         if provider_name == "clova":
-            return ClovaSpeechClient().transcribe(media_path, **kwargs)
+            return ClovaSpeechClient().transcribe(
+                media_path,
+                output_path=output_path,
+                write_output=write_output,
+                **kwargs,
+            )
         if provider_name == "whisper":
             model_size = kwargs.pop("model_size", "base")
             device = kwargs.pop("device", None)
             return WhisperSTTClient(model_size=model_size, device=device).transcribe(
-                media_path, **kwargs
+                media_path,
+                output_path=output_path,
+                write_output=write_output,
+                **kwargs,
             )
 
         raise ValueError(f"Unsupported STT provider: {provider_name}")
@@ -94,10 +104,12 @@ class STTRouter:
         *,
         provider: str | None = None,
         audio_output_path: str | Path | None = None,
+        output_path: str | Path | None = None,
         mono_method: Optional[str] = None,
         sample_rate: Optional[int] = None,
         channels: Optional[int] = None,
         codec: Optional[str] = None,
+        write_output: bool = True,
         **stt_kwargs: Any,
     ) -> Dict[str, Any]:
         """오디오를 추출한 뒤 선택된 제공자로 STT를 실행한다."""
@@ -122,7 +134,13 @@ class STTRouter:
             mono_method=mono_method,
         )
         try:
-            return self.transcribe(audio_path, provider=provider, **stt_kwargs)
+            return self.transcribe(
+                audio_path,
+                provider=provider,
+                output_path=output_path,
+                write_output=write_output,
+                **stt_kwargs,
+            )
         finally:
             if not keep_audio:
                 Path(audio_path).unlink(missing_ok=True)
