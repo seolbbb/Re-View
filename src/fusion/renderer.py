@@ -56,9 +56,9 @@ def _split_evidence_refs(evidence: Any) -> tuple[List[str], List[str]]:
         if item in seen:
             continue
         seen.add(item)
-        if item.startswith("t"):
+        if item.startswith("stt_"):
             t_refs.append(item)
-        elif item.startswith("v"):
+        elif item.startswith("vlm") or item.startswith("cap_"):
             v_refs.append(item)
     return t_refs, v_refs
 
@@ -207,9 +207,9 @@ def render_segment_summaries_md(
                         v_refs.append(r_str)
                     else:
                         # Heuristic fallback
-                        if r_str.startswith("t") or r_str.startswith("stt"):
+                        if r_str.startswith("stt"):
                             t_refs.append(r_str)
-                        elif r_str.startswith("v") or r_str.startswith("vlm"):
+                        elif r_str.startswith("vlm") or r_str.startswith("cap_"):
                             v_refs.append(r_str)
                 
                 parts = []
