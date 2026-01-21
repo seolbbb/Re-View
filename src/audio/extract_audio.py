@@ -5,6 +5,13 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+# 코덱별 출력 파일 확장자 매핑
+CODEC_TO_EXT: dict[str, str] = {
+    "pcm_s16le": ".wav",
+    "flac": ".flac",
+    "libmp3lame": ".mp3",
+}
+
 
 def extract_audio(
     media_path: str | Path,
@@ -12,7 +19,8 @@ def extract_audio(
     *,
     sample_rate: int = 16000,
     channels: int = 1,
-    codec: str = "pcm_s16le",
+    codec: str = "libmp3lame",
+    mp3_bitrate: str = "128k",
     mono_method: str = "auto",
 ) -> Path:
     """미디어 파일에서 오디오를 추출해 파일로 저장한다."""
@@ -20,7 +28,8 @@ def extract_audio(
     if not media_path.exists():
         raise FileNotFoundError(f"Media file not found: {media_path}")
 
-    output_path = Path(output_path) if output_path else Path("src/data/input") / f"{media_path.stem}.wav"
+    ext = CODEC_TO_EXT.get(codec, ".wav")
+    output_path = Path(output_path) if output_path else Path("src/data/input") / f"{media_path.stem}{ext}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if mono_method in ("left", "right", "phase-fix", "auto") and channels != 1:
@@ -41,8 +50,11 @@ def extract_audio(
         str(sample_rate),
         "-ac",
         str(channels),
-        str(output_path),
     ]
+    # MP3 비트레이트 설정
+    if codec == "libmp3lame":
+        command += ["-b:a", mp3_bitrate]
+    command.append(str(output_path))
 
     try:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
