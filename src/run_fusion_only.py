@@ -50,10 +50,12 @@ else:
 import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
+
 from src.pipeline.benchmark import BenchmarkTimer, print_benchmark_report
 from src.pipeline.stages import (
     generate_fusion_config,
     run_fusion_pipeline,
+    run_batch_fusion_pipeline,
 )
 
 
@@ -84,6 +86,7 @@ def run_fusion_only_pipeline(
     limit: Optional[int] = None,
     summarizer_version: Optional[str] = None,
     judge_version: Optional[str] = None,
+    batch_mode: bool = False,
 ) -> None:
     """VLM 결과가 이미 존재하는 상태에서 Fusion(Sync -> Summarize -> Judge -> Render)만 실행한다."""
     
@@ -97,16 +100,20 @@ def run_fusion_only_pipeline(
     video_root = output_base_path / safe_video_name
     
     stt_json = video_root / "stt.json"
+    # vlm_json과 manifest_json은 배칠별로 다를 수 있으므로 템플릿 로직에 맡기거나 유연하게 처리한다.
     vlm_json = video_root / "vlm.json"
     manifest_json = video_root / "capture.json"
-    
-    # 필수 입력 파일 확인
-    if not stt_json.exists():
-        raise FileNotFoundError(f"STT file not found: {stt_json}")
-    if not vlm_json.exists():
-        raise FileNotFoundError(f"VLM file not found: {vlm_json}")
     if not manifest_json.exists():
-        raise FileNotFoundError(f"Manifest file not found: {manifest_json}")
+        manifest_json = video_root / "manifest.json" # try manifest.json if capture.json missing
+    
+    # 필수 입력 파일 확인 (최소한 STT는 있어야 함)
+    if not stt_json.exists():
+        # 일부 환경에선 stt.json이 이미 fusion 폴더에 있을 수도 있음
+        stt_json_alt = video_root / "fusion" / "stt.json"
+        if stt_json_alt.exists():
+            stt_json = stt_json_alt
+        else:
+            print(f"Warning: STT file not found at {stt_json}, but proceeding to see if config.yaml has it.")
 
     print(f"Starting Fusion-Only pipeline for: {safe_video_name}")
     print(f"Video Root: {video_root}")
@@ -160,11 +167,30 @@ def run_fusion_only_pipeline(
 
     # Fusion Pipeline 실행 (Sync -> Summarize -> Judge -> Render)
     print("\n  ⏳ fusion: Starting (Sync/Summarize/Judge/Render)...")
-    fusion_stats = run_fusion_pipeline(
-        fusion_config_path,
-        limit=limit,
-        timer=timer,
-    )
+    if batch_mode:
+        print("  🔄 Mode: Batch Fusion (Skipping VLM)")
+        fusion_stats = run_batch_fusion_pipeline(
+            video_root=video_root,
+            captures_dir=video_root / "captures",
+            manifest_json=manifest_json,
+            stt_json=stt_json,
+            video_name=safe_video_name,
+            batch_size=4, # 기본값, 필요시 인자로 노출
+            timer=timer,
+            vlm_batch_size=None,
+            vlm_concurrency=1,
+            vlm_show_progress=False,
+            limit=limit,
+            repo_root=ROOT,
+            skip_vlm=True,
+        )
+    else:
+        print("  🔄 Mode: Monolithic Fusion")
+        fusion_stats = run_fusion_pipeline(
+            fusion_config_path,
+            limit=limit,
+            timer=timer,
+        )
     timer.end_total()
     
     total_elapsed = timer.get_total_elapsed()
@@ -228,12 +254,25 @@ def run_fusion_only_pipeline(
 
 
 def main() -> None:
+    # 외부 라이브러리 로그 레벨 조정 (너무 시끄러운 INFO 로그 억제)
+    # 직접 이름을 지정해도 안 먹히는 경우가 있어, 전체 로거를 순회하며 설정한다.
+    suppress_prefixes = ("httpx", "httpcore", "google_genai", "google.ai", "google.auth")
+    for name in logging.root.manager.loggerDict:
+        if any(name.startswith(p) for p in suppress_prefixes):
+            logging.getLogger(name).setLevel(logging.WARNING)
+
+    # 혹시 모를 메인 로거들도 명시적 설정
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("google_genai").setLevel(logging.WARNING)
+
     parser = argparse.ArgumentParser(description="Run Fusion-Only Pipeline (Skip VLM)")
     parser.add_argument("--video-name", required=True, help="Video name (folder name in outputs)")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
     parser.add_argument("--limit", type=int, help="Limit number of segments to process")
     parser.add_argument("--summarizer-version", "-sv", help="Summarizer prompt version (e.g., v1.5, v1.7, v1.8)")
     parser.add_argument("--judge-version", "-jv", help="Judge prompt version (e.g., v2, v3)")
+    parser.add_argument("--batch-mode", action="store_true", help="Enable batch mode (requires existing batch artifacts)")
     
     args = parser.parse_args()
     
@@ -243,6 +282,7 @@ def main() -> None:
         limit=args.limit,
         summarizer_version=args.summarizer_version,
         judge_version=args.judge_version,
+        batch_mode=args.batch_mode,
     )
 
 if __name__ == "__main__":
