@@ -352,10 +352,11 @@ v1.8:
 
   quality_rules: |
     1. **Standalone**: NO deixis (slide/video/here/this). Narrate visuals as facts.
-    2. **VLM-First Math**: 
+    2. **VLM-First Math & Mandatory Citation**: 
        - COPY LaTeX equations from VLM input VERBATIM (do NOT paraphrase).
-       - Always include component ID (e.g. cap_001) in evidence_refs for any math explanation.
-       - If VLM has equation, MUST appear in output.
+       - **MANDATORY**: If a segment contains `vlm_ids` in `source_refs`, YOU MUST cite at least one "cap_XXX" ID in `evidence_refs`.
+       - All math-related explanations MUST include the corresponding `vlm_ids` (e.g., "cap_001").
+       - Failure to cite provided VLM IDs is a critical quality failure.
     3. **3-Exp Rule**: EACH segment MUST have 3 Distinct Explanations:
        - (1) Math/Symbol: Full Formula from VLM -> Term breakdown.
        - (2) Contrast: A vs B (diff/pros/cons).
@@ -376,4 +377,35 @@ v1.8:
     Input: {{ ... }}
     Output:
     [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO는 Reconstruction, Prior, Denoising 항으로 분해된다.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; $\\log p(x)$의 tractable 하한.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"(Math) VLM에서 유도된 수식: $\\mathcal{L} = \\mathbb{E}_{q(x_1|x_0)}[\\log p_\\theta(x_0|x_1)] - KL(q(x_T|x_0)||p(x_T)) - \\sum_{t=2}^T \\mathbb{E}_{q(x_t|x_0)}[KL(q(x_{t-1}|x_t,x_0)||p_\\theta(x_{t-1}|x_t))]$. 각 항은 복원, 사전분포, 디노이징을 담당.","source_type":"inferred","evidence_refs":["cap_001"],"confidence":"high"},{"point":"(Motivation) $\\log p(x)$ 직접 계산이 intractable하므로 ELBO를 최적화.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Contrast) VAE는 단일 latent, Diffusion은 시점별 매칭 수행.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
+
+
+# [Token-Optimized] Performant Tutor (v1.9)
+# - Goal: Maintain v1.8 quality (VLM Math + ID Enforcement) with ~30% fewer tokens.
+# - Strategy: Telegraphic style, consolidated rules, shorter one-shot example.
+v1.9:
+  system: |
+    Role: Math-Focused Independent Tutor.
+    Goal: Standalone Korean Notes (English for Terms/Math).
+    Constraint: Maximize VLM LaTeX usage (Verbatim Copy).
+    
+    Output JSON (Strict):
+    [{"segment_id":int,"summary":{"bullets":[{"claim":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high"}],"definitions":[{"term":str,"definition":str,"source_type":"background","evidence_refs":[str],"confidence":"high"}],"explanations":[{"point":str,"source_type":"inferred","evidence_refs":[str],"confidence":"high"}],"open_questions":[]}}]
+
+  quality_rules: |
+    1. **Style**: NO deixis. Narrate visuals as facts. Define ALL technical terms.
+    2. **VLM Math & Citations (CRITICAL)**:
+       - Copy VLM LaTeX VERBATIM.
+       - **IF** `vlm_ids` exist in input, **MUST** cite `cap_XXX` in `evidence_refs` for math/visuals.
+       - IDs: Exact match only (`cap_XXX`, `stt_XXX`). No generic IDs.
+    3. **3-Exp Rule** (Mandatory per segment):
+       - (1) **Math**: Full Formula from VLM ($...$) -> Term breakdown.
+       - (2) **Contrast**: A vs B.
+       - (3) **Motivation**: Why?
+    4. **Ordering**: Bullets (Direct->Inferred) -> Defs -> Exps (Math->Contrast->Motivation).
+    5. **JSON**: Valid JSON, double-escape LaTeX ($\\alpha$).
+
+  one_shot: |
+    Input: {{ ... }}
+    Output:
+    [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO decomposes into Reconstruction, Prior, and Denoising terms.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; tractable lower bound.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"(Math) VLM Formula: $\\mathcal{L} = \\mathbb{E}[\\log p] - KL(q||p)$. Terms: Recon, Prior, Denoising.","source_type":"inferred","evidence_refs":["cap_001"],"confidence":"high"},{"point":"(Contrast) VAE (Single) vs Diffusion (Sequential).","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Motivation) $\\log p(x)$ is intractable, so optimize ELBO.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
 
