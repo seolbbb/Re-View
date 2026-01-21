@@ -250,3 +250,53 @@ class CaptureAdapterMixin:
                 results["errors"].append(f"db insert error: {str(e)}")
         
         return results
+
+    def save_captures_with_upload_payload(
+        self,
+        video_id: str,
+        captures: List[Dict[str, Any]],
+        captures_dir: Path,
+        bucket: str = "captures",
+        pipeline_run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """메타데이터 리스트로 캡처 업로드/저장을 수행한다."""
+        results = {
+            "db_saved": 0,
+            "storage_uploaded": 0,
+            "errors": []
+        }
+
+        rows = []
+        for cap in captures:
+            file_name = cap.get("file_name")
+            if not file_name:
+                continue
+            image_path = captures_dir / file_name
+
+            storage_path = None
+
+            if image_path.exists():
+                try:
+                    upload_result = self.upload_capture_image(video_id, image_path, bucket)
+                    storage_path = upload_result["storage_path"]
+                    results["storage_uploaded"] += 1
+                except Exception as e:
+                    results["errors"].append(f"upload error ({file_name}): {str(e)}")
+
+            rows.append({
+                "video_id": video_id,
+                "file_name": file_name,
+                "start_ms": cap.get("start_ms"),
+                "end_ms": cap.get("end_ms"),
+                "storage_path": storage_path,
+                "pipeline_run_id": pipeline_run_id,
+            })
+
+        if rows:
+            try:
+                db_result = self.client.table("captures").insert(rows).execute()
+                results["db_saved"] = len(db_result.data)
+            except Exception as e:
+                results["errors"].append(f"db insert error: {str(e)}")
+
+        return results
