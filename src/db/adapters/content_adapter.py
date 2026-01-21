@@ -49,13 +49,11 @@ class ContentAdapterMixin:
         for idx, seg in enumerate(segments):
             rows.append({
                 "video_id": video_id,
-                "provider": provider,
                 "preprocess_job_id": preprocess_job_id,
-                "text": seg.get("text", ""),
+                "transcript": seg.get("text", ""),  # 스키마는 transcript 컬럼 사용
                 "start_ms": seg.get("start_ms"),
                 "end_ms": seg.get("end_ms"),
                 "confidence": seg.get("confidence"),
-                # embedding: 향후 STT 문장 임베딩 필요 시 추가 가능
             })
 
         if rows:
@@ -132,9 +130,9 @@ class ContentAdapterMixin:
                 "start_ms": seg.get("start_ms"),
                 "end_ms": seg.get("end_ms"),
                 "transcript_units": transcript_text,  # 병합된 텍스트 저장
-                "visual_units": seg.get("visual_units"), # JSONB 타입 (필요 시 복잡한 구조 저장)
-                "embedding": seg.get("embedding"), # HNSW 인덱싱용 벡터
+                "visual_units": seg.get("visual_units"), # JSONB 타입
                 "processing_job_id": processing_job_id,
+                # NOTE: embedding 컬럼은 segments 스키마에 없음 (summaries에만 존재)
             })
         
         if rows:
@@ -198,11 +196,11 @@ class ContentAdapterMixin:
             
             data = {
                 "video_id": video_id,
-                "summary": summary_data,
-                "summary_text": summary_text,
+                "summary": summary_data,  # JSONB로 저장
                 "version": summ.get("version"),
                 "embedding": None,  # 나중에 채움
                 "processing_job_id": processing_job_id,
+                # NOTE: summary_text 컬럼은 스키마에 없음 (summary JSONB 내에 포함)
             }
             
             # Segment FK 연결

@@ -397,6 +397,14 @@ def run_processing_pipeline(
         print("-" * 50)
 
         if batch_mode:
+            # Status 업데이트용 콜백 정의
+            def status_callback(status: str, current: int, total: int) -> None:
+                if processing_job_id and adapter_for_job:
+                    try:
+                        adapter_for_job.update_processing_job_status(processing_job_id, status)
+                    except Exception as e:
+                        print(f"[DB] Warning: Failed to update status to {status}: {e}")
+            
             # 배치 모드에서는 VLM+Fusion을 배치 단위로 처리한다.
             fusion_info = run_batch_fusion_pipeline(
                 video_root=video_root,
@@ -411,6 +419,7 @@ def run_processing_pipeline(
                 vlm_show_progress=vlm_show_progress,
                 limit=limit,
                 repo_root=ROOT,
+                status_callback=status_callback if processing_job_id else None,
             )
             segment_count = fusion_info.get("segment_count", 0)
             vlm_image_count = capture_count

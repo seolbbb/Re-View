@@ -56,7 +56,6 @@ CREATE TABLE IF NOT EXISTS preprocessing_jobs (
     status TEXT DEFAULT 'QUEUED',
     stt_backend TEXT,
     audio_storage_key TEXT,
-    manifest_storage_key TEXT,
     config_hash TEXT,
     error_message TEXT,
     started_at TIMESTAMPTZ,

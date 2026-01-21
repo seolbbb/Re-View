@@ -34,7 +34,8 @@ from src.db.pipeline_sync import (
     sync_preprocess_artifacts_to_db,
 )
 from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
-from src.pipeline.stages import run_capture, run_stt
+from src.pipeline.stages import run_capture, run_stt, run_stt_from_storage
+from src.audio.extract_audio import extract_audio
 
 
 def _sanitize_video_name(stem: str) -> str:
@@ -200,6 +201,7 @@ def run_preprocess_pipeline(
             *,
             stt_payload: Optional[Dict[str, Any]] = None,
             captures_payload: Optional[List[Dict[str, Any]]] = None,
+            audio_path: Optional[Path] = None,
         ) -> None:
             if not db_context:
                 return
@@ -212,8 +214,10 @@ def run_preprocess_pipeline(
                 preprocess_job_id=preprocess_job_id,
                 include_stt=stage == "stt",
                 include_captures=stage == "capture",
+                include_audio=stage == "audio",
                 stt_payload=stt_payload if stage == "stt" else None,
                 captures_payload=captures_payload if stage == "capture" else None,
+                audio_path=audio_path if stage == "audio" else None,
             )
             saved = stage_results.get("saved", {})
             errors = stage_results.get("errors", [])
@@ -228,23 +232,47 @@ def run_preprocess_pipeline(
                     printed_db_errors.add(err)
                     print(f"[DB] {stage} error: {err}")
                 db_errors.extend(errors)
+            # audio 업로드 후 storage_key 저장
+            if stage == "audio" and saved.get("audio"):
+                nonlocal audio_storage_key
+                audio_storage_key = stage_results.get("audio_storage_key")
+
+        audio_storage_key: Optional[str] = None
 
         if parallel:
-            # STT와 캡처를 동시에 실행한다.
+            # 오디오 설정 로드
+            from src.audio.stt_router import load_audio_settings
+            audio_settings = load_audio_settings()
+            extract_settings = audio_settings.get("extract", {})
+            audio_codec = extract_settings.get("codec", "libmp3lame")
+            # 코덱에 따른 확장자 결정
+            codec_ext_map = {"pcm_s16le": ".wav", "flac": ".flac", "libmp3lame": ".mp3"}
+            audio_ext = codec_ext_map.get(audio_codec, ".wav")
+            
+            # 1단계: 오디오 추출 (먼저 실행)
+            audio_path = video_root / f"{video_path.stem}{audio_ext}"
+            print("  Extracting audio...")
+            audio_start = time.perf_counter()
+            extracted_audio = extract_audio(
+                video_path,
+                output_path=audio_path,
+                sample_rate=extract_settings.get("sample_rate", 16000),
+                channels=extract_settings.get("channels", 1),
+                codec=audio_codec,
+                mp3_bitrate=extract_settings.get("mp3_bitrate", "128k"),
+                mono_method=extract_settings.get("mono_method", "auto"),
+            )
+            audio_extract_elapsed = time.perf_counter() - audio_start
+            print(f"  Audio extracted in {format_duration(audio_extract_elapsed)}")
+            
+            # 2단계: 오디오 Storage 업로드 + 캡처 생성/업로드 (병렬)
             with ThreadPoolExecutor(max_workers=2) as executor:
-                def run_stt_timed() -> Tuple[Dict[str, Any], float]:
-                    # 벤치마크를 위해 STT 실행 시간을 측정한다.
+                def upload_audio_to_storage() -> float:
                     start = time.perf_counter()
-                    stt_payload = run_stt(
-                        video_path,
-                        stt_json,
-                        backend=stt_backend,
-                        write_output=write_local_json,
-                    )
-                    return stt_payload, time.perf_counter() - start
+                    _sync_stage("audio", audio_path=extracted_audio)
+                    return time.perf_counter() - start
 
                 def run_capture_timed() -> Tuple[List[Dict[str, Any]], float]:
-                    # 캡처 실행 시간을 측정하고 결과를 반환한다.
                     start = time.perf_counter()
                     result = run_capture(
                         video_path,
@@ -258,26 +286,44 @@ def run_preprocess_pipeline(
                     )
                     return result, time.perf_counter() - start
 
-                stt_future = executor.submit(run_stt_timed)
+                audio_upload_future = executor.submit(upload_audio_to_storage)
                 capture_future = executor.submit(run_capture_timed)
 
-                futures = {
-                    stt_future: "stt",
-                    capture_future: "capture",
-                }
-                for future in as_completed(futures):
-                    stage = futures[future]
-                    if stage == "stt":
-                        stt_payload, stt_elapsed = future.result()
-                        timer.record_stage("stt", stt_elapsed)
-                        print(f"  STT done in {format_duration(stt_elapsed)} (parallel)")
-                        _sync_stage("stt", stt_payload=stt_payload)
-                    else:
-                        capture_result, capture_elapsed = future.result()
-                        capture_count = len(capture_result) if capture_result else 0
-                        timer.record_stage("capture", capture_elapsed)
-                        print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
-                        _sync_stage("capture", captures_payload=capture_result)
+                # 결과 수집
+                audio_upload_elapsed = audio_upload_future.result()
+                capture_result, capture_elapsed = capture_future.result()
+                capture_count = len(capture_result) if capture_result else 0
+                timer.record_stage("capture", capture_elapsed)
+                print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
+                _sync_stage("capture", captures_payload=capture_result)
+
+            # 3단계: STT (Storage에서 오디오 다운로드하여 처리)
+            if db_context and audio_storage_key:
+                adapter, video_id, preprocess_job_id = db_context
+                print("  Running STT from Storage...")
+                stt_start = time.perf_counter()
+                stt_payload = run_stt_from_storage(
+                    audio_storage_key=audio_storage_key,
+                    video_id=video_id,
+                    backend=stt_backend,
+                )
+                stt_elapsed = time.perf_counter() - stt_start
+                timer.record_stage("stt", stt_elapsed)
+                print(f"  STT done in {format_duration(stt_elapsed)} (from Storage)")
+                _sync_stage("stt", stt_payload=stt_payload)
+            else:
+                # DB 미설정 시 로컬 STT 실행
+                print("  Running STT locally...")
+                stt_payload, stt_elapsed = timer.time_stage(
+                    "stt",
+                    run_stt,
+                    video_path,
+                    stt_json,
+                    backend=stt_backend,
+                    write_output=write_local_json,
+                )
+                print(f"  STT done in {format_duration(stt_elapsed)} (local)")
+                _sync_stage("stt", stt_payload=stt_payload)
         else:
             # 동일한 타이밍 측정을 유지하며 순차 실행한다.
             stt_payload, stt_elapsed = timer.time_stage(

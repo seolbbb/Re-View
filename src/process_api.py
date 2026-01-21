@@ -261,3 +261,90 @@ def get_video_summaries(video_id: str) -> Dict[str, Any]:
         "count": len(items),
         "items": items,
     }
+
+
+# =============================================================================
+# STT 처리 엔드포인트 (Frontend → Backend Storage 기반)
+# =============================================================================
+
+
+class STTProcessRequest(BaseModel):
+    """STT 처리 요청 모델.
+    
+    Frontend가 Storage에 오디오를 업로드한 후 호출하는 API용.
+    """
+    video_id: str
+    audio_storage_key: str  # Storage 내 경로 (예: "{video_id}/audio.wav")
+    preprocess_job_id: Optional[str] = None
+    provider: str = "clova"
+
+
+class STTProcessResponse(BaseModel):
+    status: str
+    message: str
+    stt_results_count: Optional[int] = None
+
+
+@app.post("/stt/process", response_model=STTProcessResponse)
+def process_stt_from_storage(request: STTProcessRequest) -> STTProcessResponse:
+    """Storage에서 오디오를 다운받아 STT를 처리하고 결과를 DB에 저장한다.
+    
+    사용 예시:
+        curl -X POST http://localhost:8001/stt/process \\
+            -H "Content-Type: application/json" \\
+            -d '{"video_id":"...", "audio_storage_key":"video_id/audio.wav"}'
+    """
+    from src.pipeline.stages import run_stt_from_storage
+    
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 존재 확인
+    video = adapter.get_video(request.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    try:
+        # 1. Storage에서 오디오 다운로드 → STT 실행
+        stt_result = run_stt_from_storage(
+            audio_storage_key=request.audio_storage_key,
+            video_id=request.video_id,
+            backend=request.provider,
+        )
+        
+        # 2. STT 결과를 DB에 저장
+        segments = stt_result.get("segments", [])
+        if not isinstance(segments, list):
+            segments = []
+        
+        saved_rows = adapter.save_stt_result(
+            video_id=request.video_id,
+            segments=segments,
+            preprocess_job_id=request.preprocess_job_id,
+            provider=request.provider,
+        )
+        
+        # 3. preprocessing_job 상태 업데이트 (있는 경우)
+        if request.preprocess_job_id:
+            adapter.update_preprocessing_job_status(request.preprocess_job_id, "DONE")
+            adapter.update_video_status(request.video_id, "PREPROCESS_DONE")
+        
+        return STTProcessResponse(
+            status="ok",
+            message=f"STT processing completed. {len(saved_rows)} results saved.",
+            stt_results_count=len(saved_rows),
+        )
+        
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"Audio file not found in storage: {e}")
+    except Exception as e:
+        # 에러 시 preprocessing_job 상태 업데이트
+        if request.preprocess_job_id:
+            adapter.update_preprocessing_job_status(
+                request.preprocess_job_id, 
+                "FAILED", 
+                error_message=str(e)
+            )
+            adapter.update_video_status(request.video_id, "FAILED", error=str(e))
+        raise HTTPException(status_code=500, detail=f"STT processing failed: {e}")

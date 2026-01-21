@@ -7,7 +7,7 @@ Supabase 데이터베이스로 전송하는 연결 고리 역할을 합니다.
 주요 기능:
 1. SupabaseAdapter 초기화 및 연결 확인
 2. Video 레코드 생성 (중복 방지 로직 포함)
-3. Pipeline Run 메타데이터 저장 (실행 이력 관리)
+3. 전처리/처리 작업 관리 (preprocessing_jobs/processing_jobs)
 4. 모든 분석 결과물(Captures, STT, Segments, Summaries)의 일괄 업로드
 5. 최종 실행 결과 요약 리포트 출력
 """
@@ -76,21 +76,24 @@ def sync_pipeline_results_to_db(
             video_data = adapter.create_video(
                 name=video_path.stem,           # 확장자를 제외한 파일명을 비디오 이름으로 사용
                 original_filename=video_path.name,
-                storage_path=str(video_root),   # 로컬 결과물 경로 저장
                 duration_sec=duration_sec,
                 user_id=user_id
             )
             video_id = video_data['id']
             print(f"[DB] Created video record: {video_id} (Duration: {duration_sec}s)")
         
-        # 2. 실행 메타데이터 저장 (Pipeline Runs)
-        # 이번 파이프라인 실행에 대한 이력을 별도 테이블에 저장하여, 
-        # 언제, 어떤 설정으로 분석이 수행되었는지 추적 가능하게 함.
-        pipeline_run_id = None
-        if run_meta:
-            run_data = adapter.save_pipeline_run(video_id, run_meta)
-            pipeline_run_id = run_data.get('id')
-            print(f"[DB] Created pipeline_run record: {pipeline_run_id}")
+        # 2. 전처리 작업 생성 (preprocessing_jobs)
+        preprocess_job_id = None
+        if include_preprocess:
+            config_hash = run_meta.get("args", {}).get("config_hash") if isinstance(run_meta, dict) else None
+            job = adapter.create_preprocessing_job(
+                video_id,
+                source="SERVER",
+                stt_backend=provider,
+                config_hash=config_hash,
+            )
+            preprocess_job_id = job.get("id")
+            print(f"[DB] Created preprocessing_job record: {preprocess_job_id}")
 
         # 3. 분석 결과물 일괄 업로드 (Core Logic)
         # SupabaseAdapter.save_all_pipeline_results가 모든 하위 콘텐츠(STT, Segments 등)의 저장을 조율함
@@ -98,7 +101,7 @@ def sync_pipeline_results_to_db(
             video_id=video_id,
             video_root=video_root,
             provider=provider,
-            pipeline_run_id=pipeline_run_id,
+            preprocess_job_id=preprocess_job_id,
             include_preprocess=include_preprocess,
         )
             
@@ -168,7 +171,6 @@ def prepare_preprocess_db_sync(
             video_data = adapter.create_video(
                 name=video_path.stem,
                 original_filename=video_path.name,
-                storage_path=str(video_root),
                 duration_sec=duration_sec,
                 user_id=user_id,
             )
@@ -204,15 +206,42 @@ def sync_preprocess_artifacts_to_db(
     preprocess_job_id: Optional[str],
     include_stt: bool,
     include_captures: bool,
+    include_audio: bool = True,
     stt_payload: Optional[Any] = None,
     captures_payload: Optional[List[Dict[str, Any]]] = None,
+    audio_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """STT/캡처 아티팩트를 부분 업로드한다.
+    """STT/캡처/오디오 아티팩트를 부분 업로드한다.
     
     새 ERD 기준으로 preprocess_job_id를 사용합니다.
     """
     results: Dict[str, Any] = {"saved": {}, "errors": []}
 
+    # 1. Audio 업로드 (가장 먼저 - 파일 크기가 클 수 있음)
+    if include_audio:
+        try:
+            # 오디오 파일 경로 찾기
+            if audio_path is None:
+                # video_root 내 .wav 파일 검색
+                wav_files = list(video_root.glob("*.wav"))
+                if wav_files:
+                    audio_path = wav_files[0]
+            
+            if audio_path and audio_path.exists():
+                upload_result = adapter.upload_audio(video_id, audio_path)
+                audio_storage_key = upload_result.get("storage_path")
+                results["saved"]["audio"] = 1
+                results["audio_storage_key"] = audio_storage_key  # STT에서 사용할 키
+                
+                # preprocessing_jobs에 audio_storage_key 기록
+                if preprocess_job_id and audio_storage_key:
+                    adapter.client.table("preprocessing_jobs").update({
+                        "audio_storage_key": audio_storage_key
+                    }).eq("id", preprocess_job_id).execute()
+        except Exception as e:
+            results["errors"].append(f"audio: {str(e)}")
+
+    # 2. Captures 업로드
     if include_captures:
         try:
             captures_dir = video_root / "captures"
@@ -240,6 +269,7 @@ def sync_preprocess_artifacts_to_db(
         except Exception as e:
             results["errors"].append(f"captures: {str(e)}")
 
+    # 3. STT 결과 저장
     if include_stt:
         try:
             if stt_payload is not None:
@@ -272,6 +302,7 @@ def sync_preprocess_artifacts_to_db(
     return results
 
 
+
 def finalize_preprocess_db_sync(
     *,
     adapter: Any,
@@ -283,21 +314,30 @@ def finalize_preprocess_db_sync(
     """전처리 업로드 이후 상태/메타데이터를 갱신한다.
     
     새 ERD 기준으로 preprocessing_jobs 상태를 업데이트합니다.
+    - 성공: RUNNING → DONE
+    - 에러: RUNNING → FAILED (에러 메시지 기록)
     """
+    if not preprocess_job_id:
+        return
+        
     run_status = run_meta.get("status") if isinstance(run_meta, dict) else None
     error_message = "; ".join(errors) if errors else None
     
-    if run_status == "error":
-        # 파이프라인 자체 실패
+    if run_status == "error" or errors:
+        # 파이프라인 실패 또는 업로드 중 에러 발생
         if not error_message and isinstance(run_meta, dict):
             error_message = run_meta.get("error")
-        if preprocess_job_id:
-            adapter.update_preprocessing_job_status(preprocess_job_id, "FAILED", error_message=error_message)
-    elif errors:
-        # 부분 업로드 실패 (preprocessing job은 DONE, video는 에러 기록)
-        if preprocess_job_id:
-            adapter.update_preprocessing_job_status(preprocess_job_id, "DONE")
-        # videos 테이블에 에러 메시지만 기록 (상태는 PREPROCESS_DONE 유지)
+        adapter.update_preprocessing_job_status(
+            preprocess_job_id, 
+            "FAILED", 
+            error_message=error_message
+        )
+        # videos 테이블에도 에러 기록
+        adapter.update_video_status(video_id, "FAILED", error=error_message)
+    else:
+        # 정상 완료
+        adapter.update_preprocessing_job_status(preprocess_job_id, "DONE")
+        adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
 
 def sync_processing_results_to_db(

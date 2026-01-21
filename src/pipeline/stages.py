@@ -6,7 +6,7 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -150,6 +150,62 @@ def run_stt(
     )
 
 
+def run_stt_from_storage(
+    *,
+    audio_storage_key: str,
+    video_id: str,
+    backend: str = "clova",
+    temp_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Storage에서 오디오를 다운로드하여 STT를 실행한다.
+    
+    Frontend가 Storage에 업로드한 오디오 파일을 다운받아 처리하는 API용 함수.
+    
+    Args:
+        audio_storage_key: Storage 내 오디오 파일 경로 (예: "{video_id}/audio.wav")
+        video_id: 비디오 ID (임시 파일 정리용)
+        backend: STT 엔진 (기본: clova)
+        temp_dir: 임시 파일 저장 디렉토리 (기본: data/temp)
+        
+    Returns:
+        Dict: STT 결과 (segments 포함)
+    """
+    from src.db import get_supabase_adapter
+    
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise RuntimeError("Supabase adapter not configured")
+    
+    # 임시 디렉토리 설정
+    if temp_dir is None:
+        temp_dir = Path("data/temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Storage에서 오디오 다운로드
+    audio_filename = Path(audio_storage_key).name
+    local_audio_path = temp_dir / f"{video_id}_{audio_filename}"
+    
+    try:
+        adapter.download_audio(
+            storage_path=audio_storage_key,
+            local_path=local_audio_path,
+            bucket="audio",
+        )
+        
+        # STT 실행 (이미 추출된 오디오이므로 transcribe 직접 호출)
+        router = STTRouter(provider=backend)
+        result = router.transcribe(
+            local_audio_path,
+            provider=backend,
+            write_output=False,
+        )
+        
+        return result
+        
+    finally:
+        # 임시 파일 정리
+        if local_audio_path.exists():
+            local_audio_path.unlink(missing_ok=True)
 def run_capture(
     video_path: Path,
     output_base: Path,
@@ -504,8 +560,13 @@ def run_batch_fusion_pipeline(
     limit: Optional[int],
     repo_root: Path,
     skip_vlm: bool = False,
+    status_callback: Optional[Callable[[str, Optional[int], Optional[int]], None]] = None,
 ) -> Dict[str, Any]:
-    """배치 단위로 동기화와 요약을 반복 실행한다."""
+    """배치 단위로 동기화와 요약을 반복 실행한다.
+    
+    Args:
+        status_callback: 상태 업데이트 콜백 함수 (status, current, total)
+    """
     from src.fusion.summarizer import run_batch_summarizer
     from src.fusion.sync_engine import run_batch_sync_engine
 
@@ -598,6 +659,9 @@ def run_batch_fusion_pipeline(
                  print(f"⚠️ Warning: VLM skipped but {batch_dir}/vlm.json not found.")
             batch_vlm_elapsed = 0.0
         else:
+            # VLM_RUNNING 상태 업데이트
+            if status_callback:
+                status_callback("VLM_RUNNING", batch_idx, total_batches)
             _, batch_vlm_elapsed = timer.time_stage(
                 f"pipeline_batch_{batch_idx + 1}.vlm",
                 run_vlm_for_batch,
@@ -664,6 +728,10 @@ def run_batch_fusion_pipeline(
             is_retry = attempt > 0
             stage_suffix = f"_retry_{attempt}" if is_retry else ""
             
+            # SUMMARY_RUNNING 상태 업데이트
+            if status_callback and not is_retry:
+                status_callback("SUMMARY_RUNNING", batch_idx, total_batches)
+            
             # 1. Summarizer 실행
             summarize_result, sum_elapsed = timer.time_stage(
                 f"pipeline_batch_{batch_idx + 1}.summarize{stage_suffix}",
@@ -680,6 +748,10 @@ def run_batch_fusion_pipeline(
                 pass
             total_summarizer_elapsed += sum_elapsed
             new_context = summarize_result.get("context", "")
+
+            # JUDGE_RUNNING 상태 업데이트
+            if status_callback and not is_retry:
+                status_callback("JUDGE_RUNNING", batch_idx, total_batches)
 
             # 2. Judge 실행
             judge_result, judge_elapsed = timer.time_stage(

@@ -44,7 +44,7 @@ class CaptureAdapterMixin:
                 "start_ms": cap.get("start_ms"),
                 "end_ms": cap.get("end_ms"),
                 "storage_path": cap.get("storage_path"),
-                "pipeline_run_id": kwargs.get("pipeline_run_id"),
+                "preprocess_job_id": kwargs.get("preprocess_job_id"),  # ERD 기준 컬럼명
             })
         
         if rows:
@@ -117,6 +117,77 @@ class CaptureAdapterMixin:
             "signed_url": signed_url,
             "expires_in": signed_url_expires,
         }
+    
+    def upload_audio(
+        self,
+        video_id: str,
+        audio_path: Path,
+        bucket: str = "audio",
+    ) -> Dict[str, Any]:
+        """오디오 파일을 Supabase Storage에 업로드합니다.
+        
+        Args:
+            video_id: 비디오 ID (경로 구분용)
+            audio_path: 업로드할 로컬 오디오 파일 경로 (.wav, .mp3 등)
+            bucket: 타겟 Storage 버킷 이름 (기본: audio)
+            
+        Returns:
+            Dict: 업로드 결과 정보
+                - file_name: 파일명
+                - storage_path: 버킷 내 저장 경로 ({video_id}/{filename})
+        """
+        file_name = audio_path.name
+        storage_path = f"{video_id}/{file_name}"
+        
+        # Content-Type 결정
+        suffix = audio_path.suffix.lower()
+        content_type = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mpeg",
+            ".m4a": "audio/mp4",
+            ".flac": "audio/flac",
+        }.get(suffix, "audio/wav")
+        
+        with open(audio_path, "rb") as f:
+            file_data = f.read()
+        
+        # Storage에 업로드 (upsert=True로 덮어쓰기 허용)
+        self.client.storage.from_(bucket).upload(
+            path=storage_path,
+            file=file_data,
+            file_options={"content-type": content_type, "upsert": "true"}
+        )
+        
+        return {
+            "file_name": file_name,
+            "storage_path": storage_path,
+        }
+    
+    def download_audio(
+        self,
+        storage_path: str,
+        local_path: Path,
+        bucket: str = "audio",
+    ) -> Path:
+        """Storage에서 오디오 파일을 다운로드합니다.
+        
+        Args:
+            storage_path: Storage 내 경로 (예: {video_id}/audio.wav)
+            local_path: 다운로드할 로컬 경로
+            bucket: Storage 버킷 이름 (기본: audio)
+            
+        Returns:
+            Path: 다운로드된 파일의 로컬 경로
+        """
+        # Storage에서 파일 다운로드
+        file_data = self.client.storage.from_(bucket).download(storage_path)
+        
+        # 로컬에 저장
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(file_data)
+        
+        return local_path
     
     def get_signed_url(
         self,
