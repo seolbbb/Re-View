@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.fusion.renderer import render_summary_to_text
+from src.db.embedding import generate_embedding, generate_embeddings_batch
+
+logger = logging.getLogger(__name__)
 
 class ContentAdapterMixin:
     """STT, Segments, Summaries 테이블 작업을 위한 Mixin 클래스.
@@ -164,6 +169,7 @@ class ContentAdapterMixin:
         summaries: List[Dict[str, Any]],
         segment_map: Optional[Dict[int, str]] = None,
         pipeline_run_id: Optional[str] = None,
+        generate_embedding_flag: bool = True,
     ) -> List[Dict[str, Any]]:
         """LLM 분석 기반 요약 결과를 저장합니다.
         
@@ -173,29 +179,46 @@ class ContentAdapterMixin:
             video_id: 비디오 ID
             summaries: 요약 데이터 리스트
             segment_map: 로컬 segment_index(int) -> DB segment_id(uuid) 매핑 테이블
-                - segments 저장 후 반환된 ID를 기반으로 생성하여 전달해야 합니다.
-                - 이 매핑이 있어야 요약문이 어느 세그먼트와 연결되는지 DB 차원에서 알 수 있습니다.
             pipeline_run_id: 파이프라인 실행 ID
+            generate_embedding_flag: True이면 임베딩 벡터 자동 생성
             
         Returns:
             List[Dict]: 저장된 요약 레코드
         """
         rows = []
+        texts_for_embedding = []  # 배치 임베딩 생성용
+        
         for summ in summaries:
+            summary_data = summ.get("summary", {})
+            
+            # JSONB -> 시맨틱 검색용 텍스트 렌더링
+            summary_text = render_summary_to_text(summary_data) if summary_data else ""
+            texts_for_embedding.append(summary_text)
+            
             data = {
                 "video_id": video_id,
-                "summary": summ.get("summary"),
+                "summary": summary_data,
+                "summary_text": summary_text,
                 "version": summ.get("version"),
-                "embedding": summ.get("embedding"),
+                "embedding": None,  # 나중에 채움
                 "pipeline_run_id": pipeline_run_id,
             }
             
-            # Segment FK 연결: 로컬 인덱스를 통해 DB UUID를 찾아서 저장
+            # Segment FK 연결
             seg_idx = summ.get("segment_id")
             if segment_map and seg_idx in segment_map:
                 data["segment_id"] = segment_map[seg_idx]
             
             rows.append(data)
+        
+        # 임베딩 생성 (배치 처리)
+        if generate_embedding_flag and texts_for_embedding:
+            try:
+                embeddings = generate_embeddings_batch(texts_for_embedding)
+                for i, emb in enumerate(embeddings):
+                    rows[i]["embedding"] = emb
+            except Exception as e:
+                logger.warning(f"임베딩 생성 실패, 요약 저장은 계속 진행: {e}")
         
         if rows:
             result = self.client.table("summaries").insert(rows).execute()
