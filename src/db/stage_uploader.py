@@ -364,37 +364,30 @@ def upsert_final_summary_results(
     """
     result_info: Dict[str, Any] = {"saved": {}, "errors": []}
 
-    # 1. Timeline 포맷 저장
-    timeline_path = results_dir / "final_summary_timeline.md"
-    if timeline_path.exists():
-        try:
-            timeline_content = timeline_path.read_text(encoding="utf-8")
-            timeline_result = adapter.upsert_summary_results(
-                video_id,
-                format="timeline",
-                payload={"content": timeline_content},
-                processing_job_id=processing_job_id,
-                status="DONE",
-            )
-            result_info["saved"]["timeline"] = timeline_result.get("id")
-        except Exception as e:
-            result_info["errors"].append(f"timeline: {str(e)}")
+    # 지원하는 포맷들과 파일명 매핑
+    format_file_map = {
+        "timeline": "final_summary_timeline.md",
+        "tldr": "final_summary_tldr.md",
+        "tldr_timeline": "final_summary_tldr_timeline.md",
+    }
 
-    # 2. TLDR 포맷 저장
-    tldr_path = results_dir / "final_summary_tldr.md"
-    if tldr_path.exists():
-        try:
-            tldr_content = tldr_path.read_text(encoding="utf-8")
-            tldr_result = adapter.upsert_summary_results(
-                video_id,
-                format="tldr",
-                payload={"content": tldr_content},
-                processing_job_id=processing_job_id,
-                status="DONE",
-            )
-            result_info["saved"]["tldr"] = tldr_result.get("id")
-        except Exception as e:
-            result_info["errors"].append(f"tldr: {str(e)}")
+    # 각 포맷별로 파일 확인 및 업로드
+    for fmt, filename in format_file_map.items():
+        file_path = results_dir / filename
+        if file_path.exists():
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                upsert_result = adapter.upsert_summary_results(
+                    video_id,
+                    format=fmt,
+                    payload={"content": content},
+                    processing_job_id=processing_job_id,
+                    status="DONE",
+                )
+                result_info["saved"][fmt] = upsert_result.get("id")
+                print(f"  [DB] summary_results ({fmt}) uploaded: {upsert_result.get('id')}")
+            except Exception as e:
+                result_info["errors"].append(f"{fmt}: {str(e)}")
 
     # 3. processing_job 상태를 DONE으로 업데이트
     try:
