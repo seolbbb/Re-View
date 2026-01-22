@@ -2,8 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def compute_config_hash(config_paths: List[Path]) -> str:
+    """설정 파일들의 해시를 계산합니다.
+
+    Args:
+        config_paths: 설정 파일 경로 리스트
+
+    Returns:
+        str: 설정 내용의 SHA256 해시 (처음 16자)
+    """
+    combined_content = ""
+    for path in sorted(config_paths):  # 일관된 순서를 위해 정렬
+        if path.exists():
+            combined_content += f"---{path.name}---\n"
+            combined_content += path.read_text(encoding="utf-8")
+            combined_content += "\n"
+
+    if not combined_content:
+        return ""
+
+    return hashlib.sha256(combined_content.encode("utf-8")).hexdigest()[:16]
 
 
 class JobAdapterMixin:
@@ -139,12 +164,13 @@ class JobAdapterMixin:
         result = self.client.table("processing_jobs").insert(data).execute()
         job = result.data[0] if result.data else {}
         
-        # videos.current_processing_job_id 업데이트
+        # videos.current_processing_job_id 및 status 업데이트
         if job.get("id"):
             self.client.table("videos").update({
                 "current_processing_job_id": job["id"],
+                "status": "PROCESSING",  # PREPROCESS_DONE -> PROCESSING
             }).eq("id", video_id).execute()
-        
+
         return job
     
     def update_processing_job_status(
@@ -293,23 +319,23 @@ class JobAdapterMixin:
         processing_job_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """VLM 분석 결과를 저장합니다.
-        
+
         Args:
             video_id: 비디오 ID
             vlm_results: VLM 결과 리스트
-                [{"capture_id": "...", "payload": {...}}, ...]
+                [{"id": "cap_001", "timestamp_ms": 1000, "extracted_text": "..."}, ...]
             processing_job_id: 처리 작업 ID
-            
+
         Returns:
             List[Dict]: 저장된 레코드들
         """
         if not vlm_results:
             return []
-            
+
         # capture_id가 없는 항목이 있으면 timestamp_ms로 매핑 테이블 생성
         needs_lookup = any(not item.get("capture_id") and item.get("timestamp_ms") is not None for item in vlm_results)
         capture_map = {}
-        
+
         if needs_lookup:
             # 해당 비디오의 모든 캡처 조회 (timestamp_ms -> id 매핑용)
             captures = self.client.table("captures").select("id,start_ms").eq("video_id", video_id).execute()
@@ -318,23 +344,30 @@ class JobAdapterMixin:
                     ts = cap.get("start_ms")
                     if ts is not None:
                         capture_map[ts] = cap["id"]
-        
+
         records = []
         for vlm in vlm_results:
-            capture_id = vlm.get("capture_id")
+            # DB의 capture_id (FK) 조회
+            db_capture_id = vlm.get("capture_id")
             timestamp_ms = vlm.get("timestamp_ms")
-            
+
             # capture_id가 없고 timestamp에 해당하는 캡처가 있으면 매핑
-            if not capture_id and timestamp_ms in capture_map:
-                capture_id = capture_map[timestamp_ms]
-                
+            if not db_capture_id and timestamp_ms in capture_map:
+                db_capture_id = capture_map[timestamp_ms]
+
+            # vlm.json의 id 필드 -> cap_id로 추출
+            cap_id = vlm.get("id")  # e.g., "cap_001"
+
             records.append({
                 "video_id": video_id,
                 "processing_job_id": processing_job_id,
-                "capture_id": capture_id,
-                "payload": vlm, # 전체 페이로드를 저장 (extracted_text 등 포함)
+                "capture_id": db_capture_id,
+                "cap_id": cap_id,  # vlm.json의 id 필드
+                "timestamp_ms": timestamp_ms,
+                "extracted_text": vlm.get("extracted_text"),
+                "payload": vlm,  # 전체 페이로드도 보존
             })
-        
+
         result = self.client.table("vlm_results").insert(records).execute()
         return result.data if result.data else []
     
@@ -457,16 +490,18 @@ class JobAdapterMixin:
         *,
         processing_job_id: Optional[str] = None,
         status: str = "DONE",
+        batch_index: Optional[int] = None,
     ) -> Dict[str, Any]:
         """품질 평가 결과를 저장합니다.
-        
+
         Args:
             video_id: 비디오 ID
             score: 평가 점수
             report: 평가 리포트 (JSONB)
             processing_job_id: 처리 작업 ID
             status: 상태 ('DONE' 또는 'FAILED')
-            
+            batch_index: 배치 인덱스 (0-indexed)
+
         Returns:
             Dict: 저장된 레코드
         """
@@ -477,6 +512,9 @@ class JobAdapterMixin:
             "score": score,
             "report": report,
         }
-        
+
+        if batch_index is not None:
+            data["batch_index"] = batch_index
+
         result = self.client.table("judge").insert(data).execute()
         return result.data[0] if result.data else {}

@@ -33,15 +33,15 @@ class ContentAdapterMixin:
         provider: str = "clova"
     ) -> List[Dict[str, Any]]:
         """STT 실행 결과를 DB에 저장합니다.
-        
+
         JSON 계층 구조를 Flattening하여 관계형 데이터베이스 테이블(stt_results)에 저장합니다.
-        
+
         Args:
             video_id: 비디오 ID (FK)
-            segments: STT 엔진 출력 세그먼트 리스트 (text, start, end 등 포함)
+            segments: STT 엔진 출력 세그먼트 리스트 (text, start, end, id 등 포함)
             preprocess_job_id: 전처리 작업 ID (ERD 기준)
             provider: STT 엔진 이름 (예: 'openai', 'clova')
-            
+
         Returns:
             List[Dict]: DB에 저장된 레코드 리스트
         """
@@ -50,6 +50,7 @@ class ContentAdapterMixin:
             rows.append({
                 "video_id": video_id,
                 "preprocess_job_id": preprocess_job_id,
+                "stt_id": seg.get("id"),  # stt.json의 id 필드 (e.g., "stt_001")
                 "transcript": seg.get("text", ""),  # 스키마는 transcript 컬럼 사용
                 "start_ms": seg.get("start_ms"),
                 "end_ms": seg.get("end_ms"),
@@ -169,31 +170,33 @@ class ContentAdapterMixin:
         segment_map: Optional[Dict[int, str]] = None,
         processing_job_id: Optional[str] = None,
         generate_embedding_flag: bool = True,
+        batch_index: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """LLM 분석 기반 요약 결과를 저장합니다.
-        
+
         segments 테이블과의 관계(FK)를 설정할 수 있습니다.
-        
+
         Args:
             video_id: 비디오 ID
             summaries: 요약 데이터 리스트
             segment_map: 로컬 segment_index(int) -> DB segment_id(uuid) 매핑 테이블
             processing_job_id: 처리 작업 ID (ERD 기준)
             generate_embedding_flag: True이면 임베딩 벡터 자동 생성
-            
+            batch_index: 배치 인덱스 (0-indexed)
+
         Returns:
             List[Dict]: 저장된 요약 레코드
         """
         rows = []
         texts_for_embedding = []  # 배치 임베딩 생성용
-        
+
         for summ in summaries:
             summary_data = summ.get("summary", {})
-            
+
             # JSONB -> 시맨틱 검색용 텍스트 렌더링
             summary_text = render_summary_to_text(summary_data) if summary_data else ""
             texts_for_embedding.append(summary_text)
-            
+
             data = {
                 "video_id": video_id,
                 "summary": summary_data,  # JSONB로 저장
@@ -202,14 +205,18 @@ class ContentAdapterMixin:
                 "processing_job_id": processing_job_id,
                 # NOTE: summary_text 컬럼은 스키마에 없음 (summary JSONB 내에 포함)
             }
-            
+
+            # batch_index 추가
+            if batch_index is not None:
+                data["batch_index"] = batch_index
+
             # Segment FK 연결
             seg_idx = summ.get("segment_id")
             if segment_map and seg_idx in segment_map:
                 data["segment_id"] = segment_map[seg_idx]
-            
+
             rows.append(data)
-        
+
         # 임베딩 생성 (배치 처리)
         if generate_embedding_flag and texts_for_embedding:
             try:
@@ -218,7 +225,7 @@ class ContentAdapterMixin:
                     rows[i]["embedding"] = emb
             except Exception as e:
                 logger.warning(f"임베딩 생성 실패, 요약 저장은 계속 진행: {e}")
-        
+
         if rows:
             result = self.client.table("summaries").insert(rows).execute()
             return result.data

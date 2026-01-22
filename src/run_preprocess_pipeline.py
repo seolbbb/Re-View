@@ -33,6 +33,7 @@ from src.db.pipeline_sync import (
     prepare_preprocess_db_sync,
     sync_preprocess_artifacts_to_db,
 )
+from src.db.adapters import compute_config_hash
 from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
 from src.pipeline.stages import run_capture, run_stt, run_stt_from_storage
 from src.audio.extract_audio import extract_audio
@@ -133,11 +134,18 @@ def run_preprocess_pipeline(
     video_info = get_video_info(video_path)
 
     run_meta_path = video_root / "pipeline_run.json"
+    # Preprocessing 관련 config 파일들의 해시 계산
+    preprocess_config_hash = compute_config_hash([
+        ROOT / "config" / "audio" / "settings.yaml",
+        ROOT / "config" / "capture" / "settings.yaml",
+    ])
+
     run_args = {
         "pipeline_type": "preprocess",
         "video": str(video_path),
         "output_base": str(output_base_path),
         "stt_backend": stt_backend,
+        "config_hash": preprocess_config_hash,
         "parallel": parallel,
         "capture_threshold": capture_threshold,
         "capture_dedupe_threshold": capture_dedupe_threshold,

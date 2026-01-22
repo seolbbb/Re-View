@@ -854,6 +854,7 @@ def run_batch_fusion_pipeline(
                             processing_job_id,
                             batch_summaries_path,
                             batch_segment_map,
+                            batch_index=batch_idx,  # 배치 인덱스 전달
                         )
                         if summary_count > 0:
                             print(f"  [DB] Uploaded {summary_count} summaries for batch {batch_idx + 1}")

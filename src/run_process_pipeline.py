@@ -26,6 +26,7 @@ else:
     load_dotenv()
 
 from src.db import get_supabase_adapter, sync_processing_results_to_db, upsert_final_summary_results
+from src.db.adapters import compute_config_hash
 from src.pipeline.benchmark import BenchmarkTimer, print_benchmark_report
 from src.pipeline.stages import (
     generate_fusion_config,
@@ -339,13 +340,22 @@ def run_processing_pipeline(
         adapter_for_job = get_supabase_adapter()
         if adapter_for_job and video_id:
             try:
+                # Processing 관련 config 파일들의 해시 계산
+                config_hash = compute_config_hash([
+                    ROOT / "config" / "fusion" / "settings.yaml",
+                    ROOT / "config" / "judge" / "settings.yaml",
+                    ROOT / "config" / "pipeline" / "settings.yaml",
+                    ROOT / "config" / "vlm" / "settings.yaml",
+                ])
+
                 job = adapter_for_job.create_processing_job(
                     video_id,
                     triggered_by="MANUAL",
+                    config_hash=config_hash,
                 )
                 processing_job_id = job.get("id")
                 if processing_job_id:
-                    print(f"[DB] Created processing_job: {processing_job_id}")
+                    print(f"[DB] Created processing_job: {processing_job_id} (config_hash: {config_hash})")
             except Exception as e:
                 print(f"[DB] Warning: Failed to create processing_job: {e}")
 

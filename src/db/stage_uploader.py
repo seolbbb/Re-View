@@ -265,6 +265,7 @@ def upload_summaries_for_batch(
     processing_job_id: str,
     summaries_path: Path,
     segment_map: Dict[int, str],
+    batch_index: Optional[int] = None,
 ) -> int:
     """배치의 Summaries를 DB에 업로드한다.
 
@@ -274,6 +275,7 @@ def upload_summaries_for_batch(
         processing_job_id: 처리 작업 ID
         summaries_path: segment_summaries.jsonl 파일 경로
         segment_map: segment_index -> segment_id 매핑
+        batch_index: 배치 인덱스 (0-indexed)
 
     Returns:
         업로드된 레코드 수
@@ -296,6 +298,7 @@ def upload_summaries_for_batch(
         summaries,
         segment_map=segment_map,
         processing_job_id=processing_job_id,
+        batch_index=batch_index,
     )
 
     return len(saved_summaries)
@@ -315,7 +318,7 @@ def upload_judge_result(
         video_id: 비디오 ID
         processing_job_id: 처리 작업 ID
         judge_result: judge 실행 결과
-        batch_idx: 배치 인덱스
+        batch_idx: 배치 인덱스 (0-indexed)
 
     Returns:
         저장된 judge 레코드 (또는 None)
@@ -323,19 +326,14 @@ def upload_judge_result(
     report = judge_result.get("report", {})
     final_score = float(report.get("scores_avg", {}).get("final", 0.0))
 
-    # Judge 레코드에 배치 정보 포함
-    report_with_batch = {
-        **report,
-        "batch_index": batch_idx,
-    }
-
     try:
         saved_judge = adapter.insert_judge(
             video_id,
             score=final_score,
-            report=report_with_batch,
+            report=report,
             processing_job_id=processing_job_id,
             status="DONE",
+            batch_index=batch_idx,  # 별도 컬럼으로 저장
         )
         return saved_judge
     except Exception as e:
@@ -371,10 +369,17 @@ def upsert_final_summary_results(
         "tldr_timeline": "final_summary_tldr_timeline.md",
     }
 
+    # 디버그: results_dir 확인
+    if not results_dir.exists():
+        result_info["errors"].append(f"results_dir not found: {results_dir}")
+        print(f"  [DB] Warning: results_dir not found: {results_dir}")
+
     # 각 포맷별로 파일 확인 및 업로드
+    found_any = False
     for fmt, filename in format_file_map.items():
         file_path = results_dir / filename
         if file_path.exists():
+            found_any = True
             try:
                 content = file_path.read_text(encoding="utf-8")
                 upsert_result = adapter.upsert_summary_results(
@@ -389,11 +394,23 @@ def upsert_final_summary_results(
             except Exception as e:
                 result_info["errors"].append(f"{fmt}: {str(e)}")
 
+    if not found_any:
+        result_info["errors"].append(f"No summary files found in {results_dir}")
+        print(f"  [DB] Warning: No summary files found in {results_dir}")
+
     # 3. processing_job 상태를 DONE으로 업데이트
     try:
         adapter.update_processing_job_status(processing_job_id, "DONE")
     except Exception as e:
         result_info["errors"].append(f"processing_job_status: {str(e)}")
+
+    # 4. videos.status를 DONE으로 업데이트
+    try:
+        adapter.client.table("videos").update({
+            "status": "DONE"
+        }).eq("id", video_id).execute()
+    except Exception as e:
+        result_info["errors"].append(f"videos_status: {str(e)}")
 
     return result_info
 

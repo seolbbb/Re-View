@@ -4,7 +4,7 @@ from .base import BaseAdapter
 from .video_adapter import VideoAdapterMixin
 from .capture_adapter import CaptureAdapterMixin
 from .content_adapter import ContentAdapterMixin
-from .job_adapter import JobAdapterMixin
+from .job_adapter import JobAdapterMixin, compute_config_hash
 
 __all__ = [
     "BaseAdapter",
@@ -12,4 +12,5 @@ __all__ = [
     "CaptureAdapterMixin",
     "ContentAdapterMixin",
     "JobAdapterMixin",
+    "compute_config_hash",
 ]
