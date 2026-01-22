@@ -399,7 +399,8 @@ def run_processing_pipeline(
     if processing_job_id and adapter_for_job:
         try:
             adapter_for_job.update_processing_job_status(processing_job_id, "VLM_RUNNING")
-            adapter_for_job.update_processing_job_progress(processing_job_id, 0, capture_count)
+            # 초기 배치 진행률은 0으로 설정 (total_batch는 배치 모드에서 나중에 설정됨)
+            adapter_for_job.update_processing_job_progress(processing_job_id, 0, None)
         except Exception as e:
             print(f"[DB] Warning: Failed to update processing_job status: {e}")
 
@@ -568,7 +569,9 @@ def run_processing_pipeline(
         if processing_job_id and adapter_for_job:
             try:
                 adapter_for_job.update_processing_job_status(processing_job_id, "DONE")
-                adapter_for_job.update_processing_job_progress(processing_job_id, capture_count, capture_count)
+                # 배치 모드일 경우 total_batch 사용, 아니면 1로 설정
+                total_batches = fusion_info.get("batch_count", 1) if batch_mode else 1
+                adapter_for_job.update_processing_job_progress(processing_job_id, total_batches, total_batches)
                 print(f"[DB] processing_job {processing_job_id} marked as DONE")
             except Exception as e:
                 print(f"[DB] Warning: Failed to update processing_job status: {e}")

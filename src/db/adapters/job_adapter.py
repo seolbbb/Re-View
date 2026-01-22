@@ -158,18 +158,19 @@ class JobAdapterMixin:
             "triggered_by": triggered_by,
             "run_no": run_no,
             "config_hash": config_hash,
-            "progress_current": 0,
-            "progress_total": 0,
+            "current_batch": 0,
+            "total_batch": 0,
         }
         result = self.client.table("processing_jobs").insert(data).execute()
         job = result.data[0] if result.data else {}
-        
+
         # videos.current_processing_job_id 및 status 업데이트
         if job.get("id"):
-            self.client.table("videos").update({
+            update_result = self.client.table("videos").update({
                 "current_processing_job_id": job["id"],
                 "status": "PROCESSING",  # PREPROCESS_DONE -> PROCESSING
             }).eq("id", video_id).execute()
+            print(f"[DB] Updated videos.status to PROCESSING for video_id: {video_id}")
 
         return job
     
@@ -213,15 +214,15 @@ class JobAdapterMixin:
 
         Args:
             job_id: 작업 ID
-            current: 현재 진행 수
-            total: 전체 수 (설정 시에만 업데이트)
+            current: 현재 배치 번호
+            total: 전체 배치 수 (설정 시에만 업데이트)
 
         Returns:
             Dict: 업데이트된 레코드
         """
-        data: Dict[str, Any] = {"progress_current": current}
+        data: Dict[str, Any] = {"current_batch": current}
         if total is not None:
-            data["progress_total"] = total
+            data["total_batch"] = total
 
         result = self.client.table("processing_jobs").update(data).eq("id", job_id).execute()
         return result.data[0] if result.data else {}
@@ -245,8 +246,8 @@ class JobAdapterMixin:
             Dict: 업데이트된 레코드
         """
         data: Dict[str, Any] = {
-            "progress_current": current_batch,
-            "progress_total": total_batches,
+            "current_batch": current_batch,
+            "total_batch": total_batches,
         }
 
         # 상태도 함께 업데이트 (단계에 따라)
@@ -365,7 +366,6 @@ class JobAdapterMixin:
                 "cap_id": cap_id,  # vlm.json의 id 필드
                 "timestamp_ms": timestamp_ms,
                 "extracted_text": vlm.get("extracted_text"),
-                "payload": vlm,  # 전체 페이로드도 보존
             })
 
         result = self.client.table("vlm_results").insert(records).execute()
@@ -500,7 +500,7 @@ class JobAdapterMixin:
             report: 평가 리포트 (JSONB)
             processing_job_id: 처리 작업 ID
             status: 상태 ('DONE' 또는 'FAILED')
-            batch_index: 배치 인덱스 (0-indexed)
+            batch_index: 배치 인덱스 (1-indexed)
 
         Returns:
             Dict: 저장된 레코드

@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS videos (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
-    CONSTRAINT check_video_status CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'FAILED'))
+    CONSTRAINT check_video_status CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'DONE', 'FAILED'))
 );
 
 -- Auto-update updated_at trigger
@@ -98,8 +98,8 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
     triggered_by TEXT DEFAULT 'MANUAL',
     run_no INTEGER DEFAULT 1,
     config_hash TEXT,
-    progress_current INTEGER DEFAULT 0,
-    progress_total INTEGER DEFAULT 0,
+    current_batch INTEGER DEFAULT 0,
+    total_batch INTEGER DEFAULT 0, 
     error_message TEXT,
     started_at TIMESTAMPTZ,
     ended_at TIMESTAMPTZ,
@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS stt_results (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     preprocess_job_id UUID REFERENCES preprocessing_jobs(id) ON DELETE SET NULL,
+    stt_id TEXT,  -- stt.json의 id 필드 (e.g., "stt_001")
     start_ms INTEGER,
     end_ms INTEGER,
     transcript TEXT,
@@ -197,7 +198,9 @@ CREATE TABLE IF NOT EXISTS vlm_results (
     video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
     capture_id UUID REFERENCES captures(id) ON DELETE SET NULL,
-    payload JSONB,
+    cap_id TEXT,  -- vlm.json의 id 필드 (e.g., "cap_00001")
+    timestamp_ms INTEGER,  -- vlm.json의 timestamp_ms 필드
+    extracted_text TEXT,  -- vlm.json의 extracted_text 필드
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -292,7 +295,7 @@ CREATE TABLE IF NOT EXISTS summary_results (
     payload JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     
-    CONSTRAINT check_summary_format CHECK (format IN ('timeline', 'tldr')),
+    CONSTRAINT check_summary_format CHECK (format IN ('timeline', 'tldr', 'tldr_timeline')),
     CONSTRAINT check_summary_status CHECK (status IN ('IN_PROGRESS', 'DONE'))
 );
 
@@ -318,11 +321,12 @@ CREATE TABLE IF NOT EXISTS judge (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
+    batch_index INTEGER,  -- 배치 인덱스 (0-indexed)
     status TEXT DEFAULT 'DONE',
     score FLOAT,
     report JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    
+
     CONSTRAINT check_judge_status CHECK (status IN ('DONE', 'FAILED'))
 );
 
@@ -384,6 +388,56 @@ CREATE INDEX IF NOT EXISTS idx_summaries_segment ON summaries(segment_id);
 
 CREATE INDEX IF NOT EXISTS idx_summary_results_video ON summary_results(video_id);
 CREATE INDEX IF NOT EXISTS idx_judge_video ON judge(video_id);
+
+-- ============================================================================
+-- 14. 기존 테이블 마이그레이션 (2026-01-22 추가)
+-- ============================================================================
+-- 이미 테이블이 존재하는 경우 새 컬럼 추가
+DO $$
+BEGIN
+    -- videos.status 제약조건 업데이트 (PROCESSING, DONE 추가)
+    ALTER TABLE videos DROP CONSTRAINT IF EXISTS check_video_status;
+    ALTER TABLE videos ADD CONSTRAINT check_video_status
+        CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'DONE', 'FAILED'));
+
+    -- stt_results.stt_id 컬럼 추가
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'stt_results' AND column_name = 'stt_id') THEN
+        ALTER TABLE stt_results ADD COLUMN stt_id TEXT;
+    END IF;
+
+    -- vlm_results 새 컬럼 추가 및 payload 컬럼 삭제
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'cap_id') THEN
+        ALTER TABLE vlm_results ADD COLUMN cap_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'timestamp_ms') THEN
+        ALTER TABLE vlm_results ADD COLUMN timestamp_ms INTEGER;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'extracted_text') THEN
+        ALTER TABLE vlm_results ADD COLUMN extracted_text TEXT;
+    END IF;
+    -- payload 컬럼 삭제 (더 이상 사용하지 않음)
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'payload') THEN
+        ALTER TABLE vlm_results DROP COLUMN payload;
+    END IF;
+
+    -- processing_jobs 컬럼명 변경 (progress_current → current_batch, progress_total → total_batch)
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'processing_jobs' AND column_name = 'progress_current') THEN
+        ALTER TABLE processing_jobs RENAME COLUMN progress_current TO current_batch;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'processing_jobs' AND column_name = 'progress_total') THEN
+        ALTER TABLE processing_jobs RENAME COLUMN progress_total TO total_batch;
+    END IF;
+
+    -- summary_results.format 제약조건 업데이트 (tldr_timeline 추가)
+    ALTER TABLE summary_results DROP CONSTRAINT IF EXISTS check_summary_format;
+    ALTER TABLE summary_results ADD CONSTRAINT check_summary_format
+        CHECK (format IN ('timeline', 'tldr', 'tldr_timeline'));
+
+    -- judge.batch_index 컬럼 추가
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'judge' AND column_name = 'batch_index') THEN
+        ALTER TABLE judge ADD COLUMN batch_index INTEGER;
+    END IF;
+END $$;
 
 -- ============================================================================
 -- 완료 메시지

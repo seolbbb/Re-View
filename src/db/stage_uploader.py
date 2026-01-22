@@ -318,7 +318,7 @@ def upload_judge_result(
         video_id: 비디오 ID
         processing_job_id: 처리 작업 ID
         judge_result: judge 실행 결과
-        batch_idx: 배치 인덱스 (0-indexed)
+        batch_idx: 배치 인덱스 (1-indexed)
 
     Returns:
         저장된 judge 레코드 (또는 None)

@@ -854,7 +854,7 @@ def run_batch_fusion_pipeline(
                             processing_job_id,
                             batch_summaries_path,
                             batch_segment_map,
-                            batch_index=batch_idx,  # 배치 인덱스 전달
+                            batch_index=batch_idx + 1,  # 배치 인덱스 1-based
                         )
                         if summary_count > 0:
                             print(f"  [DB] Uploaded {summary_count} summaries for batch {batch_idx + 1}")
@@ -864,7 +864,7 @@ def run_batch_fusion_pipeline(
                     # Judge 결과 DB 업로드
                     try:
                         upload_judge_result(
-                            adapter, video_id, processing_job_id, judge_result, batch_idx
+                            adapter, video_id, processing_job_id, judge_result, batch_idx + 1
                         )
                         print(f"  [DB] Uploaded judge result for batch {batch_idx + 1}")
                     except Exception as e:
