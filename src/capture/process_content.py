@@ -59,9 +59,19 @@ def process_single_video_capture(
     slides = extractor.process(video_name=video_name)
     elapsed = time.time() - start_time
 
-    # Assign IDs
+    # Assign IDs and rename files sequentially
     for idx, slide in enumerate(slides, 1):
         slide["id"] = f"cap_{idx:03d}"
+        
+        # Rename file to sequential numbering
+        old_name = slide["file_name"]
+        new_name = f"{video_name}_{idx:03d}.jpg"
+        if old_name != new_name:
+            old_path = captures_dir / old_name
+            new_path = captures_dir / new_name
+            if old_path.exists():
+                old_path.rename(new_path)
+            slide["file_name"] = new_name
 
     if write_manifest:
         manifest_path = output_root / "manifest.json"
