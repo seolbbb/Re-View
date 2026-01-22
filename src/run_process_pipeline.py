@@ -25,7 +25,7 @@ if ENV_PATH.exists():
 else:
     load_dotenv()
 
-from src.db import get_supabase_adapter, sync_processing_results_to_db
+from src.db import get_supabase_adapter, sync_processing_results_to_db, upsert_final_summary_results
 from src.pipeline.benchmark import BenchmarkTimer, print_benchmark_report
 from src.pipeline.stages import (
     generate_fusion_config,
@@ -425,6 +425,11 @@ def run_processing_pipeline(
                 limit=limit,
                 repo_root=ROOT,
                 status_callback=status_callback if processing_job_id else None,
+                # DB 동기화 관련 파라미터 전달
+                processing_job_id=processing_job_id,
+                video_id=video_id,
+                sync_to_db=sync_to_db,
+                adapter=adapter_for_job,
             )
             segment_count = fusion_info.get("segment_count", 0)
             vlm_image_count = capture_count
@@ -502,27 +507,52 @@ def run_processing_pipeline(
             encoding="utf-8",
         )
 
-        if sync_to_db and processing_job_id:
-            # 선택적으로 결과물을 DB에 업로드한다.
-            print("\nSyncing processing outputs to Supabase (Processing Jobs)...")
-            db_results = sync_processing_results_to_db(
-                video_root=video_root,
-                video_id=video_id,
-                processing_job_id=processing_job_id,
-            )
-            saved = db_results.get("saved", {})
-            errors = db_results.get("errors", [])
-            
-            print(f"[DB] Upload Summary (Processing Job {processing_job_id}):")
-            for k, v in saved.items():
-                print(f"  - {k}: {v} records")
-            
-            if errors:
-                print(f"[DB] ⚠️ Completed with {len(errors)} errors:")
-                for e in errors:
-                    print(f"  - {e}")
+        if sync_to_db and processing_job_id and adapter_for_job:
+            # Final summary_results UPSERT (timeline, tldr 포맷 저장)
+            print("\n[DB] Upserting final summary results...")
+            results_dir = video_root / "results"
+            summaries_path = video_root / "fusion" / "segment_summaries.jsonl"
+            try:
+                upsert_result = upsert_final_summary_results(
+                    adapter_for_job,
+                    video_id,
+                    processing_job_id,
+                    summaries_path,
+                    results_dir,
+                )
+                if upsert_result.get("saved"):
+                    for fmt, result_id in upsert_result["saved"].items():
+                        print(f"  [DB] summary_results ({fmt}): {result_id}")
+                if upsert_result.get("errors"):
+                    for err in upsert_result["errors"]:
+                        print(f"  [DB] Warning: {err}")
+            except Exception as e:
+                print(f"[DB] Warning: Failed to upsert final summary results: {e}")
+
+            # 배치별 업로드가 이미 완료되었으므로 기존 sync는 스킵 가능
+            # 하지만 단일 모드나 fallback을 위해 유지
+            if not batch_mode:
+                print("\nSyncing processing outputs to Supabase (Processing Jobs)...")
+                db_results = sync_processing_results_to_db(
+                    video_root=video_root,
+                    video_id=video_id,
+                    processing_job_id=processing_job_id,
+                )
+                saved = db_results.get("saved", {})
+                errors = db_results.get("errors", [])
+
+                print(f"[DB] Upload Summary (Processing Job {processing_job_id}):")
+                for k, v in saved.items():
+                    print(f"  - {k}: {v} records")
+
+                if errors:
+                    print(f"[DB] ⚠️ Completed with {len(errors)} errors:")
+                    for e in errors:
+                        print(f"  - {e}")
+                else:
+                    print("[DB] ✅ Processing artifacts uploaded successfully.")
             else:
-                print("[DB] ✅ Processing artifacts uploaded successfully.")
+                print("[DB] ✅ Batch mode: artifacts already uploaded during pipeline execution.")
 
         # processing_job 상태를 DONE으로 업데이트
         if processing_job_id and adapter_for_job:

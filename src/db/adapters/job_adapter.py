@@ -184,19 +184,56 @@ class JobAdapterMixin:
         total: Optional[int] = None,
     ) -> Dict[str, Any]:
         """처리 작업 진행률을 업데이트합니다.
-        
+
         Args:
             job_id: 작업 ID
             current: 현재 진행 수
             total: 전체 수 (설정 시에만 업데이트)
-            
+
         Returns:
             Dict: 업데이트된 레코드
         """
         data: Dict[str, Any] = {"progress_current": current}
         if total is not None:
             data["progress_total"] = total
-            
+
+        result = self.client.table("processing_jobs").update(data).eq("id", job_id).execute()
+        return result.data[0] if result.data else {}
+
+    def update_processing_job_batch_progress(
+        self,
+        job_id: str,
+        current_batch: int,
+        total_batches: int,
+        current_stage: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """배치+단계별 진행률을 업데이트합니다.
+
+        Args:
+            job_id: 작업 ID
+            current_batch: 현재 배치 번호 (1-indexed)
+            total_batches: 전체 배치 수
+            current_stage: 현재 단계 (예: 'VLM', 'SYNC', 'SUMMARY', 'JUDGE')
+
+        Returns:
+            Dict: 업데이트된 레코드
+        """
+        data: Dict[str, Any] = {
+            "progress_current": current_batch,
+            "progress_total": total_batches,
+        }
+
+        # 상태도 함께 업데이트 (단계에 따라)
+        if current_stage:
+            stage_status_map = {
+                "VLM": "VLM_RUNNING",
+                "SYNC": "VLM_RUNNING",  # SYNC는 VLM과 함께 처리
+                "SUMMARY": "SUMMARY_RUNNING",
+                "JUDGE": "JUDGE_RUNNING",
+            }
+            if current_stage in stage_status_map:
+                data["status"] = stage_status_map[current_stage]
+
         result = self.client.table("processing_jobs").update(data).eq("id", job_id).execute()
         return result.data[0] if result.data else {}
     

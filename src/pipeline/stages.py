@@ -21,6 +21,13 @@ from src.judge.judge import run_judge
 from src.pipeline.benchmark import BenchmarkTimer
 from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+from src.db.stage_uploader import (
+    upload_vlm_results_for_batch,
+    upload_segments_for_batch,
+    upload_summaries_for_batch,
+    upload_judge_result,
+    accumulate_segments_to_fusion,
+)
 
 
 def _read_latest_token_usage(token_usage_path: Path) -> Dict[str, int]:
@@ -562,13 +569,22 @@ def run_batch_fusion_pipeline(
     repo_root: Path,
     skip_vlm: bool = False,
     status_callback: Optional[Callable[[str, Optional[int], Optional[int]], None]] = None,
+    # DB 동기화 관련 파라미터
+    processing_job_id: Optional[str] = None,
+    video_id: Optional[str] = None,
+    sync_to_db: bool = False,
+    adapter: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """배치 단위로 동기화와 요약을 반복 실행한다.
-    
+
     Args:
         manifest_json: manifest.json 경로 (선택, captures_data가 없을 때 사용)
         captures_data: DB에서 가져온 captures 리스트 (선택, manifest_json보다 우선)
         status_callback: 상태 업데이트 콜백 함수 (status, current, total)
+        processing_job_id: 처리 작업 ID (DB 동기화용)
+        video_id: 비디오 ID (DB 동기화용)
+        sync_to_db: DB 동기화 활성화 여부
+        adapter: Supabase 어댑터 (sync_to_db=True일 때 필요)
     """
     from src.fusion.summarizer import run_batch_summarizer
     from src.fusion.sync_engine import run_batch_sync_engine
@@ -638,6 +654,11 @@ def run_batch_fusion_pipeline(
     if accumulated_summaries_path.exists():
         accumulated_summaries_path.unlink()
 
+    # segments_units.jsonl도 누적 파일 초기화
+    accumulated_segments_path = fusion_dir / "segments_units.jsonl"
+    if accumulated_segments_path.exists():
+        accumulated_segments_path.unlink()
+
     total_vlm_elapsed = 0.0
     total_summarizer_elapsed = 0.0
     total_judge_elapsed = 0.0
@@ -684,6 +705,19 @@ def run_batch_fusion_pipeline(
                 concurrency=vlm_concurrency,
                 show_progress=vlm_show_progress,
             )
+
+            # VLM 완료 후 즉시 DB 업로드
+            if sync_to_db and adapter and video_id and processing_job_id:
+                try:
+                    vlm_json_path = batch_dir / "vlm.json"
+                    vlm_count = upload_vlm_results_for_batch(
+                        adapter, video_id, processing_job_id, vlm_json_path
+                    )
+                    if vlm_count > 0:
+                        print(f"  [DB] Uploaded {vlm_count} VLM results for batch {batch_idx + 1}")
+                except Exception as e:
+                    print(f"  [DB] Warning: Failed to upload VLM results: {e}")
+
         total_vlm_elapsed += batch_vlm_elapsed
 
         if not fusion_config_path.exists():
@@ -723,6 +757,25 @@ def run_batch_fusion_pipeline(
 
         batch_segments_path = batch_dir / "segments_units.jsonl"
         batch_summaries_path = batch_dir / "segment_summaries.jsonl"
+
+        # 배치 segments를 fusion 디렉토리에 누적
+        accumulate_segments_to_fusion(batch_segments_path, accumulated_segments_path)
+
+        # Sync 완료 후 segments DB 업로드 (segment_map 반환)
+        batch_segment_map: Dict[int, str] = {}
+        if sync_to_db and adapter and video_id and processing_job_id:
+            try:
+                batch_segment_map = upload_segments_for_batch(
+                    adapter,
+                    video_id,
+                    processing_job_id,
+                    batch_segments_path,
+                    offset=cumulative_segment_count - new_segment_count,
+                )
+                if batch_segment_map:
+                    print(f"  [DB] Uploaded {len(batch_segment_map)} segments for batch {batch_idx + 1}")
+            except Exception as e:
+                print(f"  [DB] Warning: Failed to upload segments: {e}")
 
         config = load_config(str(fusion_config_path))
         print(f"   [Config] Summarizer Prompt: {config.raw.summarizer.prompt_version} | Judge Prompt: {config.judge.prompt_version}")
@@ -790,7 +843,32 @@ def run_batch_fusion_pipeline(
                 batch_dir / "judge.json",
                 batch_idx
             )
-            
+
+            # Summary 완료 후 DB 업로드 (마지막 시도에서만 또는 PASS 시)
+            if sync_to_db and adapter and video_id and processing_job_id:
+                if passed or attempt == max_attempts - 1:
+                    try:
+                        summary_count = upload_summaries_for_batch(
+                            adapter,
+                            video_id,
+                            processing_job_id,
+                            batch_summaries_path,
+                            batch_segment_map,
+                        )
+                        if summary_count > 0:
+                            print(f"  [DB] Uploaded {summary_count} summaries for batch {batch_idx + 1}")
+                    except Exception as e:
+                        print(f"  [DB] Warning: Failed to upload summaries: {e}")
+
+                    # Judge 결과 DB 업로드
+                    try:
+                        upload_judge_result(
+                            adapter, video_id, processing_job_id, judge_result, batch_idx
+                        )
+                        print(f"  [DB] Uploaded judge result for batch {batch_idx + 1}")
+                    except Exception as e:
+                        print(f"  [DB] Warning: Failed to upload judge result: {e}")
+
             if passed:
                 break
             
@@ -830,10 +908,22 @@ def run_batch_fusion_pipeline(
 
         if not passed:
             all_batches_passed = False
-        
+
         # passed is result of last attempt
         total_judge_score += final_score
         processed_batches_count += 1
+
+        # 배치 완료 시 progress 업데이트
+        if sync_to_db and adapter and processing_job_id:
+            try:
+                adapter.update_processing_job_batch_progress(
+                    processing_job_id,
+                    current_batch=batch_idx + 1,
+                    total_batches=total_batches,
+                    current_stage=None,  # 배치 완료 시에는 단계 없음
+                )
+            except Exception as e:
+                print(f"  [DB] Warning: Failed to update batch progress: {e}")
 
         print(
             f"  ✅ Pipeline batch {batch_idx + 1} complete "
