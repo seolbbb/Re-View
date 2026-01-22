@@ -11,10 +11,11 @@ from .adapters import (
     VideoAdapterMixin,
     CaptureAdapterMixin,
     ContentAdapterMixin,
+    JobAdapterMixin,
 )
 
 
-class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, ContentAdapterMixin):
+class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, ContentAdapterMixin, JobAdapterMixin):
     """Supabase 데이터베이스 통합 어댑터 클래스.
     
     이 클래스는 여러 Mixin을 상속받아 Supabase와의 모든 상호작용을 단일 인터페이스로 제공합니다.
@@ -35,7 +36,8 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
         video_id: str,
         video_root: Path,
         provider: str = "clova",
-        pipeline_run_id: Optional[str] = None,
+        preprocess_job_id: Optional[str] = None,
+        processing_job_id: Optional[str] = None,
         include_preprocess: bool = True,
     ) -> Dict[str, Any]:
         """파이프라인 실행 완료 후 생성된 모든 결과물(JSON/JSONL)을 DB에 저장합니다.
@@ -54,7 +56,8 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
             video_id: 대상 비디오의 UUID
             video_root: 분석 결과 파일들이 위치한 디렉터리 경로 (예: ./captures/video_name)
             provider: STT 엔진 이름 (기본값: clova)
-            pipeline_run_id: 파이프라인 실행 이력 ID (선택)
+            preprocess_job_id: 전처리 작업 ID (captures, stt_results용)
+            processing_job_id: 처리 작업 ID (segments, summaries용)
             include_preprocess: 캡처/음성 결과까지 업로드할지 여부
             
         Returns:
@@ -78,7 +81,10 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
                 try:
                     captures_dir = video_root / "captures"
                     # 이미지 업로드와 메타데이터 저장을 동시에 수행
-                    captures_result = self.save_captures_with_upload(video_id, manifest_path, captures_dir, pipeline_run_id=pipeline_run_id)
+                    captures_result = self.save_captures_with_upload(
+                        video_id, manifest_path, captures_dir, 
+                        preprocess_job_id=preprocess_job_id
+                    )
                     results["saved"]["captures"] = captures_result["db_saved"]
                     if captures_result["errors"]:
                          results["errors"].extend(captures_result["errors"])
@@ -90,7 +96,10 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
             stt_path = video_root / "stt.json"
             if stt_path.exists():
                 try:
-                    stt = self.save_stt_from_file(video_id, stt_path, provider, pipeline_run_id)
+                    stt = self.save_stt_from_file(
+                        video_id, stt_path, provider, 
+                        preprocess_job_id=preprocess_job_id
+                    )
                     results["saved"]["stt_results"] = len(stt) if stt else 0
                 except Exception as e:
                     results["errors"].append(f"stt_results: {str(e)}")
@@ -101,7 +110,10 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
         segments_path = video_root / "fusion" / "segments_units.jsonl"
         if segments_path.exists():
             try:
-                segments = self.save_segments_from_file(video_id, segments_path, pipeline_run_id)
+                segments = self.save_segments_from_file(
+                    video_id, segments_path, 
+                    processing_job_id=processing_job_id
+                )
                 results["saved"]["segments"] = len(segments)
                 
                 # Build ID Map (index -> uuid)
@@ -118,18 +130,17 @@ class SupabaseAdapter(BaseAdapter, VideoAdapterMixin, CaptureAdapterMixin, Conte
         summaries_path = video_root / "fusion" / "segment_summaries.jsonl"
         if summaries_path.exists():
             try:
-                summaries = self.save_summaries_from_file(video_id, summaries_path, segment_map, pipeline_run_id)
+                summaries = self.save_summaries_from_file(
+                    video_id, summaries_path, segment_map, 
+                    processing_job_id=processing_job_id
+                )
                 results["saved"]["summaries"] = len(summaries)
             except Exception as e:
                 results["errors"].append(f"summaries: {str(e)}")
         
-        # 5. 비디오 상태 업데이트 (Status Update)
-        # 에러가 하나라도 있으면 'completed_with_errors', 아니면 'completed'로 마킹
-        if results["errors"]:
-            error_msg = "; ".join(results["errors"])
-            self.update_video_status(video_id, "completed_with_errors", error=error_msg)
-        else:
-            self.update_video_status(video_id, "completed")
+        # NOTE: videos.status 업데이트는 여기서 하지 않음
+        # videos.status는 UPLOADED/PREPROCESSING/PREPROCESS_DONE/FAILED만 허용
+        # 처리 완료 상태는 processing_jobs.status로 관리
         
         return results
 

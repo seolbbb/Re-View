@@ -64,8 +64,29 @@ def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]
     return sorted(normalized, key=lambda x: x["timestamp_ms"]), duration_ms
 
 
-def _load_manifest_scores(path: Optional[Path]) -> Dict[int, float]:
-    """manifest.json에서 diff_score 기준 점수 맵을 만든다."""
+def _load_manifest_scores(
+    path: Optional[Path] = None,
+    captures_data: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[int, float]:
+    """manifest.json 또는 captures_data에서 diff_score 기준 점수 맵을 만든다.
+    
+    Args:
+        path: manifest.json 파일 경로 (선택)
+        captures_data: DB에서 가져온 captures 리스트 (선택, path보다 우선)
+    """
+    # captures_data가 제공되면 우선 사용
+    if captures_data is not None:
+        scores: Dict[int, float] = {}
+        for item in captures_data:
+            if "start_ms" not in item:
+                continue
+            start_ms = int(item["start_ms"])
+            diff_score = float(item.get("diff_score", 0.0))
+            if start_ms not in scores or diff_score > scores[start_ms]:
+                scores[start_ms] = diff_score
+        return scores
+    
+    # 파일 경로 기반 로드
     if not path:
         return {}
     if not path.exists():
@@ -73,7 +94,7 @@ def _load_manifest_scores(path: Optional[Path]) -> Dict[int, float]:
     payload = read_json(path, "captures/manifest.json")
     if not isinstance(payload, list):
         raise ValueError(f"Invalid manifest.json format: {path}")
-    scores: Dict[int, float] = {}
+    scores = {}
     for item in payload:
         if "start_ms" not in item:
             continue
@@ -400,7 +421,8 @@ def run_batch_sync_engine(
     *,
     stt_json: Path,
     vlm_json: Path,
-    manifest_json: Optional[Path],
+    manifest_json: Optional[Path] = None,
+    captures_data: Optional[List[Dict[str, Any]]] = None,
     output_dir: Path,
     time_range: Tuple[int, int],
     sync_config: Dict[str, object],
@@ -413,7 +435,8 @@ def run_batch_sync_engine(
     Args:
         stt_json: stt.json 경로
         vlm_json: 배치별 vlm.json 경로
-        manifest_json: manifest.json 경로 (선택)
+        manifest_json: manifest.json 경로 (선택, captures_data가 없을 때 사용)
+        captures_data: DB에서 가져온 captures 리스트 (선택, manifest_json보다 우선)
         output_dir: 출력 디렉토리 (배치별 디렉토리)
         time_range: (start_ms, end_ms) 시간 범위
         sync_config: sync_engine 설정 (min_segment_sec, max_segment_sec 등)
@@ -435,8 +458,8 @@ def run_batch_sync_engine(
     # VLM 로드 (이미 배치별로 필터링된 상태)
     vlm_items, vlm_duration_ms = _load_vlm_items(vlm_json)
 
-    # manifest scores 로드
-    manifest_scores = _load_manifest_scores(manifest_json) if manifest_json else {}
+    # manifest scores 로드 (captures_data 우선, 없으면 manifest_json 사용)
+    manifest_scores = _load_manifest_scores(path=manifest_json, captures_data=captures_data)
 
     # 설정 값 추출
     min_segment_ms = int(sync_config.get("min_segment_sec", 30)) * 1000

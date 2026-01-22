@@ -1,17 +1,20 @@
 opencv-python
-paddleocr
 pydantic>=2.5.0
 python-dotenv
 requests
+tenacity
 tqdm
 google-genai
 matplotlib
 google-adk
 pyyaml
 
+fastapi
 mediapipe>=0.10.0
+numpy
 openai-whisper
 openai>=1.0.0
 torch
 streamlit
 supabase>=2.0.0
+uvicorn

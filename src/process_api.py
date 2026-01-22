@@ -24,18 +24,25 @@ GET 실행
     curl http://localhost:8000/health
 마지막 실행 로그:
     curl http://localhost:8000/runs/diffusion
+비디오 상태:
+    curl http://localhost:8000/videos/{video_id}/status
+처리 진행률:
+    curl http://localhost:8000/videos/{video_id}/progress
+최신 요약:
+    curl http://localhost:8000/videos/{video_id}/summary
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from src.db import get_supabase_adapter
 from src.run_process_pipeline import run_processing_pipeline
-import json
 
 
 app = FastAPI(title="Screentime Processing API")
@@ -87,3 +94,257 @@ def process_pipeline(request: ProcessRequest, background_tasks: BackgroundTasks)
     )
 
     return ProcessResponse(status="started", message="processing started")
+
+
+# =============================================================================
+# 새 ERD 기반 엔드포인트
+# =============================================================================
+
+
+@app.get("/videos/{video_id}/status")
+def get_video_status(video_id: str) -> Dict[str, Any]:
+    """비디오 상태 및 현재 작업 정보 조회."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 정보 조회
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    result = {
+        "video_id": video_id,
+        "video_status": video.get("status"),
+        "error_message": video.get("error_message"),
+    }
+    
+    # 전처리 작업 정보
+    preprocess_job_id = video.get("current_preprocess_job_id")
+    if preprocess_job_id:
+        preprocess_job = adapter.get_preprocessing_job(preprocess_job_id)
+        if preprocess_job:
+            result["preprocess_job"] = {
+                "id": preprocess_job_id,
+                "status": preprocess_job.get("status"),
+                "started_at": preprocess_job.get("started_at"),
+                "ended_at": preprocess_job.get("ended_at"),
+            }
+    
+    # 처리 작업 정보
+    processing_job_id = video.get("current_processing_job_id")
+    if processing_job_id:
+        processing_job = adapter.get_processing_job(processing_job_id)
+        if processing_job:
+            result["processing_job"] = {
+                "id": processing_job_id,
+                "status": processing_job.get("status"),
+                "progress_current": processing_job.get("current_batch"),
+                "progress_total": processing_job.get("total_batch"),
+                "started_at": processing_job.get("started_at"),
+                "ended_at": processing_job.get("ended_at"),
+            }
+    
+    return result
+
+
+@app.get("/videos/{video_id}/progress")
+def get_video_progress(video_id: str) -> Dict[str, Any]:
+    """처리 진행률 조회 (폴링용)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 정보 조회
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    processing_job_id = video.get("current_processing_job_id")
+    if not processing_job_id:
+        return {
+            "video_id": video_id,
+            "has_processing_job": False,
+            "video_status": video.get("status"),
+        }
+    
+    processing_job = adapter.get_processing_job(processing_job_id)
+    if not processing_job:
+        return {
+            "video_id": video_id,
+            "has_processing_job": False,
+            "video_status": video.get("status"),
+        }
+    
+    progress_current = processing_job.get("current_batch") or 0
+    progress_total = processing_job.get("total_batch") or 1
+    progress_percent = round((progress_current / progress_total) * 100, 1) if progress_total > 0 else 0
+    
+    return {
+        "video_id": video_id,
+        "has_processing_job": True,
+        "processing_job_id": processing_job_id,
+        "status": processing_job.get("status"),
+        "progress_current": progress_current,
+        "progress_total": progress_total,
+        "progress_percent": progress_percent,
+        "is_complete": processing_job.get("status") in ("DONE", "FAILED"),
+    }
+
+
+@app.get("/videos/{video_id}/summary")
+def get_video_summary(video_id: str, format: Optional[str] = None) -> Dict[str, Any]:
+    """최신 요약 결과 조회 (IN_PROGRESS 포함)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 존재 확인
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    # 최신 summary_results 조회
+    summary_result = adapter.get_latest_summary_results(video_id, format)
+    if not summary_result:
+        return {
+            "video_id": video_id,
+            "has_summary": False,
+            "video_status": video.get("status"),
+        }
+    
+    return {
+        "video_id": video_id,
+        "has_summary": True,
+        "summary_id": summary_result.get("id"),
+        "format": summary_result.get("format"),
+        "status": summary_result.get("status"),
+        "is_complete": summary_result.get("status") == "DONE",
+        "payload": summary_result.get("payload"),
+        "created_at": summary_result.get("created_at"),
+    }
+
+
+@app.get("/videos/{video_id}/summaries")
+def get_video_summaries(video_id: str) -> Dict[str, Any]:
+    """세부 요약 세그먼트 리스트 조회 (Chatbot용)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    # summaries 테이블 조회 (segments 조인됨)
+    rows = adapter.get_summaries(video_id)
+    
+    # 응답 포맷 구성
+    items = []
+    for r in rows:
+        seg_info = r.get("segments") or {}
+        items.append({
+            "summary_id": r.get("id"),
+            "segment_id": r.get("segment_id"),
+            "segment_index": seg_info.get("segment_index"),
+            "start_ms": seg_info.get("start_ms"),
+            "end_ms": seg_info.get("end_ms"),
+            "summary": r.get("summary"),  # JSONB
+            "created_at": r.get("created_at"),
+        })
+        
+    # segment_index 기준 정렬
+    items.sort(key=lambda x: x.get("segment_index") or 0)
+    
+    return {
+        "video_id": video_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+# =============================================================================
+# STT 처리 엔드포인트 (Frontend → Backend Storage 기반)
+# =============================================================================
+
+
+class STTProcessRequest(BaseModel):
+    """STT 처리 요청 모델.
+    
+    Frontend가 Storage에 오디오를 업로드한 후 호출하는 API용.
+    """
+    video_id: str
+    audio_storage_key: str  # Storage 내 경로 (예: "{video_id}/audio.wav")
+    preprocess_job_id: Optional[str] = None
+    provider: str = "clova"
+
+
+class STTProcessResponse(BaseModel):
+    status: str
+    message: str
+    stt_results_count: Optional[int] = None
+
+
+@app.post("/stt/process", response_model=STTProcessResponse)
+def process_stt_from_storage(request: STTProcessRequest) -> STTProcessResponse:
+    """Storage에서 오디오를 다운받아 STT를 처리하고 결과를 DB에 저장한다.
+    
+    사용 예시:
+        curl -X POST http://localhost:8001/stt/process \\
+            -H "Content-Type: application/json" \\
+            -d '{"video_id":"...", "audio_storage_key":"video_id/audio.wav"}'
+    """
+    from src.pipeline.stages import run_stt_from_storage
+    
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 존재 확인
+    video = adapter.get_video(request.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    try:
+        # 1. Storage에서 오디오 다운로드 → STT 실행
+        stt_result = run_stt_from_storage(
+            audio_storage_key=request.audio_storage_key,
+            video_id=request.video_id,
+            backend=request.provider,
+        )
+        
+        # 2. STT 결과를 DB에 저장
+        segments = stt_result.get("segments", [])
+        if not isinstance(segments, list):
+            segments = []
+        
+        saved_rows = adapter.save_stt_result(
+            video_id=request.video_id,
+            segments=segments,
+            preprocess_job_id=request.preprocess_job_id,
+            provider=request.provider,
+        )
+        
+        # 3. preprocessing_job 상태 업데이트 (있는 경우)
+        if request.preprocess_job_id:
+            adapter.update_preprocessing_job_status(request.preprocess_job_id, "DONE")
+            adapter.update_video_status(request.video_id, "PREPROCESS_DONE")
+        
+        return STTProcessResponse(
+            status="ok",
+            message=f"STT processing completed. {len(saved_rows)} results saved.",
+            stt_results_count=len(saved_rows),
+        )
+        
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"Audio file not found in storage: {e}")
+    except Exception as e:
+        # 에러 시 preprocessing_job 상태 업데이트
+        if request.preprocess_job_id:
+            adapter.update_preprocessing_job_status(
+                request.preprocess_job_id, 
+                "FAILED", 
+                error_message=str(e)
+            )
+            adapter.update_video_status(request.video_id, "FAILED", error=str(e))
+        raise HTTPException(status_code=500, detail=f"STT processing failed: {e}")
