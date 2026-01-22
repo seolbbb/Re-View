@@ -310,6 +310,12 @@ def run_preprocess_pipeline(
                 stt_elapsed = time.perf_counter() - stt_start
                 timer.record_stage("stt", stt_elapsed)
                 print(f"  STT done in {format_duration(stt_elapsed)} (from Storage)")
+                # 로컬 stt.json 저장 (write_local_json 설정에 따라)
+                if write_local_json and stt_payload:
+                    stt_json.write_text(
+                        json.dumps(stt_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
                 _sync_stage("stt", stt_payload=stt_payload)
             else:
                 # DB 미설정 시 로컬 STT 실행
