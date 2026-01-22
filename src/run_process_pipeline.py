@@ -258,7 +258,7 @@ def run_processing_pipeline(
                     {
                         "start_ms": row.get("start_ms"),
                         "end_ms": row.get("end_ms"),
-                        "text": row.get("text", ""),
+                        "text": row.get("transcript", ""),
                         "confidence": row.get("confidence"),
                     }
                 )

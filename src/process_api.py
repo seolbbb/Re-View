@@ -139,8 +139,8 @@ def get_video_status(video_id: str) -> Dict[str, Any]:
             result["processing_job"] = {
                 "id": processing_job_id,
                 "status": processing_job.get("status"),
-                "progress_current": processing_job.get("progress_current"),
-                "progress_total": processing_job.get("progress_total"),
+                "progress_current": processing_job.get("current_batch"),
+                "progress_total": processing_job.get("total_batch"),
                 "started_at": processing_job.get("started_at"),
                 "ended_at": processing_job.get("ended_at"),
             }
@@ -176,8 +176,8 @@ def get_video_progress(video_id: str) -> Dict[str, Any]:
             "video_status": video.get("status"),
         }
     
-    progress_current = processing_job.get("progress_current") or 0
-    progress_total = processing_job.get("progress_total") or 1
+    progress_current = processing_job.get("current_batch") or 0
+    progress_total = processing_job.get("total_batch") or 1
     progress_percent = round((progress_current / progress_total) * 100, 1) if progress_total > 0 else 0
     
     return {

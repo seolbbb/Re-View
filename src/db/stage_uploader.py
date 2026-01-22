@@ -67,7 +67,15 @@ def get_vlm_results_with_fallback(
             query = query.eq("processing_job_id", processing_job_id)
         result = query.execute()
         if result.data:
-            vlm_items = [row.get("payload", {}) for row in result.data]
+            # 새 스키마에서는 payload 대신 개별 컬럼 사용
+            vlm_items = [
+                {
+                    "cap_id": row.get("cap_id"),
+                    "timestamp_ms": row.get("timestamp_ms"),
+                    "extracted_text": row.get("extracted_text", ""),
+                }
+                for row in result.data
+            ]
 
     return vlm_items
 

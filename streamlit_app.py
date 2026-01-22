@@ -38,7 +38,7 @@ ADK_OUTPUT_BASE = get_default_output_base()
 VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
 
 # API base URL for process API
-PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8001").rstrip("/")
+PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
 
 
 def _call_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
