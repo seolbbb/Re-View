@@ -549,7 +549,8 @@ def run_batch_fusion_pipeline(
     *,
     video_root: Path,
     captures_dir: Path,
-    manifest_json: Path,
+    manifest_json: Optional[Path] = None,
+    captures_data: Optional[List[Dict[str, Any]]] = None,
     stt_json: Path,
     video_name: str,
     batch_size: int,
@@ -565,12 +566,21 @@ def run_batch_fusion_pipeline(
     """배치 단위로 동기화와 요약을 반복 실행한다.
     
     Args:
+        manifest_json: manifest.json 경로 (선택, captures_data가 없을 때 사용)
+        captures_data: DB에서 가져온 captures 리스트 (선택, manifest_json보다 우선)
         status_callback: 상태 업데이트 콜백 함수 (status, current, total)
     """
     from src.fusion.summarizer import run_batch_summarizer
     from src.fusion.sync_engine import run_batch_sync_engine
 
-    manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+    # captures_data가 있으면 직접 사용, 없으면 manifest_json에서 로드
+    if captures_data is not None:
+        manifest_payload = captures_data
+    elif manifest_json and manifest_json.exists():
+        manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+    else:
+        manifest_payload = []
+    
     sorted_manifest = sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
         key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
@@ -693,6 +703,7 @@ def run_batch_fusion_pipeline(
             stt_json=stt_json,
             vlm_json=batch_dir / "vlm.json",
             manifest_json=manifest_json,
+            captures_data=captures_data,
             output_dir=batch_dir,
             time_range=(batch_info["start_ms"], batch_info["end_ms"]),
             sync_config={

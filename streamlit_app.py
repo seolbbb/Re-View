@@ -8,6 +8,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from dotenv import load_dotenv
+
+# Load .env at the very beginning before any imports that might use env vars
+_ROOT = Path(__file__).resolve().parent
+_ENV_PATH = _ROOT / ".env"
+if _ENV_PATH.exists():
+    load_dotenv(_ENV_PATH)
+else:
+    load_dotenv()
+
 import streamlit as st
 import yaml
 

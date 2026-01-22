@@ -358,20 +358,33 @@ def sync_processing_results_to_db(
     results: Dict[str, Any] = {"saved": {}, "errors": []}
 
     try:
-        # 1. VLM Results (vlm.json)
+        # 1. VLM Results (vlm.json 또는 batches/batch_N/vlm.json)
+        vlm_items_all = []
+        
+        # 단일 모드: vlm.json 체크
         vlm_path = video_root / "vlm.json"
         if vlm_path.exists():
             import json
             vlm_payload = json.loads(vlm_path.read_text(encoding="utf-8"))
-            # vlm_payload 구조: {"items": [{"timestamp_ms": ..., "extracted_text": ...}, ...]}
-            items = vlm_payload.get("items", [])
-            if items:
-                vlm_rows = adapter.insert_vlm_results(
-                    video_id,
-                    items,
-                    processing_job_id=processing_job_id,
-                )
-                results["saved"]["vlm_results"] = len(vlm_rows)
+            vlm_items_all.extend(vlm_payload.get("items", []))
+        
+        # 배치 모드: batches/batch_N/vlm.json 체크
+        batches_dir = video_root / "batches"
+        if batches_dir.exists():
+            import json
+            for batch_dir in sorted(batches_dir.iterdir()):
+                batch_vlm = batch_dir / "vlm.json"
+                if batch_vlm.exists():
+                    vlm_payload = json.loads(batch_vlm.read_text(encoding="utf-8"))
+                    vlm_items_all.extend(vlm_payload.get("items", []))
+        
+        if vlm_items_all:
+            vlm_rows = adapter.insert_vlm_results(
+                video_id,
+                vlm_items_all,
+                processing_job_id=processing_job_id,
+            )
+            results["saved"]["vlm_results"] = len(vlm_rows)
     except Exception as e:
         results["errors"].append(f"vlm_results: {str(e)}")
 

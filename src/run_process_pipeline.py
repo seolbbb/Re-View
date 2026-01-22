@@ -156,6 +156,7 @@ def run_processing_pipeline(
 
     # DB에서 가져온 경우 duration 정보를 보존한다.
     db_duration = None
+    db_captures_data = None  # DB에서 가져온 captures 데이터 (sync_engine에서 직접 사용)
     if force_db:
         use_db = True
     if force_db or not local_ready:
@@ -286,6 +287,9 @@ def run_processing_pipeline(
             )
         if not capture_rows:
             raise ValueError("captures not found in DB.")
+        
+        # DB에서 가져온 captures 데이터 저장 (sync_engine에서 직접 사용)
+        db_captures_data = capture_rows
 
         # 캡처 파일과 manifest를 로컬에 재구성한다.
         captures_dir.mkdir(parents=True, exist_ok=True)
@@ -410,6 +414,7 @@ def run_processing_pipeline(
                 video_root=video_root,
                 captures_dir=captures_dir,
                 manifest_json=manifest_json,
+                captures_data=db_captures_data,  # DB에서 가져온 captures 직접 전달
                 stt_json=stt_json,
                 video_name=safe_video_name,
                 batch_size=batch_size,

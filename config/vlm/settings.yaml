@@ -1,4 +1,4 @@
-model_name: openai/gpt-4o
+model_name: qwen/qwen3-vl-32b-instruct #openai/gpt-4o
 prompt_version: vlm_v2.8
 request_params:
   temperature: 0.4          # 생성 다양성 조절 (낮을수록 더 보수적)
