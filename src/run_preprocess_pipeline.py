@@ -90,6 +90,7 @@ def run_preprocess_pipeline(
     capture_threshold: Optional[float] = None,
     capture_dedupe_threshold: Optional[float] = None,
     capture_min_interval: Optional[float] = None,
+    capture_dedup_enabled: bool = True,
     capture_verbose: bool = False,
     limit: Optional[int] = None,
     write_local_json: Optional[bool] = None,
@@ -311,6 +312,7 @@ def run_preprocess_pipeline(
                         dedupe_threshold=capture_dedupe_threshold,
                         min_interval=capture_min_interval,
                         verbose=capture_verbose,
+                        dedup_enabled=capture_dedup_enabled,
                         video_name=video_name,
                         write_manifest=write_local_json,
                     )
@@ -380,6 +382,7 @@ def run_preprocess_pipeline(
                 dedupe_threshold=capture_dedupe_threshold,
                 min_interval=capture_min_interval,
                 verbose=capture_verbose,
+                dedup_enabled=capture_dedup_enabled,
                 video_name=video_name,
                 write_manifest=write_local_json,
             )
@@ -503,6 +506,12 @@ def main() -> None:
         default=None,
         help="Write preprocess JSON artifacts to disk",
     )
+    parser.add_argument(
+        "--capture-mode",
+        choices=["all", "dedup"],
+        default="dedup",
+        help="Capture mode: 'all' (save all slides), 'dedup' (deduplicate similar slides)",
+    )
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
     parser.set_defaults(db_sync=None)
@@ -514,6 +523,7 @@ def main() -> None:
         stt_backend=args.stt_backend,
         parallel=args.parallel,
         capture_verbose=args.capture_verbose,
+        capture_dedup_enabled=(args.capture_mode == "dedup"),
         write_local_json=args.local_json,
         sync_to_db=args.db_sync,
     )

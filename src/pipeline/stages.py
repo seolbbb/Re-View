@@ -222,6 +222,7 @@ def run_capture(
     min_interval: float,
     verbose: bool,
     video_name: str,
+    dedup_enabled: bool = True,
     write_manifest: bool = True,
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
@@ -231,6 +232,7 @@ def run_capture(
         scene_threshold=threshold,
         dedupe_threshold=dedupe_threshold,
         min_interval=min_interval,
+        dedup_enabled=dedup_enabled,
         write_manifest=write_manifest,
     )
     return metadata

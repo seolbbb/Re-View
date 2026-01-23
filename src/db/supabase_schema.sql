@@ -437,6 +437,14 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'judge' AND column_name = 'batch_index') THEN
         ALTER TABLE judge ADD COLUMN batch_index INTEGER;
     END IF;
+
+    -- captures 테이블 컬럼 추가 (time_ranges, info_score)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'time_ranges') THEN
+        ALTER TABLE captures ADD COLUMN time_ranges JSONB;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'info_score') THEN
+        ALTER TABLE captures ADD COLUMN info_score FLOAT;
+    END IF;
 END $$;
 
 -- ============================================================================

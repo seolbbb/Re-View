@@ -98,6 +98,7 @@ class HybridSlideExtractor:
         sample_interval_sec=0.5,
         buffer_duration_sec=2.5,
         transition_timeout_sec=2.5,
+        dedup_enabled=True,
     ):
         """
         캡처 엔진을 초기화한다.
@@ -110,6 +111,7 @@ class HybridSlideExtractor:
         sample_interval_sec: 유휴 상태에서 프레임을 샘플링하는 간격(초).
         buffer_duration_sec: 전환 이후 버퍼링 지속 시간(초).
         transition_timeout_sec: 전환 상태 최대 대기 시간(초).
+        dedup_enabled: 중복 제거 활성화 여부 (True: 중복 제거, False: 모든 슬라이드 저장).
         """
         if sample_interval_sec <= 0:
             raise ValueError("sample_interval_sec must be > 0")
@@ -125,6 +127,7 @@ class HybridSlideExtractor:
         self.sample_interval_sec = sample_interval_sec
         self.buffer_duration_sec = buffer_duration_sec
         self.transition_timeout_sec = transition_timeout_sec
+        self.dedup_enabled = dedup_enabled
         
         # ORB 특징점 검출기 (최대 500개 특징점)
         self.orb = cv2.ORB_create(nfeatures=500)
@@ -456,12 +459,18 @@ class HybridSlideExtractor:
             
             # 정보량이 더 높으면 대표 이미지 교체
             if info_score > dup_slide['info_score']:
-                old_path = os.path.join(self.output_dir, dup_slide['file_name'])
-                if os.path.exists(old_path):
-                    os.remove(old_path)
-                
                 new_filename = f"{video_name}_{dup_slide['idx']:03d}.jpg"
                 new_path = os.path.join(self.output_dir, new_filename)
+                
+                # 기존 파일과 이름이 다르면 삭제 (이름이 같은 경우 덮어쓰기됨)
+                if dup_slide['file_name'] != new_filename:
+                    old_path = os.path.join(self.output_dir, dup_slide['file_name'])
+                    if os.path.exists(old_path):
+                        try:
+                            os.remove(old_path)
+                        except OSError:
+                            pass  # 삭제 실패시 무시 (덮어쓰기 시도)
+
                 cv2.imwrite(new_path, frame)
                 
                 dup_slide['frame'] = frame
@@ -524,6 +533,9 @@ class HybridSlideExtractor:
         Returns:
             중복 슬라이드의 인덱스 (없으면 None)
         """
+        if not self.dedup_enabled:
+            return None
+
         if not self.saved_slides_history:
             return None
         
@@ -599,6 +611,9 @@ class HybridSlideExtractor:
         첫 슬라이드는 history가 비어있을 때 저장되어 비교 대상이 없었으므로,
         모든 저장 완료 후 재비교하여 중복 제거를 수행한다.
         """
+        if not self.dedup_enabled:
+            return
+
         if len(self.saved_slides_history) < 2:
             return
         
