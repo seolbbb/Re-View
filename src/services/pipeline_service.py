@@ -64,7 +64,7 @@ def run_preprocess_pipeline(
             raw_stem=video_path.stem,
         )
 
-    run_preprocess_pipeline_job(
+    video_id = run_preprocess_pipeline_job(
         video=str(video_path),
         output_base=str(output_base),
         stt_backend=stt_backend,
@@ -72,6 +72,7 @@ def run_preprocess_pipeline(
         capture_threshold=capture_threshold,
         capture_dedupe_threshold=capture_dedupe_threshold,
         capture_min_interval=capture_min_interval,
+        sync_to_db=True, # DB sync is required to get video_id
     )
     store = VideoStore(output_base=output_base, video_name=video_name)
     meta_path = store.pipeline_run_json()
@@ -85,6 +86,7 @@ def run_preprocess_pipeline(
         "video_name": video_name,
         "video_root": str(store.video_root()),
         "run_meta": meta_payload,
+        "video_id": video_id,
     }
 
 

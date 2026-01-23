@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from dotenv import load_dotenv
+
+# Load .env at the very beginning before any imports that might use env vars
+_ROOT = Path(__file__).resolve().parent
+_ENV_PATH = _ROOT / ".env"
+if _ENV_PATH.exists():
+    load_dotenv(_ENV_PATH)
+else:
+    load_dotenv()
 
 import streamlit as st
 import yaml
@@ -23,6 +36,49 @@ CONFIG_ROOT = ROOT / "config"
 DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
 ADK_OUTPUT_BASE = get_default_output_base()
 VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
+
+# API base URL for process API
+PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
+
+
+def _call_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Call process API and return JSON response."""
+    url = f"{PROCESS_API_URL}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method.upper(),
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+        return None
+
+
+def _get_video_progress(video_id: str) -> Optional[Dict[str, Any]]:
+    """Get processing progress from API."""
+    return _call_api("GET", f"/videos/{video_id}/progress")
+
+
+def _get_video_status(video_id: str) -> Optional[Dict[str, Any]]:
+    """Get video status from API."""
+    return _call_api("GET", f"/videos/{video_id}/status")
+
+
+def _get_video_summary(video_id: str) -> Optional[Dict[str, Any]]:
+    """Get latest summary from API."""
+    return _call_api("GET", f"/videos/{video_id}/summary")
+
+
+def _start_processing(video_name: str, video_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Start processing job via API."""
+    payload = {"video_name": video_name}
+    if video_id:
+        payload["video_id"] = video_id
+    return _call_api("POST", "/process", payload)
 
 
 def _read_text(path: Path) -> Optional[str]:
@@ -385,6 +441,14 @@ def main() -> None:
         st.session_state.config_overrides = {}
     if "use_config_override" not in st.session_state:
         st.session_state.use_config_override = False
+    # DB-based status tracking
+    if "video_id" not in st.session_state:
+        st.session_state.video_id = None
+    if "processing_status" not in st.session_state:
+        st.session_state.processing_status = None
+    if "processing_progress" not in st.session_state:
+        st.session_state.processing_progress = None
+
 
     source = st.radio(
         "Video source",
@@ -612,6 +676,9 @@ def main() -> None:
                     st.session_state.preprocess_signature = preprocess_signature
                     st.session_state.preprocess_result = result
                     st.session_state.video_root = result.get("video_root")
+                    if result.get("video_id"):
+                        st.session_state.video_id = result.get("video_id")
+                        st.success(f"Preprocessing complete. Video ID: {st.session_state.video_id}")
                     video_root_value = st.session_state.video_root
 
     if (
@@ -627,7 +694,10 @@ def main() -> None:
                 root_agent=chatbot_root_agent,
                 app_name="screentime_chatbot",
                 user_id="streamlit",
-                initial_state={"video_name": video_name},
+                initial_state={
+                    "video_name": video_name,
+                    "video_id": st.session_state.get("video_id"),
+                },
             )
             st.session_state.chat_mode_signature = None
 
@@ -637,6 +707,40 @@ def main() -> None:
         st.error(f"Preprocess failed: {st.session_state.preprocess_error}")
     elif st.session_state.preprocess_status == "done":
         st.success("Preprocess completed.")
+        
+        # Processing controls and progress display
+        process_col1, process_col2 = st.columns([1, 3])
+        with process_col1:
+            if st.button("▶️ Start Processing", key="start_processing"):
+                result = _start_processing(video_name or "", st.session_state.video_id)
+                if result:
+                    st.session_state.processing_status = "started"
+                    st.rerun()
+                else:
+                    st.error("Failed to start processing")
+        
+        # Show processing progress if available
+        video_id = st.session_state.video_id
+        if video_id:
+            progress_data = _get_video_progress(video_id)
+            if progress_data and progress_data.get("has_processing_job"):
+                with process_col2:
+                    status = progress_data.get("status", "unknown")
+                    progress_pct = progress_data.get("progress_percent", 0)
+                    current = progress_data.get("progress_current", 0)
+                    total = progress_data.get("progress_total", 1)
+                    is_complete = progress_data.get("is_complete", False)
+                    
+                    if status == "DONE":
+                        st.success(f"✅ Processing completed ({current}/{total})")
+                    elif status == "FAILED":
+                        st.error("❌ Processing failed")
+                    else:
+                        st.progress(progress_pct / 100, text=f"Processing: {status} ({current}/{total} - {progress_pct}%)")
+                        if not is_complete:
+                            # Auto-refresh for progress polling
+                            st.info("🔄 Processing in progress... (auto-refreshing)")
+
 
     if st.session_state.show_chat:
         main_col, chat_col = st.columns([2, 1], gap="large")

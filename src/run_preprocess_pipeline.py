@@ -55,8 +55,10 @@ from src.db.pipeline_sync import (
     prepare_preprocess_db_sync,
     sync_preprocess_artifacts_to_db,
 )
+from src.db.adapters import compute_config_hash
 from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
-from src.pipeline.stages import run_capture, run_stt
+from src.pipeline.stages import run_capture, run_stt, run_stt_from_storage
+from src.audio.extract_audio import extract_audio
 
 
 def _sanitize_video_name(stem: str) -> str:
@@ -92,7 +94,7 @@ def run_preprocess_pipeline(
     limit: Optional[int] = None,
     write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
-) -> None:
+) -> Optional[str]:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
     # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
     settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
@@ -154,11 +156,18 @@ def run_preprocess_pipeline(
     video_info = get_video_info(video_path)
 
     run_meta_path = video_root / "pipeline_run.json"
+    # Preprocessing 관련 config 파일들의 해시 계산
+    preprocess_config_hash = compute_config_hash([
+        ROOT / "config" / "audio" / "settings.yaml",
+        ROOT / "config" / "capture" / "settings.yaml",
+    ])
+
     run_args = {
         "pipeline_type": "preprocess",
         "video": str(video_path),
         "output_base": str(output_base_path),
         "stt_backend": stt_backend,
+        "config_hash": preprocess_config_hash,
         "parallel": parallel,
         "capture_threshold": capture_threshold,
         "capture_dedupe_threshold": capture_dedupe_threshold,
@@ -195,11 +204,12 @@ def run_preprocess_pipeline(
             video_root=video_root,
             run_meta=run_meta,
             duration_sec=video_info.get("duration_sec"),
+            stt_backend=stt_backend,
         )
         if db_context:
-            _, _, pipeline_run_id = db_context
-            if pipeline_run_id:
-                run_meta["pipeline_run_id"] = pipeline_run_id
+            _, _, preprocess_job_id = db_context
+            if preprocess_job_id:
+                run_meta["preprocess_job_id"] = preprocess_job_id
             print("\nSyncing preprocessing artifacts to Supabase as stages complete...")
 
     timer.start_total()
@@ -221,20 +231,23 @@ def run_preprocess_pipeline(
             *,
             stt_payload: Optional[Dict[str, Any]] = None,
             captures_payload: Optional[List[Dict[str, Any]]] = None,
+            audio_path: Optional[Path] = None,
         ) -> None:
             if not db_context:
                 return
-            adapter, video_id, pipeline_run_id = db_context
+            adapter, video_id, preprocess_job_id = db_context
             stage_results = sync_preprocess_artifacts_to_db(
                 adapter=adapter,
                 video_id=video_id,
                 video_root=video_root,
                 provider=stt_backend,
-                pipeline_run_id=pipeline_run_id,
+                preprocess_job_id=preprocess_job_id,
                 include_stt=stage == "stt",
                 include_captures=stage == "capture",
+                include_audio=stage == "audio",
                 stt_payload=stt_payload if stage == "stt" else None,
                 captures_payload=captures_payload if stage == "capture" else None,
+                audio_path=audio_path if stage == "audio" else None,
             )
             saved = stage_results.get("saved", {})
             errors = stage_results.get("errors", [])
@@ -249,23 +262,47 @@ def run_preprocess_pipeline(
                     printed_db_errors.add(err)
                     print(f"[DB] {stage} error: {err}")
                 db_errors.extend(errors)
+            # audio 업로드 후 storage_key 저장
+            if stage == "audio" and saved.get("audio"):
+                nonlocal audio_storage_key
+                audio_storage_key = stage_results.get("audio_storage_key")
+
+        audio_storage_key: Optional[str] = None
 
         if parallel:
-            # STT와 캡처를 동시에 실행한다.
+            # 오디오 설정 로드
+            from src.audio.stt_router import load_audio_settings
+            audio_settings = load_audio_settings()
+            extract_settings = audio_settings.get("extract", {})
+            audio_codec = extract_settings.get("codec", "libmp3lame")
+            # 코덱에 따른 확장자 결정
+            codec_ext_map = {"pcm_s16le": ".wav", "flac": ".flac", "libmp3lame": ".mp3"}
+            audio_ext = codec_ext_map.get(audio_codec, ".wav")
+            
+            # 1단계: 오디오 추출 (먼저 실행)
+            audio_path = video_root / f"{video_path.stem}{audio_ext}"
+            print("  Extracting audio...")
+            audio_start = time.perf_counter()
+            extracted_audio = extract_audio(
+                video_path,
+                output_path=audio_path,
+                sample_rate=extract_settings.get("sample_rate", 16000),
+                channels=extract_settings.get("channels", 1),
+                codec=audio_codec,
+                mp3_bitrate=extract_settings.get("mp3_bitrate", "128k"),
+                mono_method=extract_settings.get("mono_method", "auto"),
+            )
+            audio_extract_elapsed = time.perf_counter() - audio_start
+            print(f"  Audio extracted in {format_duration(audio_extract_elapsed)}")
+            
+            # 2단계: 오디오 Storage 업로드 + 캡처 생성/업로드 (병렬)
             with ThreadPoolExecutor(max_workers=2) as executor:
-                def run_stt_timed() -> Tuple[Dict[str, Any], float]:
-                    # 벤치마크를 위해 STT 실행 시간을 측정한다.
+                def upload_audio_to_storage() -> float:
                     start = time.perf_counter()
-                    stt_payload = run_stt(
-                        video_path,
-                        stt_json,
-                        backend=stt_backend,
-                        write_output=write_local_json,
-                    )
-                    return stt_payload, time.perf_counter() - start
+                    _sync_stage("audio", audio_path=extracted_audio)
+                    return time.perf_counter() - start
 
                 def run_capture_timed() -> Tuple[List[Dict[str, Any]], float]:
-                    # 캡처 실행 시간을 측정하고 결과를 반환한다.
                     start = time.perf_counter()
                     result = run_capture(
                         video_path,
@@ -279,26 +316,50 @@ def run_preprocess_pipeline(
                     )
                     return result, time.perf_counter() - start
 
-                stt_future = executor.submit(run_stt_timed)
+                audio_upload_future = executor.submit(upload_audio_to_storage)
                 capture_future = executor.submit(run_capture_timed)
 
-                futures = {
-                    stt_future: "stt",
-                    capture_future: "capture",
-                }
-                for future in as_completed(futures):
-                    stage = futures[future]
-                    if stage == "stt":
-                        stt_payload, stt_elapsed = future.result()
-                        timer.record_stage("stt", stt_elapsed)
-                        print(f"  STT done in {format_duration(stt_elapsed)} (parallel)")
-                        _sync_stage("stt", stt_payload=stt_payload)
-                    else:
-                        capture_result, capture_elapsed = future.result()
-                        capture_count = len(capture_result) if capture_result else 0
-                        timer.record_stage("capture", capture_elapsed)
-                        print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
-                        _sync_stage("capture", captures_payload=capture_result)
+                # 결과 수집
+                audio_upload_elapsed = audio_upload_future.result()
+                capture_result, capture_elapsed = capture_future.result()
+                capture_count = len(capture_result) if capture_result else 0
+                timer.record_stage("capture", capture_elapsed)
+                print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
+                _sync_stage("capture", captures_payload=capture_result)
+
+            # 3단계: STT (Storage에서 오디오 다운로드하여 처리)
+            if db_context and audio_storage_key:
+                adapter, video_id, preprocess_job_id = db_context
+                print("  Running STT from Storage...")
+                stt_start = time.perf_counter()
+                stt_payload = run_stt_from_storage(
+                    audio_storage_key=audio_storage_key,
+                    video_id=video_id,
+                    backend=stt_backend,
+                )
+                stt_elapsed = time.perf_counter() - stt_start
+                timer.record_stage("stt", stt_elapsed)
+                print(f"  STT done in {format_duration(stt_elapsed)} (from Storage)")
+                # 로컬 stt.json 저장 (write_local_json 설정에 따라)
+                if write_local_json and stt_payload:
+                    stt_json.write_text(
+                        json.dumps(stt_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                _sync_stage("stt", stt_payload=stt_payload)
+            else:
+                # DB 미설정 시 로컬 STT 실행
+                print("  Running STT locally...")
+                stt_payload, stt_elapsed = timer.time_stage(
+                    "stt",
+                    run_stt,
+                    video_path,
+                    stt_json,
+                    backend=stt_backend,
+                    write_output=write_local_json,
+                )
+                print(f"  STT done in {format_duration(stt_elapsed)} (local)")
+                _sync_stage("stt", stt_payload=stt_payload)
         else:
             # 동일한 타이밍 측정을 유지하며 순차 실행한다.
             stt_payload, stt_elapsed = timer.time_stage(
@@ -360,11 +421,11 @@ def run_preprocess_pipeline(
         if sync_to_db:
             if db_context:
                 try:
-                    adapter, video_id, pipeline_run_id = db_context
+                    adapter, video_id, preprocess_job_id = db_context
                     finalize_preprocess_db_sync(
                         adapter=adapter,
                         video_id=video_id,
-                        pipeline_run_id=pipeline_run_id,
+                        preprocess_job_id=preprocess_job_id,
                         run_meta=run_meta,
                         errors=db_errors,
                     )
@@ -386,6 +447,14 @@ def run_preprocess_pipeline(
         print("\nPreprocessing completed.")
         print(f"Outputs: {video_root}")
         print(f"Benchmark: {report_path}")
+        
+        if sync_to_db and db_context:
+            try:
+                _, video_id, _ = db_context
+                return video_id
+            except Exception:
+                pass
+        return None
 
     except Exception as exc:
         # 재발생 전에 실패 메타데이터를 항상 기록한다.
@@ -400,12 +469,12 @@ def run_preprocess_pipeline(
         )
         if sync_to_db and db_context:
             try:
-                adapter, video_id, pipeline_run_id = db_context
+                adapter, video_id, preprocess_job_id = db_context
                 db_errors.append(f"pipeline: {exc}")
                 finalize_preprocess_db_sync(
                     adapter=adapter,
                     video_id=video_id,
-                    pipeline_run_id=pipeline_run_id,
+                    preprocess_job_id=preprocess_job_id,
                     run_meta=run_meta,
                     errors=db_errors,
                 )

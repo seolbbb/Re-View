@@ -1,153 +1,265 @@
 -- ============================================================================
--- ReView Supabase 테이블 스키마
+-- ReView Supabase 테이블 스키마 (ERD 기반 - 2026-01-21)
 -- ============================================================================
--- 1. Vector 익스텐션 활성화 (AI 검색용)
+-- docs/diagram.md의 ERD를 기반으로 생성된 스키마입니다.
+-- ============================================================================
+
+-- 1. Extensions
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS moddatetime;
 
+-- ============================================================================
 -- 2. videos (비디오 메타데이터)
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    status TEXT DEFAULT 'uploaded',
-    error_message TEXT,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     original_filename TEXT,
     duration_sec INTEGER,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'UPLOADED',
+    error_message TEXT,
+    current_preprocess_job_id UUID,  -- FK added after preprocessing_jobs created
+    current_processing_job_id UUID,  -- FK added after processing_jobs created
+    current_summary_result_id UUID,  -- FK added after summary_results created
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    storage_path TEXT,
     
-    -- [개선] 상태값 무결성 체크
-    CONSTRAINT check_status CHECK (status IN ('uploaded', 'processing', 'completed', 'completed_with_errors', 'failed'))
+    CONSTRAINT check_video_status CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'DONE', 'FAILED'))
 );
 
--- [개선] updated_at 자동 갱신 트리거
-DROP TRIGGER IF EXISTS handle_updated_at ON videos;
-CREATE TRIGGER handle_updated_at
+-- Auto-update updated_at trigger
+DROP TRIGGER IF EXISTS handle_videos_updated_at ON videos;
+CREATE TRIGGER handle_videos_updated_at
     BEFORE UPDATE ON videos
     FOR EACH ROW
     EXECUTE PROCEDURE moddatetime(updated_at);
 
--- RLS 활성화
+-- RLS
 ALTER TABLE videos ENABLE ROW LEVEL SECURITY;
-
--- [기존] 조회/추가/수정 정책
 DROP POLICY IF EXISTS "Users can view own videos" ON videos;
 CREATE POLICY "Users can view own videos" ON videos FOR SELECT USING (auth.uid() = user_id);
-
 DROP POLICY IF EXISTS "Users can insert own videos" ON videos;
 CREATE POLICY "Users can insert own videos" ON videos FOR INSERT WITH CHECK (auth.uid() = user_id);
-
 DROP POLICY IF EXISTS "Users can update own videos" ON videos;
 CREATE POLICY "Users can update own videos" ON videos FOR UPDATE USING (auth.uid() = user_id);
-
--- [개선] 삭제 정책 추가 (누락되었던 부분)
 DROP POLICY IF EXISTS "Users can delete own videos" ON videos;
 CREATE POLICY "Users can delete own videos" ON videos FOR DELETE USING (auth.uid() = user_id);
 
-
--- 3. pipeline_runs (파이프라인 실행 메타데이터) - Moved up for FK reference
-CREATE TABLE IF NOT EXISTS pipeline_runs (
+-- ============================================================================
+-- 3. preprocessing_jobs (전처리 작업)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS preprocessing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    status TEXT DEFAULT 'running',
-    video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
-    run_meta JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    source TEXT DEFAULT 'SERVER',
+    status TEXT DEFAULT 'QUEUED',
+    stt_backend TEXT,
+    audio_storage_key TEXT,
+    config_hash TEXT,
+    error_message TEXT,
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    CONSTRAINT check_preprocess_source CHECK (source IN ('CLIENT', 'SERVER')),
+    CONSTRAINT check_preprocess_status CHECK (status IN ('QUEUED', 'RUNNING', 'DONE', 'FAILED'))
 );
 
+DROP TRIGGER IF EXISTS handle_preprocessing_jobs_updated_at ON preprocessing_jobs;
+CREATE TRIGGER handle_preprocessing_jobs_updated_at
+    BEFORE UPDATE ON preprocessing_jobs
+    FOR EACH ROW
+    EXECUTE PROCEDURE moddatetime(updated_at);
+
 -- RLS
-ALTER TABLE pipeline_runs ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Users can view runs of own videos" ON pipeline_runs;
-CREATE POLICY "Users can view runs of own videos" ON pipeline_runs
-    FOR SELECT USING (
-        EXISTS (SELECT 1 FROM videos WHERE videos.id = pipeline_runs.video_id AND videos.user_id = auth.uid())
-    );
+ALTER TABLE preprocessing_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view preprocessing_jobs of own videos" ON preprocessing_jobs;
+CREATE POLICY "Users can view preprocessing_jobs of own videos" ON preprocessing_jobs FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = preprocessing_jobs.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert preprocessing_jobs of own videos" ON preprocessing_jobs;
+CREATE POLICY "Users can insert preprocessing_jobs of own videos" ON preprocessing_jobs FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = preprocessing_jobs.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update preprocessing_jobs of own videos" ON preprocessing_jobs;
+CREATE POLICY "Users can update preprocessing_jobs of own videos" ON preprocessing_jobs FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = preprocessing_jobs.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete preprocessing_jobs of own videos" ON preprocessing_jobs;
+CREATE POLICY "Users can delete preprocessing_jobs of own videos" ON preprocessing_jobs FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = preprocessing_jobs.video_id AND videos.user_id = auth.uid()));
 
+-- ============================================================================
+-- 4. processing_jobs (처리 작업)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS processing_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'QUEUED',
+    triggered_by TEXT DEFAULT 'MANUAL',
+    run_no INTEGER DEFAULT 1,
+    config_hash TEXT,
+    current_batch INTEGER DEFAULT 0,
+    total_batch INTEGER DEFAULT 0, 
+    error_message TEXT,
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    CONSTRAINT check_processing_status CHECK (status IN ('QUEUED', 'VLM_RUNNING', 'SUMMARY_RUNNING', 'JUDGE_RUNNING', 'DONE', 'FAILED')),
+    CONSTRAINT check_triggered_by CHECK (triggered_by IN ('CHAT_OPEN', 'MANUAL', 'SCHEDULE'))
+);
 
--- 4. captures (화면 캡처)
+DROP TRIGGER IF EXISTS handle_processing_jobs_updated_at ON processing_jobs;
+CREATE TRIGGER handle_processing_jobs_updated_at
+    BEFORE UPDATE ON processing_jobs
+    FOR EACH ROW
+    EXECUTE PROCEDURE moddatetime(updated_at);
+
+-- RLS
+ALTER TABLE processing_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view processing_jobs of own videos" ON processing_jobs;
+CREATE POLICY "Users can view processing_jobs of own videos" ON processing_jobs FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = processing_jobs.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert processing_jobs of own videos" ON processing_jobs;
+CREATE POLICY "Users can insert processing_jobs of own videos" ON processing_jobs FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = processing_jobs.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update processing_jobs of own videos" ON processing_jobs;
+CREATE POLICY "Users can update processing_jobs of own videos" ON processing_jobs FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = processing_jobs.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete processing_jobs of own videos" ON processing_jobs;
+CREATE POLICY "Users can delete processing_jobs of own videos" ON processing_jobs FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = processing_jobs.video_id AND videos.user_id = auth.uid()));
+
+-- ============================================================================
+-- 5. captures (화면 캡처)
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS captures (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    preprocess_job_id UUID REFERENCES preprocessing_jobs(id) ON DELETE SET NULL,
     file_name TEXT NOT NULL,
     start_ms INTEGER,
     end_ms INTEGER,
     storage_path TEXT,
-    video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
-    pipeline_run_id UUID REFERENCES pipeline_runs(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_captures_video_ts ON captures(video_id, start_ms);
 
 -- RLS
 ALTER TABLE captures ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can view captures of own videos" ON captures;
-CREATE POLICY "Users can view captures of own videos" ON captures
-    FOR SELECT USING (
-        EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid())
-    );
+CREATE POLICY "Users can view captures of own videos" ON captures FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert captures of own videos" ON captures;
+CREATE POLICY "Users can insert captures of own videos" ON captures FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update captures of own videos" ON captures;
+CREATE POLICY "Users can update captures of own videos" ON captures FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete captures of own videos" ON captures;
+CREATE POLICY "Users can delete captures of own videos" ON captures FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
 
-
--- 4. stt_results (음성 인식 결과)
+-- ============================================================================
+-- 6. stt_results (음성 인식 결과)
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS stt_results (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider TEXT DEFAULT 'clova',
-    segments JSONB,
-    video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
-    pipeline_run_id UUID REFERENCES pipeline_runs(id) ON DELETE SET NULL,
-    embedding vector(1536),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    preprocess_job_id UUID REFERENCES preprocessing_jobs(id) ON DELETE SET NULL,
+    stt_id TEXT,  -- stt.json의 id 필드 (e.g., "stt_001")
+    start_ms INTEGER,
+    end_ms INTEGER,
+    transcript TEXT,
+    confidence FLOAT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- RLS
 ALTER TABLE stt_results ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Users can view stt of own videos" ON stt_results;
-CREATE POLICY "Users can view stt of own videos" ON stt_results
-    FOR SELECT USING (
-        EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid())
-    );
+DROP POLICY IF EXISTS "Users can view stt_results of own videos" ON stt_results;
+CREATE POLICY "Users can view stt_results of own videos" ON stt_results FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert stt_results of own videos" ON stt_results;
+CREATE POLICY "Users can insert stt_results of own videos" ON stt_results FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update stt_results of own videos" ON stt_results;
+CREATE POLICY "Users can update stt_results of own videos" ON stt_results FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete stt_results of own videos" ON stt_results;
+CREATE POLICY "Users can delete stt_results of own videos" ON stt_results FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
 
-
--- 5. segments (통합 세그먼트)
-CREATE TABLE IF NOT EXISTS segments (
+-- ============================================================================
+-- 7. vlm_results (VLM 분석 결과)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS vlm_results (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    segment_index INTEGER,
-    start_ms INTEGER,
-    end_ms INTEGER,
-    video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
-    transcript_units JSONB,
-    visual_units JSONB,
-    pipeline_run_id UUID REFERENCES pipeline_runs(id) ON DELETE SET NULL,
-    -- [개선] Vector Embedding (OpenAI text-embedding-3-small 기준 1536차원)
-    embedding vector(1536),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
+    capture_id UUID REFERENCES captures(id) ON DELETE SET NULL,
+    cap_id TEXT,  -- vlm.json의 id 필드 (e.g., "cap_00001")
+    timestamp_ms INTEGER,  -- vlm.json의 timestamp_ms 필드
+    extracted_text TEXT,  -- vlm.json의 extracted_text 필드
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_segments_video_idx ON segments(video_id, segment_index);
+-- RLS
+ALTER TABLE vlm_results ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view vlm_results of own videos" ON vlm_results;
+CREATE POLICY "Users can view vlm_results of own videos" ON vlm_results FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = vlm_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert vlm_results of own videos" ON vlm_results;
+CREATE POLICY "Users can insert vlm_results of own videos" ON vlm_results FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = vlm_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update vlm_results of own videos" ON vlm_results;
+CREATE POLICY "Users can update vlm_results of own videos" ON vlm_results FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = vlm_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete vlm_results of own videos" ON vlm_results;
+CREATE POLICY "Users can delete vlm_results of own videos" ON vlm_results FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = vlm_results.video_id AND videos.user_id = auth.uid()));
 
--- [개선] HNSW 인덱스 (벡터 검색 속도 최적화)
--- 데이터가 쌓인 후 생성하는 것이 좋으나, 스키마 정의 차원에서 포함
-CREATE INDEX IF NOT EXISTS idx_segments_embedding_hnsw ON segments USING hnsw (embedding vector_cosine_ops);
+-- ============================================================================
+-- 8. segments (통합 세그먼트)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS segments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
+    segment_index INTEGER,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    transcript_units TEXT,
+    visual_units JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- RLS
 ALTER TABLE segments ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can view segments of own videos" ON segments;
-CREATE POLICY "Users can view segments of own videos" ON segments
-    FOR SELECT USING (
-        EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid())
-    );
+CREATE POLICY "Users can view segments of own videos" ON segments FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert segments of own videos" ON segments;
+CREATE POLICY "Users can insert segments of own videos" ON segments FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update segments of own videos" ON segments;
+CREATE POLICY "Users can update segments of own videos" ON segments FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete segments of own videos" ON segments;
+CREATE POLICY "Users can delete segments of own videos" ON segments FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
 
-
--- 6. summaries (요약 결과)
+-- ============================================================================
+-- 9. summaries (요약 결과)
+-- ============================================================================
 CREATE TABLE IF NOT EXISTS summaries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    summary JSONB,
-    summary_text TEXT,  -- 시맨틱 검색용 평문 텍스트
-    video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
     segment_id UUID REFERENCES segments(id) ON DELETE CASCADE,
-    pipeline_run_id UUID REFERENCES pipeline_runs(id) ON DELETE SET NULL,
+    batch_index INTEGER,
+    summary JSONB,
     version JSONB,
-    -- Qwen3-Embedding-8B 모델 (1024차원)
     embedding vector(1024),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -155,204 +267,179 @@ CREATE TABLE IF NOT EXISTS summaries (
 -- RLS
 ALTER TABLE summaries ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can view summaries of own videos" ON summaries;
-CREATE POLICY "Users can view summaries of own videos" ON summaries
-    FOR SELECT USING (
-        EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid())
-    );
+CREATE POLICY "Users can view summaries of own videos" ON summaries FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert summaries of own videos" ON summaries;
+CREATE POLICY "Users can insert summaries of own videos" ON summaries FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update summaries of own videos" ON summaries;
+CREATE POLICY "Users can update summaries of own videos" ON summaries FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete summaries of own videos" ON summaries;
+CREATE POLICY "Users can delete summaries of own videos" ON summaries FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
 
-
-
-
+-- HNSW index for vector search
+CREATE INDEX IF NOT EXISTS idx_summaries_embedding_hnsw 
+ON summaries USING hnsw (embedding vector_cosine_ops);
 
 -- ============================================================================
--- 부가적인 인덱스
+-- 10. summary_results (요약 결과 집계)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS summary_results (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
+    format TEXT DEFAULT 'timeline',
+    status TEXT DEFAULT 'IN_PROGRESS',
+    payload JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    CONSTRAINT check_summary_format CHECK (format IN ('timeline', 'tldr', 'tldr_timeline')),
+    CONSTRAINT check_summary_status CHECK (status IN ('IN_PROGRESS', 'DONE'))
+);
+
+-- RLS
+ALTER TABLE summary_results ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view summary_results of own videos" ON summary_results;
+CREATE POLICY "Users can view summary_results of own videos" ON summary_results FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summary_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert summary_results of own videos" ON summary_results;
+CREATE POLICY "Users can insert summary_results of own videos" ON summary_results FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = summary_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update summary_results of own videos" ON summary_results;
+CREATE POLICY "Users can update summary_results of own videos" ON summary_results FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summary_results.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete summary_results of own videos" ON summary_results;
+CREATE POLICY "Users can delete summary_results of own videos" ON summary_results FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summary_results.video_id AND videos.user_id = auth.uid()));
+
+-- ============================================================================
+-- 11. judge (품질 평가)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS judge (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
+    batch_index INTEGER,  -- 배치 인덱스 (0-indexed)
+    status TEXT DEFAULT 'DONE',
+    score FLOAT,
+    report JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    CONSTRAINT check_judge_status CHECK (status IN ('DONE', 'FAILED'))
+);
+
+-- RLS
+ALTER TABLE judge ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view judge of own videos" ON judge;
+CREATE POLICY "Users can view judge of own videos" ON judge FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = judge.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can insert judge of own videos" ON judge;
+CREATE POLICY "Users can insert judge of own videos" ON judge FOR INSERT 
+    WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = judge.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can update judge of own videos" ON judge;
+CREATE POLICY "Users can update judge of own videos" ON judge FOR UPDATE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = judge.video_id AND videos.user_id = auth.uid()));
+DROP POLICY IF EXISTS "Users can delete judge of own videos" ON judge;
+CREATE POLICY "Users can delete judge of own videos" ON judge FOR DELETE 
+    USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = judge.video_id AND videos.user_id = auth.uid()));
+
+-- ============================================================================
+-- 12. 순환 참조 외래 키 추가
+-- ============================================================================
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_videos_current_preprocess_job') THEN
+        ALTER TABLE videos ADD CONSTRAINT fk_videos_current_preprocess_job 
+            FOREIGN KEY (current_preprocess_job_id) REFERENCES preprocessing_jobs(id) ON DELETE SET NULL;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_videos_current_processing_job') THEN
+        ALTER TABLE videos ADD CONSTRAINT fk_videos_current_processing_job 
+            FOREIGN KEY (current_processing_job_id) REFERENCES processing_jobs(id) ON DELETE SET NULL;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_videos_current_summary_result') THEN
+        ALTER TABLE videos ADD CONSTRAINT fk_videos_current_summary_result 
+            FOREIGN KEY (current_summary_result_id) REFERENCES summary_results(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
+-- ============================================================================
+-- 13. 인덱스 생성
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_videos_user_status ON videos(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_videos_name ON videos(name);
 
--- ============================================================================
--- 완료 메시지
--- ============================================================================
-SELECT 'Screentime-MVP 개선된 테이블 생성 완료!' as message;
+CREATE INDEX IF NOT EXISTS idx_preprocessing_jobs_video ON preprocessing_jobs(video_id);
+CREATE INDEX IF NOT EXISTS idx_preprocessing_jobs_status ON preprocessing_jobs(status);
 
--- 7. Additional CRUD Policies for Child Tables
--- Users should be able to manage data related to their own videos.
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_video ON processing_jobs(video_id);
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_status ON processing_jobs(status);
 
--- pipeline_runs
-DROP POLICY IF EXISTS "Users can insert runs of own videos" ON pipeline_runs;
-CREATE POLICY "Users can insert runs of own videos" ON pipeline_runs FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = pipeline_runs.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can update runs of own videos" ON pipeline_runs;
-CREATE POLICY "Users can update runs of own videos" ON pipeline_runs FOR UPDATE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = pipeline_runs.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can delete runs of own videos" ON pipeline_runs;
-CREATE POLICY "Users can delete runs of own videos" ON pipeline_runs FOR DELETE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = pipeline_runs.video_id AND videos.user_id = auth.uid()));
+CREATE INDEX IF NOT EXISTS idx_captures_video_ts ON captures(video_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_stt_results_video_ts ON stt_results(video_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_vlm_results_video ON vlm_results(video_id);
 
--- captures
-DROP POLICY IF EXISTS "Users can insert captures of own videos" ON captures;
-CREATE POLICY "Users can insert captures of own videos" ON captures FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can update captures of own videos" ON captures;
-CREATE POLICY "Users can update captures of own videos" ON captures FOR UPDATE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can delete captures of own videos" ON captures;
-CREATE POLICY "Users can delete captures of own videos" ON captures FOR DELETE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = captures.video_id AND videos.user_id = auth.uid()));
+CREATE INDEX IF NOT EXISTS idx_segments_video_idx ON segments(video_id, segment_index);
+CREATE INDEX IF NOT EXISTS idx_summaries_video ON summaries(video_id);
+CREATE INDEX IF NOT EXISTS idx_summaries_segment ON summaries(segment_id);
 
--- stt_results
-DROP POLICY IF EXISTS "Users can insert stt of own videos" ON stt_results;
-CREATE POLICY "Users can insert stt of own videos" ON stt_results FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can update stt of own videos" ON stt_results;
-CREATE POLICY "Users can update stt of own videos" ON stt_results FOR UPDATE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can delete stt of own videos" ON stt_results;
-CREATE POLICY "Users can delete stt of own videos" ON stt_results FOR DELETE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = stt_results.video_id AND videos.user_id = auth.uid()));
-
--- segments
-DROP POLICY IF EXISTS "Users can insert segments of own videos" ON segments;
-CREATE POLICY "Users can insert segments of own videos" ON segments FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can update segments of own videos" ON segments;
-CREATE POLICY "Users can update segments of own videos" ON segments FOR UPDATE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can delete segments of own videos" ON segments;
-CREATE POLICY "Users can delete segments of own videos" ON segments FOR DELETE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = segments.video_id AND videos.user_id = auth.uid()));
-
--- summaries
-DROP POLICY IF EXISTS "Users can insert summaries of own videos" ON summaries;
-CREATE POLICY "Users can insert summaries of own videos" ON summaries FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can update summaries of own videos" ON summaries;
-CREATE POLICY "Users can update summaries of own videos" ON summaries FOR UPDATE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
-DROP POLICY IF EXISTS "Users can delete summaries of own videos" ON summaries;
-CREATE POLICY "Users can delete summaries of own videos" ON summaries FOR DELETE USING (EXISTS (SELECT 1 FROM videos WHERE videos.id = summaries.video_id AND videos.user_id = auth.uid()));
-
+CREATE INDEX IF NOT EXISTS idx_summary_results_video ON summary_results(video_id);
+CREATE INDEX IF NOT EXISTS idx_judge_video ON judge(video_id);
 
 -- ============================================================================
--- [Migration 2026-01-13] Convert transcript_units to TEXT
+-- 14. 기존 테이블 마이그레이션 (2026-01-22 추가)
 -- ============================================================================
-
--- ============================================================================
--- [Migration 2026-01-13] Convert transcript_units to TEXT
--- ============================================================================
-
--- ============================================================================
--- [Migration 2026-01-13] Convert transcript_units to TEXT
--- ============================================================================
-
--- 1. Helper function (reusing extract_transcript_text for one-time migration)
-CREATE OR REPLACE FUNCTION extract_transcript_text_v2(units jsonb) 
-RETURNS TEXT IMMUTABLE LANGUAGE sql AS $$
-    SELECT string_agg(elem->>'text', E'\n' ORDER BY (elem->>'start_ms')::int)
-    FROM jsonb_array_elements(units) elem;
-$$;
-
--- 2. Add temporary text column
-ALTER TABLE segments ADD COLUMN IF NOT EXISTS transcript_units_text TEXT;
-
--- 3. Populate new column
-UPDATE segments SET transcript_units_text = extract_transcript_text_v2(transcript_units);
-
--- 4. Swap columns (Drop dependencies first)
--- transcript_text generated column depends on transcript_units, so we drop it.
-ALTER TABLE segments DROP COLUMN IF EXISTS transcript_text; 
-ALTER TABLE segments DROP COLUMN transcript_units;
-ALTER TABLE segments RENAME COLUMN transcript_units_text TO transcript_units;
-
--- 5. Cleanup
-DROP FUNCTION IF EXISTS extract_transcript_text;
-DROP FUNCTION IF EXISTS extract_transcript_text_v2;
-
-
--- ============================================================================
--- [Migration 2026-01-13] Normalize stt_results (Single Table Flattening)
--- ============================================================================
-
--- 1. Add new columns for segment data
-ALTER TABLE stt_results 
-ADD COLUMN IF NOT EXISTS text TEXT,
-ADD COLUMN IF NOT EXISTS start_ms INTEGER,
-ADD COLUMN IF NOT EXISTS end_ms INTEGER,
-ADD COLUMN IF NOT EXISTS confidence FLOAT,
-ADD COLUMN IF NOT EXISTS segment_index INTEGER;
-
--- 2. Migrate Data: Expand JSONB array into individual rows
--- Strategy: Insert new rows for each segment, then delete the original "container" rows.
--- Note: 'segments' column still exists at this point.
-INSERT INTO stt_results (
-    id, provider, video_id, pipeline_run_id, embedding, created_at,
-    text, start_ms, end_ms, confidence, segment_index
-)
-SELECT 
-    gen_random_uuid(), -- New ID for each segment row
-    provider, 
-    video_id, 
-    pipeline_run_id, 
-    embedding, 
-    created_at,
-    elem->>'text', 
-    (elem->>'start_ms')::INTEGER, 
-    (elem->>'end_ms')::INTEGER, 
-    (elem->>'confidence')::FLOAT,
-    idx::INTEGER
-FROM stt_results, jsonb_array_elements(segments) WITH ORDINALITY AS arr(elem, idx)
-WHERE segments IS NOT NULL AND jsonb_array_length(segments) > 0;
-
--- 3. Delete original container rows (rows where 'segments' is not null)
--- Caution: We must ensure we don't delete the rows we just inserted (which have null 'segments')
-DELETE FROM stt_results WHERE segments IS NOT NULL;
-
--- ============================================================================
--- [Migration 2026-01-13] Remove segment_index from stt_results
--- ============================================================================
-ALTER TABLE stt_results DROP COLUMN IF EXISTS segment_index;
-
--- ============================================================================
--- [Migration 2026-01-20] Semantic Search 지원
--- ============================================================================
-
--- 1. summary_text 컬럼 추가 (기존 DB 업그레이드용)
-ALTER TABLE summaries ADD COLUMN IF NOT EXISTS summary_text TEXT;
-
--- 2. embedding 차원 변경: 1536 -> 1024 (Qwen3-Embedding-8B 모델)
--- 주의: 기존 1536차원 임베딩 데이터가 있다면 NULL로 초기화됩니다.
+-- 이미 테이블이 존재하는 경우 새 컬럼 추가
 DO $$
 BEGIN
-    -- 기존 embedding 컬럼이 1536차원이면 1024차원으로 변경
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_name = 'summaries' 
-        AND column_name = 'embedding'
-    ) THEN
-        -- 기존 임베딩 데이터 삭제 (차원 불일치 방지)
-        UPDATE summaries SET embedding = NULL WHERE embedding IS NOT NULL;
-        -- 컬럼 타입 변경
-        ALTER TABLE summaries ALTER COLUMN embedding TYPE vector(1024);
+    -- videos.status 제약조건 업데이트 (PROCESSING, DONE 추가)
+    ALTER TABLE videos DROP CONSTRAINT IF EXISTS check_video_status;
+    ALTER TABLE videos ADD CONSTRAINT check_video_status
+        CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'DONE', 'FAILED'));
+
+    -- stt_results.stt_id 컬럼 추가
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'stt_results' AND column_name = 'stt_id') THEN
+        ALTER TABLE stt_results ADD COLUMN stt_id TEXT;
+    END IF;
+
+    -- vlm_results 새 컬럼 추가 및 payload 컬럼 삭제
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'cap_id') THEN
+        ALTER TABLE vlm_results ADD COLUMN cap_id TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'timestamp_ms') THEN
+        ALTER TABLE vlm_results ADD COLUMN timestamp_ms INTEGER;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'extracted_text') THEN
+        ALTER TABLE vlm_results ADD COLUMN extracted_text TEXT;
+    END IF;
+    -- payload 컬럼 삭제 (더 이상 사용하지 않음)
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'payload') THEN
+        ALTER TABLE vlm_results DROP COLUMN payload;
+    END IF;
+
+    -- processing_jobs 컬럼명 변경 (progress_current → current_batch, progress_total → total_batch)
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'processing_jobs' AND column_name = 'progress_current') THEN
+        ALTER TABLE processing_jobs RENAME COLUMN progress_current TO current_batch;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'processing_jobs' AND column_name = 'progress_total') THEN
+        ALTER TABLE processing_jobs RENAME COLUMN progress_total TO total_batch;
+    END IF;
+
+    -- summary_results.format 제약조건 업데이트 (tldr_timeline 추가)
+    ALTER TABLE summary_results DROP CONSTRAINT IF EXISTS check_summary_format;
+    ALTER TABLE summary_results ADD CONSTRAINT check_summary_format
+        CHECK (format IN ('timeline', 'tldr', 'tldr_timeline'));
+
+    -- judge.batch_index 컬럼 추가
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'judge' AND column_name = 'batch_index') THEN
+        ALTER TABLE judge ADD COLUMN batch_index INTEGER;
     END IF;
 END $$;
 
--- 3. HNSW 인덱스 (코사인 유사도 검색용)
-CREATE INDEX IF NOT EXISTS idx_summaries_embedding_hnsw 
-ON summaries USING hnsw (embedding vector_cosine_ops);
-
--- 시맨틱 검색 RPC 함수 (사용자 필터링 지원)
-CREATE OR REPLACE FUNCTION match_summaries (
-    query_embedding vector(1024),
-    match_threshold float DEFAULT 0.4,
-    match_count int DEFAULT 5,
-    filter_user_id uuid DEFAULT NULL
-)
-RETURNS TABLE (
-    id uuid,
-    summary_text text,
-    video_id uuid,
-    segment_id uuid,
-    similarity float
-)
-LANGUAGE sql STABLE
-AS $$
-    SELECT
-        summaries.id,
-        summaries.summary_text,
-        summaries.video_id,
-        summaries.segment_id,
-        1 - (summaries.embedding <=> query_embedding) as similarity
-    FROM summaries
-    JOIN videos ON summaries.video_id = videos.id
-    WHERE summaries.embedding IS NOT NULL
-    AND 1 - (summaries.embedding <=> query_embedding) > match_threshold
-    AND (filter_user_id IS NULL OR videos.user_id = filter_user_id)
-    ORDER BY summaries.embedding <=> query_embedding ASC
-    LIMIT match_count;
-$$;
+-- ============================================================================
+-- 완료 메시지
+-- ============================================================================
+SELECT 'Screentime-MVP ERD 기반 테이블 생성 완료!' as message;
