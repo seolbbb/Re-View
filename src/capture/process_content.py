@@ -18,6 +18,7 @@ def process_single_video_capture(
     scene_threshold: Optional[float] = None,
     dedupe_threshold: Optional[float] = None,
     min_interval: Optional[float] = None,
+    dedup_enabled: bool = True,
     write_manifest: bool = True,
 ) -> list:
     """
@@ -53,6 +54,7 @@ def process_single_video_capture(
         sample_interval_sec=settings.sample_interval_sec,
         buffer_duration_sec=settings.buffer_duration_sec,
         transition_timeout_sec=settings.transition_timeout_sec,
+        dedup_enabled=dedup_enabled,
     )
 
     start_time = time.time()

@@ -68,10 +68,12 @@ def run_preprocess_pipeline(
     capture_threshold: Optional[float] = None,
     capture_dedupe_threshold: Optional[float] = None,
     capture_min_interval: Optional[float] = None,
+    capture_dedup_enabled: bool = True,
     capture_verbose: bool = False,
     limit: Optional[int] = None,
     write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
+    db_table_name: str = "captures",
 ) -> Optional[str]:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
     # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
@@ -103,6 +105,14 @@ def run_preprocess_pipeline(
         capture_dedupe_threshold = float(capture_settings.sensitivity_sim)
     if capture_min_interval is None:
         capture_min_interval = float(capture_settings.min_interval)
+
+    # 캡처 모드 로깅
+    mode_str = "DEDUPLICATION" if capture_dedup_enabled else "ALL SLIDES"
+    print(f"[Info] Running Capture Pipeline in '{mode_str}' mode.")
+    if capture_dedup_enabled:
+        print("   - Strategy: pHash + ORB deduplication")
+    else:
+        print("   - Strategy: Save ALL slides (No deduplication)")
 
     db_settings = settings.get("db", {})
     if not isinstance(db_settings, dict):
@@ -183,6 +193,7 @@ def run_preprocess_pipeline(
             run_meta=run_meta,
             duration_sec=video_info.get("duration_sec"),
             stt_backend=stt_backend,
+            table_name=db_table_name,
         )
         if db_context:
             _, _, preprocess_job_id = db_context
@@ -290,6 +301,7 @@ def run_preprocess_pipeline(
                         min_interval=capture_min_interval,
                         verbose=capture_verbose,
                         video_name=video_name,
+                        dedup_enabled=capture_dedup_enabled,
                         write_manifest=write_local_json,
                     )
                     return result, time.perf_counter() - start
@@ -359,6 +371,7 @@ def run_preprocess_pipeline(
                 min_interval=capture_min_interval,
                 verbose=capture_verbose,
                 video_name=video_name,
+                dedup_enabled=capture_dedup_enabled,
                 write_manifest=write_local_json,
             )
             capture_count = len(capture_result) if capture_result else 0
@@ -481,6 +494,17 @@ def main() -> None:
         default=None,
         help="Write preprocess JSON artifacts to disk",
     )
+    parser.add_argument(
+        "--capture-mode",
+        choices=["all", "dedup"],
+        default="dedup",
+        help="Capture mode: 'all' (save all slides), 'dedup' (deduplicate similar slides)",
+    )
+    parser.add_argument(
+        "--db-table",
+        default="captures",
+        help="Target Supabase table for captures (default: 'captures')",
+    )
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
     parser.set_defaults(db_sync=None)
@@ -491,9 +515,11 @@ def main() -> None:
         output_base=args.output_base,
         stt_backend=args.stt_backend,
         parallel=args.parallel,
+        capture_dedup_enabled=(args.capture_mode == "dedup"),
         capture_verbose=args.capture_verbose,
         write_local_json=args.local_json,
         sync_to_db=args.db_sync,
+        db_table_name=args.db_table,
     )
 
 
