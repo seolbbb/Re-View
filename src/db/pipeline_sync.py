@@ -139,6 +139,7 @@ def prepare_preprocess_db_sync(
     duration_sec: Optional[int] = None,
     user_id: Optional[str] = None,
     stt_backend: str = "clova",
+    table_name: str = "captures",
 ) -> Optional[Tuple[Any, str, Optional[str]]]:
     """전처리 단계의 부분 업로드를 위한 DB 컨텍스트를 준비한다.
     
@@ -210,6 +211,7 @@ def sync_preprocess_artifacts_to_db(
     stt_payload: Optional[Any] = None,
     captures_payload: Optional[List[Dict[str, Any]]] = None,
     audio_path: Optional[Path] = None,
+    table_name: str = "captures",
 ) -> Dict[str, Any]:
     """STT/캡처/오디오 아티팩트를 부분 업로드한다.
     
@@ -251,6 +253,7 @@ def sync_preprocess_artifacts_to_db(
                     captures_payload,
                     captures_dir,
                     preprocess_job_id=preprocess_job_id,
+                    table_name=table_name,
                 )
             else:
                 manifest_path = video_root / "manifest.json"
@@ -262,6 +265,7 @@ def sync_preprocess_artifacts_to_db(
                         manifest_path,
                         captures_dir,
                         preprocess_job_id=preprocess_job_id,
+                        table_name=table_name,
                     )
             if captures_result:
                 results["saved"]["captures"] = captures_result.get("db_saved", 0)

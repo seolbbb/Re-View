@@ -21,6 +21,7 @@ class CaptureAdapterMixin:
         self,
         video_id: str,
         captures: List[Dict[str, Any]],
+        table_name: str = "captures",
         **kwargs,
     ) -> List[Dict[str, Any]]:
         """메모리 상의 캡처 메타데이터 리스트를 DB에 일괄 저장합니다.
@@ -51,7 +52,7 @@ class CaptureAdapterMixin:
         
         if rows:
             # bulk insert 실행
-            result = self.client.table("captures").insert(rows).execute()
+            result = self.client.table(table_name).insert(rows).execute()
             return result.data
         return []
     
@@ -59,6 +60,7 @@ class CaptureAdapterMixin:
         self,
         video_id: str,
         manifest_json_path: Path,
+        table_name: str = "captures",
     ) -> List[Dict[str, Any]]:
         """로컬 manifest.json 파일을 읽어 캡처 정보를 DB에 저장합니다.
         
@@ -66,7 +68,7 @@ class CaptureAdapterMixin:
         """
         with open(manifest_json_path, "r", encoding="utf-8") as f:
             captures = json.load(f)
-        return self.save_captures(video_id, captures)
+        return self.save_captures(video_id, captures, table_name=table_name)
     
     def upload_capture_image(
         self,
@@ -258,6 +260,7 @@ class CaptureAdapterMixin:
         captures_dir: Path,
         bucket: str = "captures",
         preprocess_job_id: Optional[str] = None,
+        table_name: str = "captures",
     ) -> Dict[str, Any]:
         """캡처 이미지 업로드와 DB 메타데이터 저장을 통합 수행하는 편의 메소드입니다.
         
@@ -319,7 +322,7 @@ class CaptureAdapterMixin:
         # 3. DB에 일괄 저장
         if rows:
             try:
-                db_result = self.client.table("captures").insert(rows).execute()
+                db_result = self.client.table(table_name).insert(rows).execute()
                 results["db_saved"] = len(db_result.data)
             except Exception as e:
                 results["errors"].append(f"db insert error: {str(e)}")
@@ -333,6 +336,7 @@ class CaptureAdapterMixin:
         captures_dir: Path,
         bucket: str = "captures",
         preprocess_job_id: Optional[str] = None,
+        table_name: str = "captures",
     ) -> Dict[str, Any]:
         """메타데이터 리스트로 캡처 업로드/저장을 수행한다."""
         results = {
@@ -371,7 +375,7 @@ class CaptureAdapterMixin:
 
         if rows:
             try:
-                db_result = self.client.table("captures").insert(rows).execute()
+                db_result = self.client.table(table_name).insert(rows).execute()
                 results["db_saved"] = len(db_result.data)
             except Exception as e:
                 results["errors"].append(f"db insert error: {str(e)}")

@@ -79,6 +79,14 @@ def calculate_info_score(image: np.ndarray, orb_features: int) -> float:
     return 0.6 * orb_normalized + 0.4 * edge_density
 
 
+def _format_time(ms: int) -> str:
+    """밀리초를 MM:SS 형식으로 변환한다."""
+    seconds = ms // 1000
+    minutes = seconds // 60
+    sec = seconds % 60
+    return f"{minutes:02d}:{sec:02d}"
+
+
 
 class HybridSlideExtractor:
     """
@@ -435,8 +443,19 @@ class HybridSlideExtractor:
                 
                 # pHash 인덱스 업데이트
                 self.phash_index[phash] = duplicate_idx
+                
+                # Logging with (replaced) suffix
+                fname = dup_slide['file_name'].replace(".jpg", "")
+                t_start = _format_time(start_ms)
+                t_end = _format_time(end_ms)
+                print(f"[Dedup] {fname} + {t_start}~{t_end} ({start_ms}~{end_ms}ms) (replaced)")
+            else:
+                # Logging without (replaced)
+                fname = dup_slide['file_name'].replace(".jpg", "")
+                t_start = _format_time(start_ms)
+                t_end = _format_time(end_ms)
+                print(f"[Dedup] {fname} + {t_start}~{t_end} ({start_ms}~{end_ms}ms)")
             
-            print(f"  [Dedup] Slide {idx} merged to #{dup_slide['idx']} (ranges: {len(dup_slide['time_ranges'])})")
             return  # 새로 저장하지 않음
         
         # 새 슬라이드 저장

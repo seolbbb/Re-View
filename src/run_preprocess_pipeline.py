@@ -259,6 +259,7 @@ def run_preprocess_pipeline(
                 stt_payload=stt_payload if stage == "stt" else None,
                 captures_payload=captures_payload if stage == "capture" else None,
                 audio_path=audio_path if stage == "audio" else None,
+                table_name=db_table_name,
             )
             saved = stage_results.get("saved", {})
             errors = stage_results.get("errors", [])
