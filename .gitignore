@@ -35,6 +35,7 @@ SUMMARY.md
 .agent/
 *_readable.txt
 *_frames/
+frontend/
 
 # IDE
 .vscode/

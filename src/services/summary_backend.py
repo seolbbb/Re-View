@@ -45,6 +45,7 @@ class ProcessApiBackend:
                 "action": "none",
                 "status": status,
                 "has_summary": has_summary,
+                "message": "요약이 이미 존재하거나 진행 중입니다.",
             }
 
         if status == "not_started" or (not has_summary and status == "completed"):
@@ -55,12 +56,13 @@ class ProcessApiBackend:
                     "action": "started",
                     "status": "running",
                     "has_summary": False,
-                    "message": start_result.get("message"),
+                    "message": "요약 작업을 자동으로 시작했습니다.",
                 }
             return {
                 "success": False,
                 "action": "failed",
                 "error": start_result.get("error"),
+                "message": "요약 작업 시작에 실패했습니다.",
             }
 
         return {
@@ -68,11 +70,14 @@ class ProcessApiBackend:
             "action": "none",
             "status": status,
             "has_summary": has_summary,
+            "message": f"현재 상태: {status}",
         }
 
     def get_summary_updates(self, state: State) -> Dict[str, Any]:
         video_id = state.get("video_id")
         if not video_id:
+            if not state.get("video_name"):
+                return {"success": False, "error": "video_name is not set"}
             return {"success": False, "error": "video_id is not set"}
 
         last_segment_id = state.get("last_segment_id", 0)
@@ -181,7 +186,7 @@ class ProcessApiBackend:
     def _get_summary_status(self, state: State) -> Dict[str, Any]:
         video_id = state.get("video_id")
         if not video_id:
-            return {"success": False, "error": "video_id is not set"}
+            return {"success": False, "error": "video_name or video_id is not set"}
 
         status_response = self._call_process_api("GET", f"/videos/{video_id}/status")
         if not status_response.get("success"):
@@ -232,7 +237,7 @@ class ProcessApiBackend:
         video_id = state.get("video_id")
         video_name = state.get("video_name")
         if not video_id and not video_name:
-            return {"success": False, "error": "video_id or video_name is not set"}
+            return {"success": False, "error": "video_name or video_id is not set"}
 
         payload: Dict[str, Any] = {}
         if video_id:

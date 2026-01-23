@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
-from src.adk_chatbot import agent as adk_agent
-from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE
+from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
 try:
     from langgraph.graph import END, StateGraph
@@ -27,6 +26,7 @@ _TIME_TAG_RE = re.compile(r"\[time_ms=(\d+)\]")
 _BACKEND_AUTHOR = "langgraph_chatbot"
 _DEFAULT_MODEL = os.getenv("CHATBOT_LLM_MODEL", "gemini-2.5-flash")
 _DEFAULT_TEMPERATURE = os.getenv("CHATBOT_LLM_TEMPERATURE", "0.2")
+_DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
 _DETAIL_KEYWORDS = (
     "자세히",
     "상세",
@@ -66,6 +66,7 @@ class ChatState(TypedDict, total=False):
     video_name: Optional[str]
     video_id: Optional[str]
     video_root: Optional[str]
+    output_base: Optional[str]
     unit_cache: Dict[str, Dict[str, Any]]
 
 
@@ -74,15 +75,6 @@ class LangGraphMessage:
     author: str
     text: str
     is_final: bool = True
-
-
-class _ToolContextShim:
-    def __init__(self, state: Dict[str, Any]) -> None:
-        self.state = state
-
-
-def _call_tool(func: Any, state: Dict[str, Any], *args: Any, **kwargs: Any) -> Dict[str, Any]:
-    return func(_ToolContextShim(state), *args, **kwargs)
 
 
 def _normalize_mode(text: str) -> Optional[str]:
@@ -132,18 +124,18 @@ def _route_after_parse(state: ChatState) -> str:
     return "need_mode"
 
 
-def _handle_mode_select(state: ChatState) -> Dict[str, Any]:
+def _handle_mode_select(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     selected_mode = state.get("selected_mode")
     if selected_mode not in {"full", "partial"}:
         return {"response": _NEED_MODE_MESSAGE}
 
     updates: Dict[str, Any] = {"chat_mode": selected_mode}
     if selected_mode == "partial":
-        result = _call_tool(adk_agent.partial_not_implemented, state)
+        result = backend.partial_not_implemented(state)
         updates["response"] = result.get("error", _PARTIAL_NOT_READY)
         return updates
 
-    result = _call_tool(adk_agent.ensure_summary_exists, state)
+    result = backend.ensure_summary_exists(state)
     if not result.get("success"):
         updates["response"] = result.get("error", "요약 상태 확인에 실패했습니다.")
         return updates
@@ -151,18 +143,18 @@ def _handle_mode_select(state: ChatState) -> Dict[str, Any]:
     return updates
 
 
-def _handle_partial(state: ChatState) -> Dict[str, Any]:
-    result = _call_tool(adk_agent.partial_not_implemented, state)
+def _handle_partial(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    result = backend.partial_not_implemented(state)
     return {"response": result.get("error", _PARTIAL_NOT_READY)}
 
 
-def _prepare_full(state: ChatState) -> Dict[str, Any]:
-    updates = _call_tool(adk_agent.get_summary_updates, state)
+def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    updates = backend.get_summary_updates(state)
     if not updates.get("success"):
         return {"response": updates.get("error", "요약 업데이트에 실패했습니다.")}
 
     time_ms = state.get("time_ms")
-    context = _call_tool(adk_agent.get_summary_context, state, time_ms=time_ms)
+    context = backend.get_summary_context(state, time_ms=time_ms)
     if not context.get("success"):
         return {"response": context.get("error", "요약 컨텍스트를 불러오지 못했습니다.")}
 
@@ -196,7 +188,9 @@ def _resolve_video_root(state: ChatState) -> Optional[Path]:
     video_name = state.get("video_name")
     if not video_name:
         return None
-    return (DEFAULT_OUTPUT_BASE / video_name).resolve()
+    output_base = state.get("output_base")
+    base_path = Path(output_base) if output_base else _DEFAULT_OUTPUT_BASE
+    return (base_path / video_name).resolve()
 
 
 def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -473,7 +467,7 @@ def _generate_answer(state: ChatState) -> Dict[str, Any]:
     return {"response": response_text, "history": history}
 
 
-def _build_graph() -> Any:
+def _build_graph(backend: SummaryBackend) -> Any:
     if _LANGGRAPH_IMPORT_ERROR:
         raise RuntimeError(
             "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
@@ -481,10 +475,10 @@ def _build_graph() -> Any:
 
     graph: Any = StateGraph(ChatState)
     graph.add_node("parse_input", _parse_input)
-    graph.add_node("mode_select", _handle_mode_select)
+    graph.add_node("mode_select", lambda state: _handle_mode_select(state, backend))
     graph.add_node("need_mode", lambda _: {"response": _NEED_MODE_MESSAGE})
-    graph.add_node("partial", _handle_partial)
-    graph.add_node("prepare_full", _prepare_full)
+    graph.add_node("partial", lambda state: _handle_partial(state, backend))
+    graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
     graph.add_node("generate_answer", _generate_answer)
 
     graph.set_entry_point("parse_input")
@@ -519,12 +513,14 @@ class LangGraphSession:
         *,
         app_name: str,
         user_id: str,
+        backend: Optional[SummaryBackend] = None,
         initial_state: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._app_name = app_name
         self._user_id = user_id
         self._session_id = f"langgraph-{uuid.uuid4().hex}"
-        self._graph = _build_graph()
+        self._backend = backend or ProcessApiBackend()
+        self._graph = _build_graph(self._backend)
         self._state: Dict[str, Any] = dict(initial_state or {})
         self._state.setdefault("summary_cache", [])
         self._state.setdefault("pending_updates", [])
