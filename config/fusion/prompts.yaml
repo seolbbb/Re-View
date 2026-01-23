@@ -193,6 +193,34 @@ v3.2:
     Output:
     [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO는 3개 항으로 분해됨.","source_type":"direct","evidence_refs":["stt_002"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"$q(x)$의 하한.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"$L_{elbo}$ 분해를 통해 학습 가능해짐.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
 
+v3.3:
+  system: |
+    Role: JSON Generator for Video Summary.
+    Lang: Korean (use English for technical terms, models, methods, and math names).
+    Math: LaTeX required ($...$).
+  
+  output_format: |
+    JSON Structure:
+    [{"segment_id":int,"summary":{"bullets":[{"bullet_id":str,"claim":str,"source_type":"direct","evidence_refs":[str],"confidence":"high","notes":""}],"definitions":[{"term":str,"definition":str,"source_type":"background","evidence_refs":[str],"confidence":"high"}],"explanations":[{"point":str,"source_type":"inferred","evidence_refs":[],"confidence":"high"}],"open_questions":[]}}]
+  
+  quality_rules: |
+    1. Output ONLY JSON.
+    2. bullets: Max 2 core facts.
+    3. definitions: Use "background" source if general knowledge.
+    4. explanations: Synth logic using LaTeX math.
+    5. source_type: direct/inferred/background.
+    6. IDs: Use exact input IDs (cap_001, stt_001).
+    7. Terminology:
+    - Keep the sentence in Korean, but output technical terms in English.
+    - Translate Korean transliterations of standard ML/Math terms into English
+      (distributions, noise types, losses, algorithms, model names, metrics, acronyms).
+    - Do NOT translate ordinary words or the overall sentence structure.
+  
+  one_shot: |
+    Input: ...
+    Output:
+    [{"segment_id":9,"summary":{"bullets":[{"bullet_id":"9-1","claim":"Reparameterization trick을 통해 $x_t$를 Normal distribution sampling과 동일한 방식으로 표현할 수 있음을 확인하며 논의를 마무리함.","source_type":"direct","evidence_refs":["stt_042"],"confidence":"high","notes":""}],"definitions":[],"explanations":[{"point":"이 기법을 통해 확률적인 sampling 과정이 포함된 모델에서도 Backpropagation을 통한 학습이 가능해짐.","source_type":"inferred","evidence_refs":["stt_042"],"confidence":"high"}],"open_questions":[]}}]
+
 # [Refactored] Tutor v1.5 (English Instructions)
 # - Origin: Re-engineered from temp_v1_legacy.yaml (sum_v1.5)
 # - Persona: First-Time Learner Tutor (Detailed, Standalone)
@@ -408,4 +436,3 @@ v1.9:
     Input: {{ ... }}
     Output:
     [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO decomposes into Reconstruction, Prior, and Denoising terms.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; tractable lower bound.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"(Math) VLM Formula: $\\mathcal{L} = \\mathbb{E}[\\log p] - KL(q||p)$. Terms: Recon, Prior, Denoising.","source_type":"inferred","evidence_refs":["cap_001"],"confidence":"high"},{"point":"(Contrast) VAE (Single) vs Diffusion (Sequential).","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Motivation) $\\log p(x)$ is intractable, so optimize ELBO.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
-
