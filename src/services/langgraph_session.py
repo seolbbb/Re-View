@@ -64,6 +64,8 @@ class ChatState(TypedDict, total=False):
     response: str
     answer_records: List[Dict[str, Any]]
     history: List[Dict[str, str]]
+    history_flash: List[Dict[str, str]]
+    history_thinking: List[Dict[str, str]]
     summary_cache: List[Dict[str, Any]]
     pending_updates: List[Dict[str, Any]]
     last_segment_id: int
@@ -552,7 +554,11 @@ def _sanitize_records_for_flash(records: List[Dict[str, Any]]) -> List[Dict[str,
 def _build_prompt(state: ChatState) -> str:
     question = state.get("cleaned_message", "").strip()
     records = state.get("answer_records") or []
-    history = state.get("history", [])
+    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
+    history_key = f"history_{reasoning_mode}"
+    history = state.get(history_key, [])
+    if not history:
+        history = state.get("history", [])
     history_text = ""
     if isinstance(history, list) and history:
         tail = history[-6:]
@@ -619,14 +625,16 @@ def _generate_answer(state: ChatState) -> Dict[str, Any]:
         logger.warning("LangGraph LLM call failed: %s", exc)
         response_text = _fallback_answer(records)
 
-    history = state.get("history", [])
+    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
+    history_key = f"history_{reasoning_mode}"
+    history = state.get(history_key, [])
     if not isinstance(history, list):
         history = []
     history = history + [
         {"role": "user", "content": state.get("cleaned_message", "")},
         {"role": "assistant", "content": response_text},
     ]
-    return {"response": response_text, "history": history}
+    return {"response": response_text, history_key: history}
 
 
 def _build_graph(backend: SummaryBackend) -> Any:
@@ -691,6 +699,8 @@ class LangGraphSession:
         self._state.setdefault("pending_updates", [])
         self._state.setdefault("last_segment_id", 0)
         self._state.setdefault("history", [])
+        self._state.setdefault("history_flash", [])
+        self._state.setdefault("history_thinking", [])
         self._state.setdefault("unit_cache", {})
         default_reasoning_mode = _normalize_reasoning_mode(_DEFAULT_REASONING_MODE) or "flash"
         self._state.setdefault("reasoning_mode", default_reasoning_mode)

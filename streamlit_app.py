@@ -4,6 +4,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,6 +47,24 @@ def _normalize_chat_backend(backend: Optional[str]) -> str:
     if value in {"langgraph", "lg"}:
         return "langgraph"
     return "adk"
+
+
+def _reset_chat_sessions() -> None:
+    st.session_state.chat_sessions = []
+    st.session_state.active_chat_session_id = None
+    st.session_state.adk_session = None
+    st.session_state.chat_messages = []
+    st.session_state.chat_mode_signature = None
+    st.session_state.chat_reasoning_signature = None
+
+
+def _get_chat_session(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not session_id:
+        return None
+    for session in st.session_state.get("chat_sessions", []):
+        if session.get("id") == session_id:
+            return session
+    return None
 
 
 def _call_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -428,6 +447,10 @@ def main() -> None:
         st.session_state.preprocess_result = None
     if "adk_session" not in st.session_state:
         st.session_state.adk_session = None
+    if "chat_sessions" not in st.session_state:
+        st.session_state.chat_sessions = []
+    if "active_chat_session_id" not in st.session_state:
+        st.session_state.active_chat_session_id = None
     if "chat_backend" not in st.session_state:
         st.session_state.chat_backend = DEFAULT_CHATBOT_BACKEND
     if "chat_mode" not in st.session_state:
@@ -505,15 +528,21 @@ def main() -> None:
                 candidate = ADK_OUTPUT_BASE / selected_output
                 if candidate.exists():
                     st.session_state.video_root = str(candidate)
-                    st.session_state.run_meta = _read_json(candidate / "pipeline_run.json")
+                    run_meta = _read_json(candidate / "pipeline_run.json")
+                    st.session_state.run_meta = run_meta
+                    video_id = None
+                    if isinstance(run_meta, dict):
+                        video_id = run_meta.get("video_id")
+                        if not video_id:
+                            args_meta = run_meta.get("args")
+                            if isinstance(args_meta, dict):
+                                video_id = args_meta.get("video_id")
+                    st.session_state.video_id = video_id
                     st.session_state.preprocess_status = "done"
                     st.session_state.preprocess_error = None
                     st.session_state.preprocess_signature = None
                     st.session_state.preprocess_result = None
-                    st.session_state.adk_session = None
-                    st.session_state.chat_mode_signature = None
-                    st.session_state.chat_reasoning_signature = None
-                    st.session_state.chat_messages = []
+                    _reset_chat_sessions()
                     st.session_state.selected_output_name = selected_output
                     preview_candidate = _find_existing_video(selected_output)
                     st.session_state.preview_video_path = (
@@ -531,10 +560,7 @@ def main() -> None:
             st.session_state.preprocess_error = None
             st.session_state.preprocess_signature = None
             st.session_state.preprocess_result = None
-            st.session_state.adk_session = None
-            st.session_state.chat_mode_signature = None
-            st.session_state.chat_reasoning_signature = None
-            st.session_state.chat_messages = []
+            _reset_chat_sessions()
         st.session_state.preview_video_path = str(video_path)
 
     with st.sidebar:
@@ -548,10 +574,7 @@ def main() -> None:
         )
         if selected_backend != st.session_state.chat_backend:
             st.session_state.chat_backend = selected_backend
-            st.session_state.adk_session = None
-            st.session_state.chat_mode_signature = None
-            st.session_state.chat_reasoning_signature = None
-            st.session_state.chat_messages = []
+            _reset_chat_sessions()
             st.session_state.adk_busy = False
             st.rerun()
 
@@ -671,10 +694,7 @@ def main() -> None:
     video_name = _resolve_video_name(video_path, video_root_value)
     if st.session_state.chat_session_video_name != video_name:
         st.session_state.chat_session_video_name = video_name
-        st.session_state.adk_session = None
-        st.session_state.chat_mode_signature = None
-        st.session_state.chat_reasoning_signature = None
-        st.session_state.chat_messages = []
+        _reset_chat_sessions()
         st.session_state.adk_busy = False
 
     if video_path:
@@ -686,10 +706,7 @@ def main() -> None:
         if should_run_preprocess:
             st.session_state.preprocess_status = "running"
             st.session_state.preprocess_error = None
-            st.session_state.adk_session = None
-            st.session_state.chat_mode_signature = None
-            st.session_state.chat_reasoning_signature = None
-            st.session_state.chat_messages = []
+            _reset_chat_sessions()
             with st.spinner("Running preprocess..."):
                 try:
                     result = run_preprocess_pipeline(
@@ -721,33 +738,6 @@ def main() -> None:
         and _has_preprocess_outputs(Path(video_root_value))
     ):
         st.session_state.preprocess_status = "done"
-
-    if video_name and st.session_state.preprocess_status == "done":
-        if st.session_state.adk_session is None:
-            try:
-                if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
-                    if not st.session_state.get("video_id"):
-                        raise ValueError(
-                            "LangGraph backend requires video_id. Run preprocess with DB sync enabled."
-                        )
-                st.session_state.adk_session = start_chatbot_session(
-                    state={
-                        "video_name": video_name,
-                        "video_id": st.session_state.get("video_id"),
-                        "reasoning_mode": st.session_state.get("chat_reasoning_mode"),
-                    },
-                    app_name="screentime_chatbot",
-                    user_id="streamlit",
-                    backend=st.session_state.chat_backend,
-                )
-            except Exception as exc:
-                st.session_state.adk_session = None
-                st.error(f"Chatbot session init failed: {exc}")
-            st.session_state.chat_mode_signature = None
-            st.session_state.chat_reasoning_signature = (
-                video_name,
-                st.session_state.get("chat_reasoning_mode"),
-            )
 
     if st.session_state.preprocess_status == "running":
         st.info("Preprocess is running. This can take a while for long videos.")
@@ -845,102 +835,142 @@ def main() -> None:
             if st.session_state.preprocess_status == "error":
                 st.error("Preprocess failed. Fix the error and rerun.")
                 return
-            if st.session_state.adk_session is None:
-                st.info("Chatbot session is not ready yet.")
-                return
             if st.session_state.adk_busy:
                 st.info("Chatbot is running. Please wait for the current run to finish.")
 
-            if st.button(
-                "Reset chat session",
-                disabled=st.session_state.adk_session is None or st.session_state.adk_busy,
-            ):
-                st.session_state.adk_session = None
-                st.session_state.chat_messages = []
-                st.session_state.chat_mode_signature = None
-                st.session_state.chat_reasoning_signature = None
-                st.rerun()
+            chat_sessions = st.session_state.chat_sessions
+            active_session = _get_chat_session(st.session_state.active_chat_session_id)
 
-            chat_mode_label = st.radio(
-                "Chat mode",
-                ["전문 요약", "부분 요약"],
-                horizontal=True,
-            )
-            chat_mode = "full" if chat_mode_label == "전문 요약" else "partial"
-            st.session_state.chat_mode = chat_mode
-            mode_signature = (video_name, chat_mode)
-            if st.session_state.chat_mode_signature != mode_signature:
-                if st.session_state.adk_busy:
-                    st.info("Chatbot is busy. Mode change will apply after it finishes.")
-                else:
-                    st.session_state.chat_messages = []
+            with st.expander("New chat session", expanded=not chat_sessions):
+                session_name = st.text_input("Session name (optional)", value="")
+                chat_mode_label = st.radio(
+                    "Chat mode",
+                    ["전문 요약", "부분 요약"],
+                    horizontal=True,
+                    index=0 if st.session_state.chat_mode == "full" else 1,
+                    key="chat_mode_label",
+                )
+                chat_mode = "full" if chat_mode_label == "전문 요약" else "partial"
+                st.session_state.chat_mode = chat_mode
+                reasoning_mode = None
+                reasoning_label = None
+                if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                    reasoning_label = st.radio(
+                        "Reasoning mode",
+                        ["Flash", "Thinking"],
+                        horizontal=True,
+                        index=0 if st.session_state.chat_reasoning_mode == "flash" else 1,
+                        key="chat_reasoning_label",
+                    )
+                    reasoning_mode = "flash" if reasoning_label == "Flash" else "thinking"
+                    st.session_state.chat_reasoning_mode = reasoning_mode
+
+                if st.button("Create session", disabled=st.session_state.adk_busy):
                     st.session_state.adk_busy = True
                     try:
+                        if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                            if not st.session_state.get("video_id"):
+                                raise ValueError(
+                                    "LangGraph backend requires video_id. Run preprocess with DB sync enabled."
+                                )
+                        session_obj = start_chatbot_session(
+                            state={
+                                "video_name": video_name,
+                                "video_id": st.session_state.get("video_id"),
+                                "reasoning_mode": reasoning_mode,
+                            },
+                            app_name="screentime_chatbot",
+                            user_id="streamlit",
+                            backend=st.session_state.chat_backend,
+                        )
+                        messages: List[Dict[str, Any]] = []
                         with st.spinner("Setting chat mode..."):
-                            responses = send_chat_message(
-                                st.session_state.adk_session, chat_mode
-                            )
+                            responses = send_chat_message(session_obj, chat_mode)
                         for response in responses:
-                            st.session_state.chat_messages.append(
+                            messages.append(
                                 {
                                     "role": "assistant",
                                     "author": response.author,
                                     "content": response.text,
                                 }
                             )
+                        session_id = uuid.uuid4().hex
+                        label_parts = [session_name.strip()] if session_name.strip() else []
+                        label_parts.append(chat_mode_label)
+                        if reasoning_label:
+                            label_parts.append(reasoning_label)
+                        label_parts.append(datetime.now().strftime("%H:%M"))
+                        label = " · ".join(label_parts)
+                        session_entry = {
+                            "id": session_id,
+                            "label": label,
+                            "backend": st.session_state.chat_backend,
+                            "chat_mode": chat_mode,
+                            "reasoning_mode": reasoning_mode,
+                            "session": session_obj,
+                            "messages": messages,
+                        }
+                        st.session_state.chat_sessions.append(session_entry)
+                        st.session_state.active_chat_session_id = session_id
+                        st.session_state.adk_session = session_obj
+                        st.session_state.chat_messages = session_entry["messages"]
                     except Exception as exc:
-                        st.session_state.chat_messages.append(
-                            {
-                                "role": "assistant",
-                                "author": "system",
-                                "content": f"Chatbot error: {exc}",
-                            }
-                        )
+                        st.error(f"Chatbot session init failed: {exc}")
                     finally:
                         st.session_state.adk_busy = False
-                        st.session_state.chat_mode_signature = mode_signature
                     st.rerun()
 
-            if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
-                reasoning_label = st.radio(
-                    "Reasoning mode",
-                    ["Flash", "Thinking"],
-                    horizontal=True,
+            if chat_sessions:
+                session_ids = [session["id"] for session in chat_sessions]
+                label_map = {session["id"]: session["label"] for session in chat_sessions}
+                current_index = (
+                    session_ids.index(st.session_state.active_chat_session_id)
+                    if st.session_state.active_chat_session_id in session_ids
+                    else 0
                 )
-                reasoning_mode = "flash" if reasoning_label == "Flash" else "thinking"
-                st.session_state.chat_reasoning_mode = reasoning_mode
-                reasoning_signature = (video_name, reasoning_mode)
-                if st.session_state.chat_reasoning_signature != reasoning_signature:
-                    if st.session_state.adk_busy:
-                        st.info("Chatbot is busy. Mode change will apply after it finishes.")
-                    else:
-                        st.session_state.adk_busy = True
-                        try:
-                            with st.spinner("Setting reasoning mode..."):
-                                responses = send_chat_message(
-                                    st.session_state.adk_session,
-                                    f"{reasoning_mode} mode",
-                                )
-                            for response in responses:
-                                st.session_state.chat_messages.append(
-                                    {
-                                        "role": "assistant",
-                                        "author": response.author,
-                                        "content": response.text,
-                                    }
-                                )
-                        except Exception as exc:
-                            st.session_state.chat_messages.append(
-                                {
-                                    "role": "assistant",
-                                    "author": "system",
-                                    "content": f"Chatbot error: {exc}",
-                                }
-                            )
-                        finally:
-                            st.session_state.adk_busy = False
-                            st.session_state.chat_reasoning_signature = reasoning_signature
-                        st.rerun()
+                selected_id = st.selectbox(
+                    "Chat sessions",
+                    options=session_ids,
+                    index=current_index,
+                    format_func=lambda sid: label_map.get(sid, sid),
+                )
+                if selected_id != st.session_state.active_chat_session_id:
+                    selected_session = _get_chat_session(selected_id)
+                    if selected_session:
+                        st.session_state.active_chat_session_id = selected_id
+                        st.session_state.adk_session = selected_session.get("session")
+                        st.session_state.chat_messages = selected_session.get("messages", [])
+                    st.rerun()
+            else:
+                st.info("Create a chat session to start.")
+                return
+
+            active_session = _get_chat_session(st.session_state.active_chat_session_id)
+            if not active_session:
+                st.info("Create a chat session to start.")
+                return
+
+            mode_label = "전문 요약" if active_session.get("chat_mode") == "full" else "부분 요약"
+            reasoning_label = None
+            if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                mode_value = active_session.get("reasoning_mode") or "flash"
+                reasoning_label = "Flash" if mode_value == "flash" else "Thinking"
+            label_suffix = f" · {reasoning_label}" if reasoning_label else ""
+            st.caption(f"Session: {active_session.get('label')} ({mode_label}{label_suffix})")
+
+            if st.button(
+                "Delete session",
+                disabled=st.session_state.adk_busy,
+            ):
+                st.session_state.chat_sessions = [
+                    session
+                    for session in st.session_state.chat_sessions
+                    if session.get("id") != st.session_state.active_chat_session_id
+                ]
+                st.session_state.active_chat_session_id = None
+                st.session_state.adk_session = None
+                st.session_state.chat_messages = []
+                st.rerun()
 
             chat_container = st.container(height=520)
             with chat_container:

@@ -58,20 +58,12 @@ class ProcessApiBackend:
             }
 
         if status == "not_started" or (not has_summary and status == "completed"):
-            start_result = self._start_summary_job(state)
-            if start_result.get("success"):
-                return {
-                    "success": True,
-                    "action": "started",
-                    "status": "running",
-                    "has_summary": False,
-                    "message": "요약 작업을 자동으로 시작했습니다.",
-                }
             return {
-                "success": False,
-                "action": "failed",
-                "error": start_result.get("error"),
-                "message": "요약 작업 시작에 실패했습니다.",
+                "success": True,
+                "action": "none",
+                "status": status,
+                "has_summary": has_summary,
+                "message": "아직 요약이 생성되지 않았습니다. 요약 작업을 먼저 실행해 주세요.",
             }
 
         return {
