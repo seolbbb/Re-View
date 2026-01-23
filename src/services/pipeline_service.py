@@ -143,6 +143,8 @@ def start_chatbot_session(
 ) -> Any:
     selected = _normalize_chat_backend(backend)
     if selected == "langgraph":
+        if not state.get("video_id"):
+            raise ValueError("video_id is required for LangGraph backend. Run preprocess with DB sync.")
         return LangGraphSession(app_name=app_name, user_id=user_id, initial_state=state)
     return AdkSession(
         root_agent=chatbot_root_agent,

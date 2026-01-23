@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
@@ -225,6 +225,20 @@ def get_video_summary(video_id: str, format: Optional[str] = None) -> Dict[str, 
     }
 
 
+def _parse_id_list(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    items = []
+    seen = set()
+    for raw in value.split(","):
+        cleaned = raw.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        items.append(cleaned)
+    return items
+
+
 @app.get("/videos/{video_id}/summaries")
 def get_video_summaries(video_id: str) -> Dict[str, Any]:
     """세부 요약 세그먼트 리스트 조회 (Chatbot용)."""
@@ -260,6 +274,34 @@ def get_video_summaries(video_id: str) -> Dict[str, Any]:
         "video_id": video_id,
         "count": len(items),
         "items": items,
+    }
+
+
+@app.get("/videos/{video_id}/evidence")
+def get_video_evidence(
+    video_id: str,
+    stt_ids: Optional[str] = None,
+    cap_ids: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Evidence lookup by STT/VLM IDs (Chatbot thinking mode)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    stt_list = _parse_id_list(stt_ids)
+    cap_list = _parse_id_list(cap_ids)
+
+    stt_rows = adapter.get_stt_results_by_ids(video_id, stt_list) if stt_list else []
+    vlm_rows = adapter.get_vlm_results_by_ids(video_id, cap_list) if cap_list else []
+
+    return {
+        "video_id": video_id,
+        "stt": stt_rows,
+        "vlm": vlm_rows,
     }
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -24,6 +24,15 @@ class SummaryBackend(Protocol):
 
     def partial_not_implemented(self, state: State) -> Dict[str, Any]:
         """Placeholder for partial summary mode."""
+
+    def get_evidence(
+        self,
+        state: State,
+        *,
+        stt_ids: List[str],
+        cap_ids: List[str],
+    ) -> Dict[str, Any]:
+        """Fetch evidence records for given STT/VLM IDs."""
 
 
 class ProcessApiBackend:
@@ -182,6 +191,41 @@ class ProcessApiBackend:
 
     def partial_not_implemented(self, state: State) -> Dict[str, Any]:
         return {"success": False, "error": "Partial summary chatbot is not implemented yet."}
+
+    def get_evidence(
+        self,
+        state: State,
+        *,
+        stt_ids: List[str],
+        cap_ids: List[str],
+    ) -> Dict[str, Any]:
+        video_id = state.get("video_id")
+        if not video_id:
+            return {"success": False, "error": "video_id is not set"}
+        if not stt_ids and not cap_ids:
+            return {"success": True, "stt": [], "vlm": []}
+
+        params = []
+        if stt_ids:
+            params.append(("stt_ids", ",".join(stt_ids)))
+        if cap_ids:
+            params.append(("cap_ids", ",".join(cap_ids)))
+        query = ""
+        if params:
+            from urllib.parse import urlencode
+
+            query = f"?{urlencode(params)}"
+
+        response = self._call_process_api("GET", f"/videos/{video_id}/evidence{query}")
+        if not response.get("success"):
+            return {"success": False, "error": response.get("error")}
+
+        payload = response.get("payload", {})
+        return {
+            "success": True,
+            "stt": payload.get("stt", []),
+            "vlm": payload.get("vlm", []),
+        }
 
     def _get_summary_status(self, state: State) -> Dict[str, Any]:
         video_id = state.get("video_id")

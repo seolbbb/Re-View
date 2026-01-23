@@ -41,6 +41,13 @@ DEFAULT_CHATBOT_BACKEND = os.environ.get("CHATBOT_BACKEND", "adk").strip().lower
 PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
 
 
+def _normalize_chat_backend(backend: Optional[str]) -> str:
+    value = (backend or os.environ.get("CHATBOT_BACKEND", "adk")).strip().lower()
+    if value in {"langgraph", "lg"}:
+        return "langgraph"
+    return "adk"
+
+
 def _call_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Call process API and return JSON response."""
     url = f"{PROCESS_API_URL}{path}"
@@ -427,6 +434,10 @@ def main() -> None:
         st.session_state.chat_mode = "full"
     if "chat_mode_signature" not in st.session_state:
         st.session_state.chat_mode_signature = None
+    if "chat_reasoning_mode" not in st.session_state:
+        st.session_state.chat_reasoning_mode = "flash"
+    if "chat_reasoning_signature" not in st.session_state:
+        st.session_state.chat_reasoning_signature = None
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
     if "adk_busy" not in st.session_state:
@@ -501,6 +512,7 @@ def main() -> None:
                     st.session_state.preprocess_result = None
                     st.session_state.adk_session = None
                     st.session_state.chat_mode_signature = None
+                    st.session_state.chat_reasoning_signature = None
                     st.session_state.chat_messages = []
                     st.session_state.selected_output_name = selected_output
                     preview_candidate = _find_existing_video(selected_output)
@@ -521,6 +533,7 @@ def main() -> None:
             st.session_state.preprocess_result = None
             st.session_state.adk_session = None
             st.session_state.chat_mode_signature = None
+            st.session_state.chat_reasoning_signature = None
             st.session_state.chat_messages = []
         st.session_state.preview_video_path = str(video_path)
 
@@ -537,6 +550,7 @@ def main() -> None:
             st.session_state.chat_backend = selected_backend
             st.session_state.adk_session = None
             st.session_state.chat_mode_signature = None
+            st.session_state.chat_reasoning_signature = None
             st.session_state.chat_messages = []
             st.session_state.adk_busy = False
             st.rerun()
@@ -659,6 +673,7 @@ def main() -> None:
         st.session_state.chat_session_video_name = video_name
         st.session_state.adk_session = None
         st.session_state.chat_mode_signature = None
+        st.session_state.chat_reasoning_signature = None
         st.session_state.chat_messages = []
         st.session_state.adk_busy = False
 
@@ -673,6 +688,7 @@ def main() -> None:
             st.session_state.preprocess_error = None
             st.session_state.adk_session = None
             st.session_state.chat_mode_signature = None
+            st.session_state.chat_reasoning_signature = None
             st.session_state.chat_messages = []
             with st.spinner("Running preprocess..."):
                 try:
@@ -709,10 +725,16 @@ def main() -> None:
     if video_name and st.session_state.preprocess_status == "done":
         if st.session_state.adk_session is None:
             try:
+                if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                    if not st.session_state.get("video_id"):
+                        raise ValueError(
+                            "LangGraph backend requires video_id. Run preprocess with DB sync enabled."
+                        )
                 st.session_state.adk_session = start_chatbot_session(
                     state={
                         "video_name": video_name,
                         "video_id": st.session_state.get("video_id"),
+                        "reasoning_mode": st.session_state.get("chat_reasoning_mode"),
                     },
                     app_name="screentime_chatbot",
                     user_id="streamlit",
@@ -722,6 +744,10 @@ def main() -> None:
                 st.session_state.adk_session = None
                 st.error(f"Chatbot session init failed: {exc}")
             st.session_state.chat_mode_signature = None
+            st.session_state.chat_reasoning_signature = (
+                video_name,
+                st.session_state.get("chat_reasoning_mode"),
+            )
 
     if st.session_state.preprocess_status == "running":
         st.info("Preprocess is running. This can take a while for long videos.")
@@ -832,6 +858,7 @@ def main() -> None:
                 st.session_state.adk_session = None
                 st.session_state.chat_messages = []
                 st.session_state.chat_mode_signature = None
+                st.session_state.chat_reasoning_signature = None
                 st.rerun()
 
             chat_mode_label = st.radio(
@@ -873,6 +900,47 @@ def main() -> None:
                         st.session_state.adk_busy = False
                         st.session_state.chat_mode_signature = mode_signature
                     st.rerun()
+
+            if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                reasoning_label = st.radio(
+                    "Reasoning mode",
+                    ["Flash", "Thinking"],
+                    horizontal=True,
+                )
+                reasoning_mode = "flash" if reasoning_label == "Flash" else "thinking"
+                st.session_state.chat_reasoning_mode = reasoning_mode
+                reasoning_signature = (video_name, reasoning_mode)
+                if st.session_state.chat_reasoning_signature != reasoning_signature:
+                    if st.session_state.adk_busy:
+                        st.info("Chatbot is busy. Mode change will apply after it finishes.")
+                    else:
+                        st.session_state.adk_busy = True
+                        try:
+                            with st.spinner("Setting reasoning mode..."):
+                                responses = send_chat_message(
+                                    st.session_state.adk_session,
+                                    f"{reasoning_mode} mode",
+                                )
+                            for response in responses:
+                                st.session_state.chat_messages.append(
+                                    {
+                                        "role": "assistant",
+                                        "author": response.author,
+                                        "content": response.text,
+                                    }
+                                )
+                        except Exception as exc:
+                            st.session_state.chat_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "author": "system",
+                                    "content": f"Chatbot error: {exc}",
+                                }
+                            )
+                        finally:
+                            st.session_state.adk_busy = False
+                            st.session_state.chat_reasoning_signature = reasoning_signature
+                        st.rerun()
 
             chat_container = st.container(height=520)
             with chat_container:

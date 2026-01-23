@@ -7,7 +7,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
@@ -26,6 +26,7 @@ _TIME_TAG_RE = re.compile(r"\[time_ms=(\d+)\]")
 _BACKEND_AUTHOR = "langgraph_chatbot"
 _DEFAULT_MODEL = os.getenv("CHATBOT_LLM_MODEL", "gemini-2.5-flash")
 _DEFAULT_TEMPERATURE = os.getenv("CHATBOT_LLM_TEMPERATURE", "0.2")
+_DEFAULT_REASONING_MODE = os.getenv("CHATBOT_REASONING_MODE", "flash")
 _DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
 _DETAIL_KEYWORDS = (
     "자세히",
@@ -47,6 +48,7 @@ _OUT_OF_RANGE_MESSAGE = (
 _NO_SUMMARY_MESSAGE = "아직 요약이 생성되지 않았습니다. 요약 작업을 먼저 실행해 주세요."
 _NEED_MODE_MESSAGE = "먼저 모드를 선택해 주세요. (full 또는 partial)"
 _PARTIAL_NOT_READY = "Partial summary chatbot is not implemented yet."
+_NEED_REASONING_MODE_MESSAGE = "응답 모드를 선택해 주세요. (flash 또는 thinking)"
 
 
 class ChatState(TypedDict, total=False):
@@ -55,7 +57,9 @@ class ChatState(TypedDict, total=False):
     time_ms: Optional[int]
     intent: str
     selected_mode: Optional[str]
+    selected_reasoning_mode: Optional[str]
     chat_mode: Optional[str]
+    reasoning_mode: Optional[str]
     detail_requested: bool
     response: str
     answer_records: List[Dict[str, Any]]
@@ -86,6 +90,15 @@ def _normalize_mode(text: str) -> Optional[str]:
     return None
 
 
+def _normalize_reasoning_mode(text: str) -> Optional[str]:
+    normalized = text.strip().lower()
+    if normalized in {"flash", "flash mode"}:
+        return "flash"
+    if normalized in {"thinking", "thinking mode"}:
+        return "thinking"
+    return None
+
+
 def _detail_requested(text: str) -> bool:
     lowered = text.lower()
     return any(keyword in lowered for keyword in _DETAIL_KEYWORDS)
@@ -102,18 +115,25 @@ def _parse_input(state: ChatState) -> Dict[str, Any]:
             time_ms = None
         message = _TIME_TAG_RE.sub("", message).strip()
     cleaned = message.strip()
+    selected_reasoning_mode = _normalize_reasoning_mode(cleaned)
     selected_mode = _normalize_mode(cleaned)
-    intent = "mode_select" if selected_mode else "message"
+    if selected_reasoning_mode:
+        intent = "reasoning_select"
+    else:
+        intent = "mode_select" if selected_mode else "message"
     return {
         "cleaned_message": cleaned,
         "time_ms": time_ms,
         "selected_mode": selected_mode,
+        "selected_reasoning_mode": selected_reasoning_mode,
         "intent": intent,
         "detail_requested": _detail_requested(cleaned),
     }
 
 
 def _route_after_parse(state: ChatState) -> str:
+    if state.get("intent") == "reasoning_select":
+        return "reasoning_select"
     if state.get("intent") == "mode_select":
         return "mode_select"
     mode = state.get("chat_mode")
@@ -143,6 +163,16 @@ def _handle_mode_select(state: ChatState, backend: SummaryBackend) -> Dict[str, 
     return updates
 
 
+def _handle_reasoning_select(state: ChatState) -> Dict[str, Any]:
+    selected_mode = state.get("selected_reasoning_mode")
+    if selected_mode not in {"flash", "thinking"}:
+        return {"response": _NEED_REASONING_MODE_MESSAGE}
+    return {
+        "reasoning_mode": selected_mode,
+        "response": f"응답 모드를 설정했습니다. ({selected_mode})",
+    }
+
+
 def _handle_partial(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     result = backend.partial_not_implemented(state)
     return {"response": result.get("error", _PARTIAL_NOT_READY)}
@@ -167,11 +197,27 @@ def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
 
     matches = context.get("matches") or []
     records = matches or summary_cache
-    detail_requested = bool(state.get("detail_requested"))
+    reasoning_mode = state.get("reasoning_mode") or "flash"
+    detail_requested = bool(state.get("detail_requested")) and reasoning_mode != "flash"
+    if reasoning_mode == "thinking":
+        stt_ids, cap_ids = _collect_evidence_ids(records)
+        if stt_ids or cap_ids:
+            evidence = backend.get_evidence(state, stt_ids=stt_ids, cap_ids=cap_ids)
+            if evidence.get("success"):
+                records = _attach_db_evidence(
+                    records,
+                    evidence.get("stt", []),
+                    evidence.get("vlm", []),
+                )
+            else:
+                logger.warning("Evidence lookup failed: %s", evidence.get("error"))
+        return {"answer_records": records}
     if detail_requested:
         cache = _get_unit_cache(state)
         records = _attach_evidence(records, cache)
         return {"answer_records": records, "unit_cache": cache}
+    if reasoning_mode == "flash":
+        records = _sanitize_records_for_flash(records)
     return {"answer_records": records}
 
 
@@ -371,6 +417,102 @@ def _attach_evidence(
     return enriched
 
 
+def _normalize_evidence_refs(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, dict):
+        items: List[str] = []
+        for key in ("transcript_unit_ids", "visual_unit_ids", "stt_ids", "vlm_ids", "cap_ids"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                items.extend(str(item) for item in nested if str(item).strip())
+        return items
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _collect_evidence_refs(value: Any) -> List[str]:
+    refs: List[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "evidence_refs":
+                refs.extend(_normalize_evidence_refs(item))
+            else:
+                refs.extend(_collect_evidence_refs(item))
+    elif isinstance(value, list):
+        for item in value:
+            refs.extend(_collect_evidence_refs(item))
+    return refs
+
+
+def _collect_evidence_ids(records: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    stt_ids: List[str] = []
+    cap_ids: List[str] = []
+    seen_stt = set()
+    seen_cap = set()
+    for record in records:
+        summary = record.get("summary") or {}
+        for ref in _collect_evidence_refs(summary):
+            if ref.startswith("stt_") and ref not in seen_stt:
+                seen_stt.add(ref)
+                stt_ids.append(ref)
+            elif (ref.startswith("cap_") or ref.startswith("vlm_")) and ref not in seen_cap:
+                seen_cap.add(ref)
+                cap_ids.append(ref)
+    return stt_ids, cap_ids
+
+
+def _format_stt_evidence(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "unit_id": row.get("stt_id"),
+        "start_ms": row.get("start_ms"),
+        "end_ms": row.get("end_ms"),
+        "text": row.get("transcript"),
+    }
+
+
+def _format_vlm_evidence(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "unit_id": row.get("cap_id"),
+        "timestamp_ms": row.get("timestamp_ms"),
+        "text": row.get("extracted_text"),
+    }
+
+
+def _attach_db_evidence(
+    records: List[Dict[str, Any]],
+    stt_rows: List[Dict[str, Any]],
+    vlm_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    stt_map = {row.get("stt_id"): row for row in stt_rows if row.get("stt_id")}
+    vlm_map = {row.get("cap_id"): row for row in vlm_rows if row.get("cap_id")}
+    enriched: List[Dict[str, Any]] = []
+    for record in records:
+        summary = record.get("summary") or {}
+        refs = _collect_evidence_refs(summary)
+        stt_items: List[Dict[str, Any]] = []
+        vlm_items: List[Dict[str, Any]] = []
+        for ref in refs:
+            if ref.startswith("stt_") and ref in stt_map:
+                stt_items.append(_format_stt_evidence(stt_map[ref]))
+            elif (ref.startswith("cap_") or ref.startswith("vlm_")) and ref in vlm_map:
+                vlm_items.append(_format_vlm_evidence(vlm_map[ref]))
+
+        evidence: Dict[str, Any] = {}
+        if stt_items:
+            evidence["stt"] = stt_items[:_MAX_EVIDENCE_UNITS]
+        if vlm_items:
+            evidence["vlm"] = vlm_items[:_MAX_EVIDENCE_UNITS]
+
+        if evidence:
+            updated = dict(record)
+            updated["evidence"] = evidence
+            enriched.append(updated)
+        else:
+            enriched.append(record)
+    return enriched
+
 def _format_records(records: List[Dict[str, Any]]) -> str:
     compact: List[Dict[str, Any]] = []
     for record in records:
@@ -385,6 +527,26 @@ def _format_records(records: List[Dict[str, Any]]) -> str:
             }
         )
     return json.dumps(compact, ensure_ascii=False, indent=2)
+
+
+def _strip_evidence_refs(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _strip_evidence_refs(v) for k, v in value.items() if k != "evidence_refs"}
+    if isinstance(value, list):
+        return [_strip_evidence_refs(item) for item in value]
+    return value
+
+
+def _sanitize_records_for_flash(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sanitized: List[Dict[str, Any]] = []
+    for record in records:
+        updated = dict(record)
+        if "summary" in updated:
+            updated["summary"] = _strip_evidence_refs(updated.get("summary"))
+        updated.pop("source_refs", None)
+        updated.pop("evidence", None)
+        sanitized.append(updated)
+    return sanitized
 
 
 def _build_prompt(state: ChatState) -> str:
@@ -476,6 +638,7 @@ def _build_graph(backend: SummaryBackend) -> Any:
     graph: Any = StateGraph(ChatState)
     graph.add_node("parse_input", _parse_input)
     graph.add_node("mode_select", lambda state: _handle_mode_select(state, backend))
+    graph.add_node("reasoning_select", _handle_reasoning_select)
     graph.add_node("need_mode", lambda _: {"response": _NEED_MODE_MESSAGE})
     graph.add_node("partial", lambda state: _handle_partial(state, backend))
     graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
@@ -487,6 +650,7 @@ def _build_graph(backend: SummaryBackend) -> Any:
         _route_after_parse,
         {
             "mode_select": "mode_select",
+            "reasoning_select": "reasoning_select",
             "partial": "partial",
             "full": "prepare_full",
             "need_mode": "need_mode",
@@ -501,6 +665,7 @@ def _build_graph(backend: SummaryBackend) -> Any:
         },
     )
     graph.add_edge("mode_select", END)
+    graph.add_edge("reasoning_select", END)
     graph.add_edge("need_mode", END)
     graph.add_edge("partial", END)
     graph.add_edge("generate_answer", END)
@@ -527,6 +692,8 @@ class LangGraphSession:
         self._state.setdefault("last_segment_id", 0)
         self._state.setdefault("history", [])
         self._state.setdefault("unit_cache", {})
+        default_reasoning_mode = _normalize_reasoning_mode(_DEFAULT_REASONING_MODE) or "flash"
+        self._state.setdefault("reasoning_mode", default_reasoning_mode)
 
     @property
     def app_name(self) -> str:
@@ -558,6 +725,7 @@ class LangGraphSession:
             "cleaned_message",
             "intent",
             "selected_mode",
+            "selected_reasoning_mode",
             "response",
             "time_ms",
             "detail_requested",

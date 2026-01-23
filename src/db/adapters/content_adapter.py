@@ -88,6 +88,30 @@ class ContentAdapterMixin:
             segments = segments.get("segments", [])
         
         return self.save_stt_result(video_id, segments, preprocess_job_id, provider)
+
+    def get_stt_results_by_ids(self, video_id: str, stt_ids: List[str]) -> List[Dict[str, Any]]:
+        if not stt_ids:
+            return []
+        cleaned = [str(item).strip() for item in stt_ids if str(item).strip()]
+        if not cleaned:
+            return []
+
+        query = (
+            self.client.table("stt_results")
+            .select("stt_id, transcript, start_ms, end_ms, confidence")
+            .eq("video_id", video_id)
+        )
+        if len(cleaned) == 1:
+            query = query.eq("stt_id", cleaned[0])
+        else:
+            in_method = getattr(query, "in_", None)
+            if callable(in_method):
+                query = in_method("stt_id", cleaned)
+            else:
+                query = query.filter("stt_id", "in", f"({','.join(cleaned)})")
+
+        result = query.execute()
+        return result.data if result.data else []
     
     # =========================================================================
     # Segments (통합 세그먼트)
@@ -158,6 +182,30 @@ class ContentAdapterMixin:
                 if line:
                     segments.append(json.loads(line))
         return self.save_segments(video_id, segments, processing_job_id)
+
+    def get_vlm_results_by_ids(self, video_id: str, cap_ids: List[str]) -> List[Dict[str, Any]]:
+        if not cap_ids:
+            return []
+        cleaned = [str(item).strip() for item in cap_ids if str(item).strip()]
+        if not cleaned:
+            return []
+
+        query = (
+            self.client.table("vlm_results")
+            .select("cap_id, extracted_text, timestamp_ms")
+            .eq("video_id", video_id)
+        )
+        if len(cleaned) == 1:
+            query = query.eq("cap_id", cleaned[0])
+        else:
+            in_method = getattr(query, "in_", None)
+            if callable(in_method):
+                query = in_method("cap_id", cleaned)
+            else:
+                query = query.filter("cap_id", "in", f"({','.join(cleaned)})")
+
+        result = query.execute()
+        return result.data if result.data else []
     
     # =========================================================================
     # Summaries (요약 결과)
