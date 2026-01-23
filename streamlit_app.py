@@ -22,12 +22,11 @@ import streamlit as st
 import yaml
 
 from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
-from src.adk_chatbot.agent import root_agent as chatbot_root_agent
-from src.services.adk_session import AdkSession
 from src.services.pipeline_service import (
     get_default_output_base,
     run_preprocess_pipeline,
-    send_adk_message,
+    send_chat_message,
+    start_chatbot_session,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -36,6 +35,7 @@ CONFIG_ROOT = ROOT / "config"
 DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
 ADK_OUTPUT_BASE = get_default_output_base()
 VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
+DEFAULT_CHATBOT_BACKEND = os.environ.get("CHATBOT_BACKEND", "adk").strip().lower()
 
 # API base URL for process API
 PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
@@ -421,6 +421,8 @@ def main() -> None:
         st.session_state.preprocess_result = None
     if "adk_session" not in st.session_state:
         st.session_state.adk_session = None
+    if "chat_backend" not in st.session_state:
+        st.session_state.chat_backend = DEFAULT_CHATBOT_BACKEND
     if "chat_mode" not in st.session_state:
         st.session_state.chat_mode = "full"
     if "chat_mode_signature" not in st.session_state:
@@ -523,6 +525,22 @@ def main() -> None:
         st.session_state.preview_video_path = str(video_path)
 
     with st.sidebar:
+        st.subheader("Chatbot")
+        backend_options = ["adk", "langgraph"]
+        backend_index = backend_options.index(st.session_state.chat_backend) if st.session_state.chat_backend in backend_options else 0
+        selected_backend = st.selectbox(
+            "Backend",
+            backend_options,
+            index=backend_index,
+        )
+        if selected_backend != st.session_state.chat_backend:
+            st.session_state.chat_backend = selected_backend
+            st.session_state.adk_session = None
+            st.session_state.chat_mode_signature = None
+            st.session_state.chat_messages = []
+            st.session_state.adk_busy = False
+            st.rerun()
+
         use_override = st.toggle(
             "Temporary override (session only)",
             value=st.session_state.use_config_override,
@@ -690,15 +708,19 @@ def main() -> None:
 
     if video_name and st.session_state.preprocess_status == "done":
         if st.session_state.adk_session is None:
-            st.session_state.adk_session = AdkSession(
-                root_agent=chatbot_root_agent,
-                app_name="screentime_chatbot",
-                user_id="streamlit",
-                initial_state={
-                    "video_name": video_name,
-                    "video_id": st.session_state.get("video_id"),
-                },
-            )
+            try:
+                st.session_state.adk_session = start_chatbot_session(
+                    state={
+                        "video_name": video_name,
+                        "video_id": st.session_state.get("video_id"),
+                    },
+                    app_name="screentime_chatbot",
+                    user_id="streamlit",
+                    backend=st.session_state.chat_backend,
+                )
+            except Exception as exc:
+                st.session_state.adk_session = None
+                st.error(f"Chatbot session init failed: {exc}")
             st.session_state.chat_mode_signature = None
 
     if st.session_state.preprocess_status == "running":
@@ -828,7 +850,7 @@ def main() -> None:
                     st.session_state.adk_busy = True
                     try:
                         with st.spinner("Setting chat mode..."):
-                            responses = send_adk_message(
+                            responses = send_chat_message(
                                 st.session_state.adk_session, chat_mode
                             )
                         for response in responses:
@@ -881,7 +903,7 @@ def main() -> None:
                     user_message = f"[time_ms={time_ms}] {prompt}"
                 try:
                     with st.spinner("Waiting for chatbot..."):
-                        responses = send_adk_message(st.session_state.adk_session, user_message)
+                        responses = send_chat_message(st.session_state.adk_session, user_message)
                     for response in responses:
                         st.session_state.chat_messages.append(
                             {
