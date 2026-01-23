@@ -31,6 +31,7 @@ def process_single_video_capture(
     scene_threshold: 장면 전환 감지 임계값(None이면 설정값 사용).
     dedupe_threshold: 미사용 파라미터(호환 유지용).
     min_interval: 최소 캡처 간격(None이면 설정값 사용).
+    dedup_enabled: 중복 제거 활성화 여부 (True: 중복 제거, False: 모든 슬라이드 저장).
     write_manifest: manifest.json 저장 여부.
 
     반환: 추출된 슬라이드 메타데이터 리스트.
@@ -61,9 +62,19 @@ def process_single_video_capture(
     slides = extractor.process(video_name=video_name)
     elapsed = time.time() - start_time
 
-    # Assign IDs
+    # Assign IDs and rename files sequentially
     for idx, slide in enumerate(slides, 1):
         slide["id"] = f"cap_{idx:03d}"
+        
+        # Rename file to sequential numbering
+        old_name = slide["file_name"]
+        new_name = f"{video_name}_{idx:03d}.jpg"
+        if old_name != new_name:
+            old_path = captures_dir / old_name
+            new_path = captures_dir / new_name
+            if old_path.exists():
+                old_path.replace(new_path)
+            slide["file_name"] = new_name
 
     if write_manifest:
         manifest_path = output_root / "manifest.json"

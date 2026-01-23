@@ -1,4 +1,26 @@
-"""STT + 캡처 전처리 파이프라인 엔트리포인트 (선택적 DB 동기화 포함)."""
+"""
+STT + 캡처 전처리 파이프라인 엔트리포인트 (선택적 DB 동기화 포함).
+
+영상 파일을 입력받아 STT 추출 결과와 프레임 캡처 이미지를 생성합니다.
+로컬 실행(`--local-json`) 시 `data/outputs/{video_name}`에 결과물이 저장됩니다.
+
+Usage:
+    python src/run_preprocess_pipeline.py --video data/input/sample.mp4 [options]
+
+Arguments:
+    --video            (Required) 입력 비디오 파일 경로
+    --output-base      (Optional) 출력 루트 디렉토리 (기본값: data/outputs)
+    --parallel         (Optional) STT와 캡처 병렬 실행 여부 (기본값: True)
+    --local-json       (Optional) 로컬에 JSON 아티팩트 저장 여부 (기본값: config 설정 따름)
+    --db-sync          (Optional) Supabase DB 동기화 여부
+
+Examples:
+    # 기본 실행 (로컬 JSON 생성 + 병렬 처리)
+    python src/run_preprocess_pipeline.py --video data/input/sample4.mp4 --local-json
+
+    # DB 동기화 없이 로컬 생성만 수행
+    python src/run_preprocess_pipeline.py --video data/input/sample4.mp4 --local-json --no-db-sync
+"""
 
 from __future__ import annotations
 
@@ -300,8 +322,8 @@ def run_preprocess_pipeline(
                         dedupe_threshold=capture_dedupe_threshold,
                         min_interval=capture_min_interval,
                         verbose=capture_verbose,
-                        video_name=video_name,
                         dedup_enabled=capture_dedup_enabled,
+                        video_name=video_name,
                         write_manifest=write_local_json,
                     )
                     return result, time.perf_counter() - start
@@ -370,8 +392,8 @@ def run_preprocess_pipeline(
                 dedupe_threshold=capture_dedupe_threshold,
                 min_interval=capture_min_interval,
                 verbose=capture_verbose,
-                video_name=video_name,
                 dedup_enabled=capture_dedup_enabled,
+                video_name=video_name,
                 write_manifest=write_local_json,
             )
             capture_count = len(capture_result) if capture_result else 0

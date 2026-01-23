@@ -1,4 +1,29 @@
-"""VLM + Fusion 처리 파이프라인 엔트리포인트 (DB/로컬 입력 사용)."""
+"""
+VLM + Fusion 처리 파이프라인 엔트리포인트 (DB/로컬 입력 사용).
+
+전처리된 아티팩트(STT, 캡처)를 입력으로 받아 VLM 분석과 Fusion(요약+평가)을 수행합니다.
+로컬 아티팩트가 있으면 우선 사용하고, 없으면 DB에서 다운로드를 시도합니다.
+
+Usage:
+    python src/run_process_pipeline.py --video-name sample_video [options]
+
+Arguments:
+    --video-name       (Required) 실행할 비디오 폴더명 (data/outputs/{video_name}) 또는 DB의 name
+    --video-id         (Optional) DB의 video_id (video_name 대신 사용 가능)
+    --batch-mode       (Optional) 배치 처리 모드 활성화 (기본값: False)
+    --limit            (Optional) 처리할 최대 세그먼트 수 (테스트용)
+    --sync-to-db       (Optional) 처리 결과를 DB에 업로드
+
+Examples:
+    # 기본 실행 (로컬 아티팩트 사용, 단일 모드)
+    python src/run_process_pipeline.py --video-name sample4
+
+    # 배치 모드로 실행 (VLM 병렬 처리 최적화)
+    python src/run_process_pipeline.py --video-name sample4 --batch-mode
+
+    # DB 강제 다운로드 + 결과 DB 업로드
+    python src/run_process_pipeline.py --video-name sample4 --force-db --sync-to-db
+"""
 
 from __future__ import annotations
 

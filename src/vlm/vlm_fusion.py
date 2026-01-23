@@ -46,17 +46,33 @@ def build_fusion_vlm_payload(
     for item in manifest_payload:
         if not isinstance(item, dict):
             continue
-        # 필수 필드 확인
-        if "start_ms" not in item or "file_name" not in item:
+        
+        # 새 포맷: time_ranges 배열 지원
+        # 기존 포맷: start_ms 직접 사용
+        time_ranges = item.get("time_ranges")
+        if isinstance(time_ranges, list) and len(time_ranges) > 0:
+            # 새 포맷: time_ranges[0].start_ms 사용
+            first_range = time_ranges[0]
+            if isinstance(first_range, dict) and "start_ms" in first_range:
+                try:
+                    start_ms = int(first_range["start_ms"])
+                except (TypeError, ValueError):
+                    continue
+            else:
+                continue
+        elif "start_ms" in item:
+            # 기존 포맷: 하위 호환
+            try:
+                start_ms = int(item["start_ms"])
+            except (TypeError, ValueError):
+                continue
+        else:
             continue
-        try:
-            start_ms = int(item["start_ms"])
-        except (TypeError, ValueError):
+        
+        file_name = item.get("file_name")
+        if not isinstance(file_name, str) or not file_name.strip():
             continue
-            
-        file_name = str(item["file_name"]).strip()
-        if not file_name:
-            continue
+        file_name = file_name.strip()
 
         entry_id = item.get("id")
         manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name, "id": entry_id})
