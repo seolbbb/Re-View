@@ -45,14 +45,9 @@ def process_single_video_capture(
     print(f"\n[Capture] Processing: {video_name}")
 
     extractor = HybridSlideExtractor(
-        video_path,
+        video_path=video_path,
         output_dir=str(captures_dir),
-        sensitivity_diff=resolved_scene_threshold,
-        sensitivity_sim=settings.sensitivity_sim,
-        min_interval=resolved_min_interval,
-        sample_interval_sec=settings.sample_interval_sec,
-        buffer_duration_sec=settings.buffer_duration_sec,
-        transition_timeout_sec=settings.transition_timeout_sec,
+        persistence_drop_ratio=resolved_scene_threshold  # 이 값이 클래스의 persistence_drop_ratio로 매핑됨
     )
 
     start_time = time.time()
