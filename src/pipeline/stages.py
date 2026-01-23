@@ -237,6 +237,21 @@ def run_capture(
     return metadata
 
 
+def _get_sort_key_timestamp(item: Dict[str, Any]) -> int:
+    """manifest 아이템에서 정렬용 타임스탬프(첫 등장 시간)를 추출한다."""
+    # 1. timestamp_ms (레거시/공통)
+    if "timestamp_ms" in item:
+        return int(item["timestamp_ms"])
+    # 2. time_ranges (신규)
+    time_ranges = item.get("time_ranges")
+    if isinstance(time_ranges, list) and time_ranges:
+        first = time_ranges[0]
+        if isinstance(first, dict) and "start_ms" in first:
+            return int(first["start_ms"])
+    # 3. start_ms (하위 호환)
+    return int(item.get("start_ms", 0))
+
+
 def run_vlm_openrouter(
     *,
     captures_dir: Path,
@@ -257,9 +272,10 @@ def run_vlm_openrouter(
         raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
 
     image_paths: List[str] = []
+    # 정렬 기준 변경: time_ranges 지원
     for item in sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
-        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+        key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
@@ -283,6 +299,7 @@ def run_vlm_openrouter(
         vlm_raw_json=raw_path,
         output_vlm_json=raw_path.with_name("vlm.json"),
     )
+    # raw 파일은 변환 후 삭제 (선택 사항)
     raw_path.unlink(missing_ok=True)
 
     return len(image_paths)
@@ -293,15 +310,36 @@ def _filter_manifest_by_time_range(
     start_ms: int,
     end_ms: int,
 ) -> List[Dict[str, Any]]:
-    """manifest에서 특정 시간 범위의 항목만 필터링한다."""
+    """manifest에서 특정 시간 범위의 항목만 필터링한다 (time_ranges 지원)."""
     filtered = []
     for item in manifest_payload:
-        timestamp_ms = item.get("timestamp_ms", item.get("start_ms", 0))
+        # 1. time_ranges 확인 (하나라도 범위 내에 겹치면 포함)
+        time_ranges = item.get("time_ranges")
+        if isinstance(time_ranges, list) and time_ranges:
+            in_range = False
+            for rng in time_ranges:
+                r_start = int(rng.get("start_ms", 0))
+                # 범위 겹침 조건: (ItemStart < BatchEnd) AND (ItemEnd > BatchStart)
+                # 여기서는 단순 포함 여부가 아니라 '처리해야 할 대상인가'를 판단
+                # VLM 배치는 보통 순차적이므로, 해당 배치의 시간 구간에 '시작'하는 항목을 포함하거나
+                # 혹은 단순히 대표 시간이 범위 내인 것을 포함할 수 있음.
+                # 기존 로직: start_ms <= timestamp < end_ms
+                if start_ms <= r_start < end_ms:
+                    in_range = True
+                    break
+            if in_range:
+                filtered.append(item)
+                continue
+
+        # 2. timestamp_ms / start_ms 확인 (하위 호환)
+        timestamp_ms = item.get("timestamp_ms")
         if timestamp_ms is None:
-            continue
-        timestamp_ms = int(timestamp_ms)
-        if start_ms <= timestamp_ms < end_ms:
-            filtered.append(item)
+            timestamp_ms = item.get("start_ms")
+        
+        if timestamp_ms is not None:
+            ts = int(timestamp_ms)
+            if start_ms <= ts < end_ms:
+                filtered.append(item)
     return filtered
 
 
@@ -336,7 +374,7 @@ def run_vlm_for_batch(
     elif start_idx is not None and end_idx is not None:
         sorted_manifest = sorted(
             (x for x in manifest_payload if isinstance(x, dict)),
-            key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+            key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
         )
         filtered_manifest_items = sorted_manifest[start_idx:end_idx]
     elif start_ms is not None and end_ms is not None:
@@ -351,7 +389,7 @@ def run_vlm_for_batch(
     image_paths: List[str] = []
     for item in sorted(
         (x for x in filtered_manifest_items if isinstance(x, dict)),
-        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+        key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
     ):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
@@ -600,7 +638,7 @@ def run_batch_fusion_pipeline(
     
     sorted_manifest = sorted(
         (x for x in manifest_payload if isinstance(x, dict)),
-        key=lambda x: (int(x.get("timestamp_ms", x.get("start_ms", 0))), str(x.get("file_name", ""))),
+        key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
     )
 
     total_captures = len(sorted_manifest)
@@ -615,20 +653,41 @@ def run_batch_fusion_pipeline(
     for i in range(total_batches):
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, total_captures)
-        start_ms = int(
-            sorted_manifest[start_idx].get("start_ms", sorted_manifest[start_idx].get("timestamp_ms", 0))
-        )
-        end_ms = int(
-            sorted_manifest[end_idx - 1].get(
-                "end_ms", sorted_manifest[end_idx - 1].get("timestamp_ms", 0) + 1000
-            )
-        )
+        
+        # Batch Start MS
+        first_item = sorted_manifest[start_idx]
+        batch_start_ms = _get_sort_key_timestamp(first_item)
+        
+        # Batch End MS (last item end time calculation)
+        last_item = sorted_manifest[end_idx - 1]
+        last_start_ms = _get_sort_key_timestamp(last_item)
+        
+        # 마지막 항목의 end_ms 계산: time_ranges 있으면 마지막 구간 end_ms, 없으면 start + 1000
+        batch_end_ms = last_start_ms + 1000
+        time_ranges = last_item.get("time_ranges")
+        if isinstance(time_ranges, list) and time_ranges:
+            try:
+                # time_ranges 내 가장 늦은 end_ms 찾기
+                max_end = 0
+                for rng in time_ranges:
+                     rng_end = int(rng.get("end_ms", 0))
+                     if rng_end > max_end:
+                         max_end = rng_end
+                if max_end > 0:
+                    batch_end_ms = max_end
+            except Exception:
+                pass
+        else:
+             # 레거시 호환
+             if "end_ms" in last_item:
+                 batch_end_ms = int(last_item["end_ms"])
+
         batch_ranges.append(
             {
                 "start_idx": start_idx,
                 "end_idx": end_idx,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
+                "start_ms": batch_start_ms,
+                "end_ms": batch_end_ms,
                 "capture_count": end_idx - start_idx,
             }
         )

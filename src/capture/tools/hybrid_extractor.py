@@ -350,7 +350,6 @@ class HybridSlideExtractor:
             final_slides.append({
                 "file_name": slide['file_name'],
                 "time_ranges": merged_ranges,
-                "info_score": round(slide['info_score'], 3)
             })
         
         print(f"  [Dedup] Final: {len(final_slides)} unique slides (history: {len(self.saved_slides_history)})")

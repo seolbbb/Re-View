@@ -42,12 +42,9 @@ class CaptureAdapterMixin:
             rows.append({
                 "video_id": video_id,
                 "file_name": cap.get("file_name"),
-                "start_ms": cap.get("start_ms") or (cap.get("time_ranges")[0]["start_ms"] if cap.get("time_ranges") else None),
-                "end_ms": cap.get("end_ms") or (cap.get("time_ranges")[0]["end_ms"] if cap.get("time_ranges") else None),
                 "storage_path": cap.get("storage_path"),
                 "preprocess_job_id": kwargs.get("preprocess_job_id"),
                 "time_ranges": cap.get("time_ranges"),
-                "info_score": cap.get("info_score"),
             })
         
         if rows:
@@ -311,12 +308,9 @@ class CaptureAdapterMixin:
             rows.append({
                 "video_id": video_id,
                 "file_name": file_name,
-                "start_ms": cap.get("start_ms") or (cap.get("time_ranges")[0]["start_ms"] if cap.get("time_ranges") else None),
-                "end_ms": cap.get("end_ms") or (cap.get("time_ranges")[0]["end_ms"] if cap.get("time_ranges") else None),
                 "storage_path": storage_path, # 업로드 성공 시 경로, 아니면 None
                 "preprocess_job_id": preprocess_job_id,
                 "time_ranges": cap.get("time_ranges"),
-                "info_score": cap.get("info_score"),
             })
         
         # 3. DB에 일괄 저장
@@ -365,12 +359,9 @@ class CaptureAdapterMixin:
             rows.append({
                 "video_id": video_id,
                 "file_name": file_name,
-                "start_ms": cap.get("start_ms") or (cap.get("time_ranges")[0]["start_ms"] if cap.get("time_ranges") else None),
-                "end_ms": cap.get("end_ms") or (cap.get("time_ranges")[0]["end_ms"] if cap.get("time_ranges") else None),
                 "storage_path": storage_path,
                 "preprocess_job_id": preprocess_job_id,
                 "time_ranges": cap.get("time_ranges"),
-                "info_score": cap.get("info_score"),
             })
 
         if rows:
