@@ -21,11 +21,13 @@ class HybridSlideExtractor:
         video_path,
         output_dir,
         sensitivity_diff=3.0,
-        sensitivity_sim=0.8,
+        sensitivity_sim=0.6,  # Relaxed from 0.8 for better slide merging
         min_interval=0.5,
-        sample_interval_sec=0.5,
+        sample_interval_sec=0.5,  # Accuracy priority
         buffer_duration_sec=2.5,
         transition_timeout_sec=2.5,
+        dedup_enabled=True,
+        phash_threshold=15,  # pHash Hamming distance threshold
     ):
         """
         캡처 엔진을 초기화한다.
@@ -52,7 +54,10 @@ class HybridSlideExtractor:
         self.min_interval = min_interval
         self.sample_interval_sec = sample_interval_sec
         self.buffer_duration_sec = buffer_duration_sec
+        self.buffer_duration_sec = buffer_duration_sec
         self.transition_timeout_sec = transition_timeout_sec
+        self.dedup_enabled = dedup_enabled
+        self.phash_threshold = phash_threshold
         
         # ORB 특징점 검출기 (최대 500개 특징점)
         self.orb = cv2.ORB_create(nfeatures=500)
@@ -70,6 +75,10 @@ class HybridSlideExtractor:
         
         # Delayed Save를 위한 버퍼
         self.pending_slide = None  # {"frame": ..., "start_ms": ...}
+        
+        # Global Slide Registry (Re-appearance detection)
+        # List of {"phash": ..., "orb_des": ..., "file_name": ..., "time_ranges": [...], "frame": ...}
+        self.slide_history = []
 
     def process(self, video_name="video"):
         """
@@ -97,7 +106,10 @@ class HybridSlideExtractor:
         transition_start_time = 0.0
         
         frame_idx = 0
-        extracted_slides = []
+        frame_idx = 0
+        self.slide_history = [] # Reset history for each process call
+        extracted_slides = [] # Final output list (converted from history)
+        slide_idx = 0  # 슬라이드 인덱스 (1-based)
         slide_idx = 0  # 슬라이드 인덱스 (1-based)
         
         # 체크 간격 (유휴 상태 샘플링)
@@ -191,9 +203,10 @@ class HybridSlideExtractor:
                         
                         # 핵심: Delayed Save로 이전 pending_slide를 저장
                         if self.pending_slide is not None:
-                            slide_idx += 1
+                            # slide_idx는 실제 파일 저장 시에만 부여하거나, 내부적으로 관리해야 함
+                            # 여기서는 _handle_finished_slide 내부에서 처리하도록 위임
                             end_ms = new_start_ms
-                            self._save_slide(video_name, slide_idx, self.pending_slide, end_ms, extracted_slides)
+                            self._handle_finished_slide(video_name, self.pending_slide, end_ms)
                         
                         # 현재 슬라이드를 pending으로 저장
                         self.pending_slide = {
@@ -226,8 +239,7 @@ class HybridSlideExtractor:
                 new_start_ms = int(current_pending_capture['trigger_time'] * 1000)
                 
                 if self.pending_slide is not None:
-                    slide_idx += 1
-                    self._save_slide(video_name, slide_idx, self.pending_slide, new_start_ms, extracted_slides)
+                    self._handle_finished_slide(video_name, self.pending_slide, new_start_ms)
                 
                 self.pending_slide = {
                     'frame': best_frame,
@@ -236,20 +248,30 @@ class HybridSlideExtractor:
         
         # 마지막 pending_slide 저장 (end_ms = duration)
         if self.pending_slide is not None:
-            slide_idx += 1
-            self._save_slide(video_name, slide_idx, self.pending_slide, duration_ms, extracted_slides)
+            self._handle_finished_slide(video_name, self.pending_slide, duration_ms)
         
         cap.release()
 
-            
+        # Convert slide_history to output format
+        # Sort by first appearance time
+        self.slide_history.sort(key=lambda x: x["time_ranges"][0]["start_ms"])
+        
+        for item in self.slide_history:
+            # Merge time ranges before final output (threshold: 200ms)
+            merged_ranges = self._merge_time_ranges(item["time_ranges"], gap_threshold=200)
+
+            extracted_slides.append({
+                "file_name": item["file_name"],
+                "time_ranges": merged_ranges,
+                # info_score logic could be added here
+            })
+
         return extracted_slides
 
     def _select_best_frame_and_check_duplicate(self, pending, curr_kp, curr_des):
         """
-        버퍼에서 최적 프레임을 고르고 중복 여부를 판단한다.
-
-        pending: 버퍼링 데이터({"buffer": [...], ...}).
-        반환: (best_frame, should_save) 튜플.
+        버퍼에서 최적 프레임을 고른다.
+        기존의 로컬 중복 검사는 제거됨 (Global Deduplication으로 대체).
         """
         if not pending['buffer']:
             return None, False
@@ -270,81 +292,195 @@ class HybridSlideExtractor:
         
 
         
-        # 중복 검사
+        # 리팩토링: 로컬 중복 검사는 제거하고 무조건 True 반환
+        # 실제 중복 검사는 _handle_finished_slide에서 전역적으로 수행
         should_save = True
-        if self.last_saved_frame is not None:
-            last_gray = cv2.cvtColor(cv2.resize(self.last_saved_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
-            curr_gray_med = cv2.cvtColor(cv2.resize(best_frame, (640, 360)), cv2.COLOR_BGR2GRAY)
-            
-            ddiff = cv2.absdiff(last_gray, curr_gray_med)
-            dedupe_score = np.mean(ddiff)
-            
-            # ORB 유사도
-            if self.last_saved_des is not None and self.last_saved_kp is not None:
-                last_des = self.last_saved_des
-                last_kp = self.last_saved_kp
-            else:
-                last_kp, last_des = self.orb.detectAndCompute(last_gray, None)
-            
-            new_kp, new_des = self.orb.detectAndCompute(curr_gray_med, None)
-            
-            sim_score = 0.0
-            good_matches = []
-            
-            if last_des is not None and new_des is not None and len(last_des) > 0 and len(new_des) > 0:
-                matches = self.bf.match(last_des, new_des)
-                if len(matches) > 0:
-                    good_matches = [m for m in matches if m.distance < 50]
-                    sim_score = len(good_matches) / max(len(last_des), len(new_des))
-            
-            is_duplicate = False
-            
-            # 기본 검사: Sim >= 0.5이고 (Diff < threshold OR Sim > threshold)
-            if sim_score >= 0.5 and (dedupe_score < self.sensitivity_diff or sim_score > self.sensitivity_sim):
-                is_duplicate = True
-            
-            # RANSAC 검사 (고급)
-            elif len(good_matches) > 10 and last_kp is not None and new_kp is not None:
-                src_pts = np.float32([last_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                dst_pts = np.float32([new_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                
-                if len(src_pts) > 4:
-                    M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-                    if mask is not None:
-                        ransac_inliers = np.sum(mask)
-                        inlier_ratio = ransac_inliers / len(last_des) if len(last_des) > 0 else 0
-                        
-                        if inlier_ratio > 0.15 and dedupe_score < 20.0 and sim_score >= 0.5:
-                            is_duplicate = True
-
-            
-            if is_duplicate:
-                should_save = False
-
-            else:
-                self.last_saved_des = new_des
-                self.last_saved_kp = new_kp
+        
+        # update last saved vars for potential next frame comparison if needed
+        # but for global dedup, we rely on registry. 
+        # Updating them here might be useful if we keep local stability check, 
+        # but 'self.last_saved_frame' usage in 'process' loop is mainly for this function.
+        # So we update them just in case logic depends on it elsewhere, though simplified.
+        self.last_saved_frame = best_frame
         
         return best_frame, should_save
 
-    def _save_slide(self, video_name, idx, slide_data, end_ms, extracted_slides):
-        """
-        슬라이드 이미지를 저장하고 메타데이터 리스트에 추가한다.
 
-        파일명 형식: {video_name}_{idx:03d}_{start_ms}_{end_ms}.jpg
+    def _compute_phash(self, frame):
+        """
+        Compute a simple 64-bit perceptual hash (Block Mean Hash).
+        Resize to 8x8 -> 64 pixels.
+        Hash based on pixel > mean.
+        """
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            resized = cv2.resize(gray, (8, 8), interpolation=cv2.INTER_AREA)
+            mean_val = np.mean(resized)
+            # Create 64-bit boolean array (True if pixel > mean)
+            bit_array = resized > mean_val
+            # Convert to plain integer (hash)
+            # flatten -> packbits could work, but simple iteration is fine for 64 bits
+            phash = 0
+            for i, val in enumerate(bit_array.flatten()):
+                if val:
+                    phash |= (1 << i)
+            return phash
+        except Exception:
+            return 0
+
+    def _hamming_distance(self, h1, h2):
+        """Compute Hamming distance between two 64-bit integers."""
+        x = h1 ^ h2
+        # Count set bits
+        return bin(x).count('1')
+
+    def _format_time(self, ms):
+        """Convert milliseconds to MM:SS format."""
+        seconds = ms // 1000
+        minutes = seconds // 60
+        sec = seconds % 60
+        return f"{minutes:02d}:{sec:02d}"
+
+    def _compute_info_score(self, frame):
+        """
+        정보량 점수 계산 (Laplacian Variance).
+        값이 클수록 이미지가 선명하고 정보량이 많음.
+        """
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+            score = laplacian.var()
+            return score
+        except Exception:
+            return 0.0
+
+    def _handle_finished_slide(self, video_name, slide_data, end_ms):
+        """
+        Check global registry for duplicates.
+        If found -> merge time range + optionally replace image if new has higher info score.
+        If not -> save new file and register.
         """
         start_ms = slide_data['start_ms']
         frame = slide_data['frame']
+
+        # DEDUPLICATION LOGIC
+        is_duplicate = False
+        duplicate_entry = None
+        current_info_score = self._compute_info_score(frame) if self.dedup_enabled else 0.0
+
+        if self.dedup_enabled:
+            current_phash = self._compute_phash(frame)
+            
+            # ORB Descriptors (compute if not already cached)
+            current_kp, current_des = self.orb.detectAndCompute(frame, None)
+            if current_des is None: 
+                current_des = np.array([])
+            
+            # 1. pHash Filtering with distance scoring
+            candidates = []
+            for entry in self.slide_history:
+                dist = self._hamming_distance(current_phash, entry["phash"])
+                if dist < self.phash_threshold:  # Use config-based threshold
+                    candidates.append((dist, entry))
+            
+            # Sort by pHash distance and limit to top 5 candidates for ORB verification
+            candidates.sort(key=lambda x: x[0])
+            top_candidates = [c[1] for c in candidates[:5]]
+            
+            # 2. ORB Verification (on top candidates only)
+            if len(current_des) > 0:
+                for cand in top_candidates:
+                    cand_des = cand["orb_des"]
+                    if cand_des is None or len(cand_des) == 0:
+                        continue
+                        
+                    matches = self.bf.match(cand_des, current_des)
+                    if len(matches) > 0:
+                        good_matches = [m for m in matches if m.distance < 50]
+                        sim_score = len(good_matches) / max(len(cand_des), len(current_des))
+                        
+                        if sim_score >= self.sensitivity_sim:
+                            is_duplicate = True
+                            duplicate_entry = cand
+                            break
         
-        filename = f"{video_name}_{idx:03d}_{start_ms}_{end_ms}.jpg"
-        save_path = os.path.join(self.output_dir, filename)
+        if is_duplicate and duplicate_entry:
+            # Merge time range
+            duplicate_entry["time_ranges"].append({"start_ms": start_ms, "end_ms": end_ms})
+            
+            # Info Score Comparison: replace image if new one is better
+            existing_info_score = duplicate_entry.get("info_score", 0.0)
+            if current_info_score > existing_info_score:
+                # Replace image file
+                save_path = os.path.join(self.output_dir, duplicate_entry["file_name"])
+                cv2.imwrite(save_path, frame)
+                duplicate_entry["info_score"] = current_info_score
+                # Update ORB descriptors for future comparisons
+                kp, des = self.orb.detectAndCompute(frame, None)
+                duplicate_entry["orb_des"] = des
+                # Simplified log: filename + time range
+                fname = duplicate_entry["file_name"].replace(".jpg", "")
+                t_start = self._format_time(start_ms)
+                t_end = self._format_time(end_ms)
+                print(f"[Dedup] {fname} + {t_start}~{t_end} ({start_ms}~{end_ms}ms) (replaced)")
+            else:
+                fname = duplicate_entry["file_name"].replace(".jpg", "")
+                t_start = self._format_time(start_ms)
+                t_end = self._format_time(end_ms)
+                print(f"[Dedup] {fname} + {t_start}~{t_end} ({start_ms}~{end_ms}ms)")
+        else:
+            # Save new slide
+            # Determine new index
+            idx = len(self.slide_history) + 1
+            filename = f"{video_name}_{idx:03d}.jpg"  # Simplified: no timestamp
+            save_path = os.path.join(self.output_dir, filename)
+            cv2.imwrite(save_path, frame)
+            
+            # Register with info score
+            entry = {
+                "phash": self._compute_phash(frame) if self.dedup_enabled else 0,
+                "orb_des": None, 
+                "file_name": filename,
+                "time_ranges": [{"start_ms": start_ms, "end_ms": end_ms}],
+                "info_score": current_info_score,
+            }
+            
+            if self.dedup_enabled:
+                kp, des = self.orb.detectAndCompute(frame, None)
+                entry["orb_des"] = des
+            
+            self.slide_history.append(entry)
+
+
+    def _save_slide(self, video_name, idx, slide_data, end_ms, extracted_slides):
+        """Deprecated: Internal Use Only if needed, but logic moved to _handle_finished_slide"""
+        pass
+
+    def _merge_time_ranges(self, ranges, gap_threshold=200):
+        """
+        Merge fragmented time ranges if the gap between them is small.
+        default gap_threshold = 200ms
+        """
+        if not ranges:
+            return []
         
-        cv2.imwrite(save_path, frame)
+        # Sort by start time
+        sorted_ranges = sorted(ranges, key=lambda x: x["start_ms"])
         
-        extracted_slides.append({
-            "file_name": filename,
-            "start_ms": start_ms,
-            "end_ms": end_ms
-        })
+        merged = []
+        current = sorted_ranges[0].copy()
         
+        for i in range(1, len(sorted_ranges)):
+            next_range = sorted_ranges[i]
+            # Check gap (next start - current end)
+            if next_range["start_ms"] - current["end_ms"] <= gap_threshold:
+                # Merge: Extend end_ms
+                current["end_ms"] = max(current["end_ms"], next_range["end_ms"])
+            else:
+                # Push current and start new
+                merged.append(current)
+                current = next_range.copy()
+        
+        merged.append(current)
+        return merged
 
