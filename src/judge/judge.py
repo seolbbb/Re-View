@@ -305,13 +305,22 @@ def run_judge(
     if workers < 1:
         raise ValueError("workers must be >= 1.")
 
-    # 2. 평가 페이로드 구성
+    # 2. 평가 페이로드 구성 (Token 절약을 위해 불필요한 필드 제거)
     payloads: List[Dict[str, Any]] = []
     for seg_id in matched_ids:
+        unit = segments_units[seg_id].copy()
+        
+        # transcript_units가 있으면 전체 텍스트인 transcript_text는 중복이므로 제거
+        if "transcript_units" in unit and unit["transcript_units"]:
+            unit.pop("transcript_text", None)
+            
+        # visual_text가 있으면 visual_units(상세 구조)는 Judge가 굳이 알 필요 없을 수 있음 (선택적 최적화)
+        # 여기서는 일단 transcript 중복만 제거하여 안정성 확보
+        
         payloads.append(
             {
                 "segment_id": seg_id,
-                "segments_units": segments_units[seg_id],
+                "segments_units": unit,
                 "segment_summary": segment_summaries[seg_id],
             }
         )

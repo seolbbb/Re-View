@@ -642,17 +642,36 @@ def run_batch_fusion_pipeline(
     )
 
     total_captures = len(sorted_manifest)
-    total_batches = max(1, math.ceil(total_captures / batch_size))
+    
+    # 배치 분할 로직 개선: 마지막 배치가 너무 작아지는 비대칭 문제 해결
+    # 기본 배치 크기 기준으로 나누되, 마지막 배치가 batch_size의 절반 미만이면 이전 배치에 합침
+    if total_captures <= batch_size:
+        total_batches = 1
+    else:
+        total_batches = total_captures // batch_size
+        remainder = total_captures % batch_size
+        
+        # 나머지가 batch_size의 절반보다 작고 이미 1개 이상의 배치가 있을 때 합침
+        if remainder > 0:
+            if remainder < (batch_size / 2) and total_batches >= 1:
+                # 합침: total_batches 유지 (마지막 인덱스 조정)
+                pass 
+            else:
+                total_batches += 1
 
     print(
         f"\n📦 Pipeline batches: {total_captures} images across {total_batches} groups "
-        f"(group size: {batch_size})"
+        f"(group size: ~{batch_size})"
     )
 
     batch_ranges = []
     for i in range(total_batches):
         start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, total_captures)
+        # 마지막 배치인 경우 나머지 전체를 포함
+        if i == total_batches - 1:
+            end_idx = total_captures
+        else:
+            end_idx = (i + 1) * batch_size
         
         # Batch Start MS
         first_item = sorted_manifest[start_idx]
