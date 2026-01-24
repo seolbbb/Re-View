@@ -112,7 +112,6 @@ def run_processing_pipeline(
     if not video_name or not str(video_name).strip():
         # video_id가 있는 경우 DB에서 이름을 가져옴
         if video_id:
-            from src.db.supabase_adapter import get_supabase_adapter
             temp_adapter = get_supabase_adapter()
             v_data = temp_adapter.client.table("videos").select("name").eq("id", video_id).execute()
             if v_data.data:
