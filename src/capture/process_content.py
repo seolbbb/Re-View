@@ -18,6 +18,7 @@ def process_single_video_capture(
     scene_threshold: Optional[float] = None,
     dedupe_threshold: Optional[float] = None,
     min_interval: Optional[float] = None,
+    dedup_enabled: bool = True,
     write_manifest: bool = True,
 ) -> list:
     """
@@ -30,6 +31,7 @@ def process_single_video_capture(
     scene_threshold: 장면 전환 감지 임계값(None이면 설정값 사용).
     dedupe_threshold: 미사용 파라미터(호환 유지용).
     min_interval: 최소 캡처 간격(None이면 설정값 사용).
+    dedup_enabled: 중복 제거 활성화 여부 (기본 True).
     write_manifest: manifest.json 저장 여부.
 
     반환: 추출된 슬라이드 메타데이터 리스트.
@@ -53,6 +55,7 @@ def process_single_video_capture(
         sample_interval_sec=settings.sample_interval_sec,
         buffer_duration_sec=settings.buffer_duration_sec,
         transition_timeout_sec=settings.transition_timeout_sec,
+        dedup_enabled=dedup_enabled,
     )
 
     start_time = time.time()

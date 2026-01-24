@@ -233,9 +233,12 @@ adk web src
 - **민감도 조절**: `sensitivity_diff` 값을 낮추면 더 작은 변화도 감지합니다. (기본 3.0)
 - **중복 제거 강도**: `sensitivity_sim` 값을 높이면 더 엄격하게 중복을 제거합니다. (기본 0.8)
 
-### 6.3 DB 연동 (Future Work)
+### 6.3 DB 연동
 
-현재 `src/adk_pipeline/store.py`의 `VideoStore` 클래스는 파일 시스템 기반입니다. 이를 DB로 마이그레이션하려면 해당 클래스의 메서드를 DB 쿼리로 교체하면 됩니다. (비즈니스 로직 수정 불필요)
+현재 `src/db/` 디렉터리에 Supabase 연동 로직이 구현 완료되었습니다.
+- `SupabaseAdapter`: `videos`, `captures`, `stt_results`, `segments`, `summaries`, `jobs` 등 모든 테이블 관리 서비스를 제공합니다.
+- 파이프라인 엔진: `--sync-to-db` 플래그를 통해 작업 결과와 상태를 실시간으로 DB에 동기화합니다.
+- 데이터 영속성: 로컬 파일 시스템의 한계를 극복하고 멀티 디바이스/웹 앱과의 연동성을 확보했습니다.
 
 ---
 

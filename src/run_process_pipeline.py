@@ -95,6 +95,7 @@ def run_processing_pipeline(
     sync_to_db: Optional[bool] = None,
     force_db: Optional[bool] = None,
     use_db: Optional[bool] = None,
+    db_table_name: str = "captures",
 ) -> None:
     """DB 또는 로컬 입력을 사용해 VLM + Fusion을 실행한다."""
     # 파이프라인 기본 설정을 읽어 CLI 인자에 적용한다.
@@ -109,9 +110,20 @@ def run_processing_pipeline(
     if not isinstance(video_settings, dict):
         video_settings = {}
     if not video_name or not str(video_name).strip():
-        candidate = video_settings.get("process_name")
-        if candidate and str(candidate).strip():
-            video_name = str(candidate).strip()
+        # video_id가 있는 경우 DB에서 이름을 가져옴
+        if video_id:
+            from src.db.supabase_adapter import get_supabase_adapter
+            temp_adapter = get_supabase_adapter()
+            v_data = temp_adapter.client.table("videos").select("name").eq("id", video_id).execute()
+            if v_data.data:
+                video_name = v_data.data[0].get("name")
+                print(f"[DB] Resolved video_name '{video_name}' for ID {video_id}")
+        
+        # 여전히 없으면 설정 파일의 process_name 사용
+        if not video_name or not str(video_name).strip():
+            candidate = video_settings.get("process_name")
+            if candidate and str(candidate).strip():
+                video_name = str(candidate).strip()
 
     if not video_name and not video_id:
         raise ValueError("video_name or video_id is required (CLI or config/pipeline/settings.yaml).")
@@ -281,6 +293,7 @@ def run_processing_pipeline(
             for row in stt_rows:
                 stt_segments.append(
                     {
+                        "id": row.get("stt_id") or row.get("id"),
                         "start_ms": row.get("start_ms"),
                         "end_ms": row.get("end_ms"),
                         "text": row.get("transcript", ""),
@@ -295,8 +308,8 @@ def run_processing_pipeline(
         )
 
         captures_query = (
-            adapter.client.table("captures")
-            .select("file_name,start_ms,end_ms,storage_path,preprocess_job_id")
+            adapter.client.table(db_table_name)
+            .select("id,cap_id,file_name,time_ranges,storage_path,preprocess_job_id")
             .eq("video_id", video_id)
         )
         if latest_preprocess_job_id:
@@ -304,8 +317,8 @@ def run_processing_pipeline(
         capture_rows = captures_query.execute().data or []
         if not capture_rows and latest_preprocess_job_id:
             capture_rows = (
-                adapter.client.table("captures")
-                .select("file_name,start_ms,end_ms,storage_path")
+                adapter.client.table(db_table_name)
+                .select("id,cap_id,file_name,time_ranges,storage_path")
                 .eq("video_id", video_id)
                 .execute()
                 .data
@@ -320,17 +333,32 @@ def run_processing_pipeline(
         # 캡처 파일과 manifest를 로컬에 재구성한다.
         captures_dir.mkdir(parents=True, exist_ok=True)
         manifest_payload = []
-        for row in sorted(capture_rows, key=lambda item: item.get("start_ms") or 0):
+        
+        # 정렬: time_ranges의 첫 번째 start_ms 기준
+        def _get_start_ms(item):
+            ranges = item.get("time_ranges")
+            if ranges and isinstance(ranges, list) and len(ranges) > 0:
+                return ranges[0].get("start_ms") or 0
+            return 0
+
+        for row in sorted(capture_rows, key=_get_start_ms):
             file_name = row.get("file_name")
             if not file_name:
                 continue
-            manifest_payload.append(
-                {
-                    "file_name": file_name,
-                    "start_ms": row.get("start_ms"),
-                    "end_ms": row.get("end_ms"),
-                }
-            )
+            
+            # Manifest 항목 재구성 (cap_id가 있으면 우선 사용)
+            manifest_item = {
+                "id": row.get("cap_id") or row.get("id"),
+                "file_name": file_name,
+                "time_ranges": row.get("time_ranges") or [],
+            }
+            # 호환성을 위해 최상위 start_ms/end_ms도 채워줌 (첫 번째 구간 기준)
+            ranges = manifest_item["time_ranges"]
+            if ranges:
+                manifest_item["start_ms"] = ranges[0].get("start_ms")
+                manifest_item["end_ms"] = ranges[0].get("end_ms")
+            
+            manifest_payload.append(manifest_item)
             image_path = captures_dir / file_name
             if image_path.exists() and not force_db:
                 continue
@@ -416,7 +444,7 @@ def run_processing_pipeline(
     }
     # 진행 중 상태를 먼저 기록해 상태 조회가 가능하도록 한다.
     run_meta_path.write_text(
-        json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(run_meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -539,7 +567,7 @@ def run_processing_pipeline(
         run_meta["status"] = "ok"
         # 최종 메타데이터를 저장한다.
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -613,7 +641,7 @@ def run_processing_pipeline(
         run_meta["error"] = str(exc)
         run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         
@@ -646,6 +674,7 @@ def main() -> None:
     parser.add_argument("--sync-to-db", dest="sync_to_db", action="store_true", help="Upload processing outputs to Supabase")
     parser.add_argument("--no-sync-to-db", dest="sync_to_db", action="store_false", help="Skip Supabase upload")
     parser.set_defaults(sync_to_db=None)
+    parser.add_argument("--db-table", default="captures", help="DB table name for captures (default: captures)")
     args = parser.parse_args()
 
     run_processing_pipeline(
@@ -656,6 +685,7 @@ def main() -> None:
         limit=args.limit,
         sync_to_db=args.sync_to_db,
         force_db=args.force_db,
+        db_table_name=args.db_table,
     )
 
 

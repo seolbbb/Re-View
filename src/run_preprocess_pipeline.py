@@ -90,10 +90,12 @@ def run_preprocess_pipeline(
     capture_threshold: Optional[float] = None,
     capture_dedupe_threshold: Optional[float] = None,
     capture_min_interval: Optional[float] = None,
+    capture_dedup_enabled: bool = True,
     capture_verbose: bool = False,
     limit: Optional[int] = None,
     write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
+    db_table_name: str = "captures",
 ) -> Optional[str]:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
     # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
@@ -125,6 +127,14 @@ def run_preprocess_pipeline(
         capture_dedupe_threshold = float(capture_settings.sensitivity_sim)
     if capture_min_interval is None:
         capture_min_interval = float(capture_settings.min_interval)
+
+    # 캡처 모드 로깅
+    mode_str = "DEDUPLICATION" if capture_dedup_enabled else "ALL SLIDES"
+    print(f"[Info] Running Capture Pipeline in '{mode_str}' mode.")
+    if capture_dedup_enabled:
+        print("   - Strategy: pHash + ORB deduplication")
+    else:
+        print("   - Strategy: Save ALL slides (No deduplication)")
 
     db_settings = settings.get("db", {})
     if not isinstance(db_settings, dict):
@@ -191,7 +201,7 @@ def run_preprocess_pipeline(
     # 진행 중에도 확인할 수 있도록 메타데이터를 먼저 저장한다.
     run_meta_path.parent.mkdir(parents=True, exist_ok=True)
     run_meta_path.write_text(
-        json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(run_meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -205,6 +215,7 @@ def run_preprocess_pipeline(
             run_meta=run_meta,
             duration_sec=video_info.get("duration_sec"),
             stt_backend=stt_backend,
+            table_name=db_table_name,
         )
         if db_context:
             _, _, preprocess_job_id = db_context
@@ -248,6 +259,7 @@ def run_preprocess_pipeline(
                 stt_payload=stt_payload if stage == "stt" else None,
                 captures_payload=captures_payload if stage == "capture" else None,
                 audio_path=audio_path if stage == "audio" else None,
+                table_name=db_table_name,
             )
             saved = stage_results.get("saved", {})
             errors = stage_results.get("errors", [])
@@ -311,6 +323,7 @@ def run_preprocess_pipeline(
                         dedupe_threshold=capture_dedupe_threshold,
                         min_interval=capture_min_interval,
                         verbose=capture_verbose,
+                        dedup_enabled=capture_dedup_enabled,
                         video_name=video_name,
                         write_manifest=write_local_json,
                     )
@@ -380,6 +393,7 @@ def run_preprocess_pipeline(
                 dedupe_threshold=capture_dedupe_threshold,
                 min_interval=capture_min_interval,
                 verbose=capture_verbose,
+                dedup_enabled=capture_dedup_enabled,
                 video_name=video_name,
                 write_manifest=write_local_json,
             )
@@ -414,7 +428,7 @@ def run_preprocess_pipeline(
         run_meta["status"] = "ok"
         # 선택적 DB 동기화 전에 최종 메타데이터를 저장한다.
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -464,7 +478,7 @@ def run_preprocess_pipeline(
         run_meta["error"] = str(exc)
         run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         if sync_to_db and db_context:
@@ -503,6 +517,17 @@ def main() -> None:
         default=None,
         help="Write preprocess JSON artifacts to disk",
     )
+    parser.add_argument(
+        "--capture-mode",
+        choices=["all", "dedup"],
+        default="dedup",
+        help="Capture mode: 'all' (save all slides), 'dedup' (deduplicate similar slides)",
+    )
+    parser.add_argument(
+        "--db-table",
+        default="captures",
+        help="Target Supabase table for captures (default: 'captures')",
+    )
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
     parser.set_defaults(db_sync=None)
@@ -513,9 +538,11 @@ def main() -> None:
         output_base=args.output_base,
         stt_backend=args.stt_backend,
         parallel=args.parallel,
+        capture_dedup_enabled=(args.capture_mode == "dedup"),
         capture_verbose=args.capture_verbose,
         write_local_json=args.local_json,
         sync_to_db=args.db_sync,
+        db_table_name=args.db_table,
     )
 
 

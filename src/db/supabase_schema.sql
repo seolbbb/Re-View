@@ -139,9 +139,8 @@ CREATE TABLE IF NOT EXISTS captures (
     video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     preprocess_job_id UUID REFERENCES preprocessing_jobs(id) ON DELETE SET NULL,
     file_name TEXT NOT NULL,
-    start_ms INTEGER,
-    end_ms INTEGER,
     storage_path TEXT,
+    time_ranges JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -436,6 +435,22 @@ BEGIN
     -- judge.batch_index 컬럼 추가
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'judge' AND column_name = 'batch_index') THEN
         ALTER TABLE judge ADD COLUMN batch_index INTEGER;
+    END IF;
+
+    -- captures 테이블 컬럼 추가 (time_ranges)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'time_ranges') THEN
+        ALTER TABLE captures ADD COLUMN time_ranges JSONB;
+    END IF;
+
+    -- captures 테이블 레거시 컬럼 삭제 (start_ms, end_ms, info_score)
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'start_ms') THEN
+        ALTER TABLE captures DROP COLUMN start_ms;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'end_ms') THEN
+        ALTER TABLE captures DROP COLUMN end_ms;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'info_score') THEN
+        ALTER TABLE captures DROP COLUMN info_score;
     END IF;
 END $$;
 

@@ -78,12 +78,28 @@ def _load_manifest_scores(
     if captures_data is not None:
         scores: Dict[int, float] = {}
         for item in captures_data:
-            if "start_ms" not in item:
-                continue
-            start_ms = int(item["start_ms"])
             diff_score = float(item.get("diff_score", 0.0))
-            if start_ms not in scores or diff_score > scores[start_ms]:
-                scores[start_ms] = diff_score
+            
+            # time_ranges 지원
+            time_ranges = item.get("time_ranges")
+            if isinstance(time_ranges, list) and time_ranges:
+                for rng in time_ranges:
+                     if isinstance(rng, dict) and "start_ms" in rng:
+                        try:
+                            start_ms = int(rng["start_ms"])
+                            if start_ms not in scores or diff_score > scores[start_ms]:
+                                scores[start_ms] = diff_score
+                        except (TypeError, ValueError):
+                            continue
+            
+            # fallback: top-level start_ms
+            if "start_ms" in item:
+                try:
+                    start_ms = int(item["start_ms"])
+                    if start_ms not in scores or diff_score > scores[start_ms]:
+                        scores[start_ms] = diff_score
+                except (TypeError, ValueError):
+                    pass
         return scores
     
     # 파일 경로 기반 로드
@@ -96,12 +112,28 @@ def _load_manifest_scores(
         raise ValueError(f"Invalid manifest.json format: {path}")
     scores = {}
     for item in payload:
-        if "start_ms" not in item:
-            continue
-        start_ms = int(item["start_ms"])
         diff_score = float(item.get("diff_score", 0.0))
-        if start_ms not in scores or diff_score > scores[start_ms]:
-            scores[start_ms] = diff_score
+
+        # time_ranges 지원
+        time_ranges = item.get("time_ranges")
+        if isinstance(time_ranges, list) and time_ranges:
+            for rng in time_ranges:
+                    if isinstance(rng, dict) and "start_ms" in rng:
+                        try:
+                            start_ms = int(rng["start_ms"])
+                            if start_ms not in scores or diff_score > scores[start_ms]:
+                                scores[start_ms] = diff_score
+                        except (TypeError, ValueError):
+                            continue
+
+        # fallback: top-level start_ms
+        if "start_ms" in item:
+            try:
+                start_ms = int(item["start_ms"])
+                if start_ms not in scores or diff_score > scores[start_ms]:
+                    scores[start_ms] = diff_score
+            except (TypeError, ValueError):
+                continue
     return scores
 
 
@@ -409,7 +441,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
                         },
                     },
                     ensure_ascii=False,
-                    sort_keys=True,
+                    sort_keys=False,
                 )
                 + "\n"
             )
@@ -576,7 +608,7 @@ def run_batch_sync_engine(
                     "vlm_ids": vlm_ids
                 },
             }
-            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n")
 
     return {
         "segments_count": len(refined_segments),

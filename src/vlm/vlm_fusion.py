@@ -38,7 +38,7 @@ def build_fusion_vlm_payload(
     Raises:
         ValueError: 입력 형식이 잘못되었거나, manifest의 파일이 vlm_raw에 없을 때.
     """
-    # 1. Manifest 검증 및 엔트리 추출
+    # 1. Manifest 검증 및 엔트리 추출 (Flattening 1:N time ranges)
     if not isinstance(manifest_payload, list):
         raise ValueError("Invalid manifest.json format (must be a list).")
 
@@ -46,23 +46,40 @@ def build_fusion_vlm_payload(
     for item in manifest_payload:
         if not isinstance(item, dict):
             continue
-        # 필수 필드 확인
-        if "start_ms" not in item or "file_name" not in item:
-            continue
-        try:
-            start_ms = int(item["start_ms"])
-        except (TypeError, ValueError):
-            continue
-            
-        file_name = str(item["file_name"]).strip()
+        
+        file_name = str(item.get("file_name", "")).strip()
         if not file_name:
             continue
 
         entry_id = item.get("id")
-        manifest_entries.append({"timestamp_ms": start_ms, "file_name": file_name, "id": entry_id})
+        
+        # New Schema: time_ranges
+        time_ranges = item.get("time_ranges")
+        if time_ranges and isinstance(time_ranges, list):
+            for rng in time_ranges:
+                if not isinstance(rng, dict):
+                    continue
+                start_ms = rng.get("start_ms")
+                if start_ms is not None:
+                    manifest_entries.append({
+                        "timestamp_ms": int(start_ms),
+                        "file_name": file_name,
+                        "id": entry_id
+                    })
+        # Fallback for old schema (start_ms)
+        elif "start_ms" in item:
+            try:
+                start_ms = int(item["start_ms"])
+                manifest_entries.append({
+                    "timestamp_ms": start_ms, 
+                    "file_name": file_name, 
+                    "id": entry_id
+                })
+            except (ValueError, TypeError):
+                continue
 
     if not manifest_entries:
-        raise ValueError("No valid entries found in manifest.json.")
+        raise ValueError("No valid entries found in manifest.json (checked 'time_ranges' and 'start_ms').")
     
     # 타임스탬프 기준 오름차순 정렬 (Fusion은 시간 순서 처리가 필수)
     manifest_entries.sort(key=lambda x: (int(x["timestamp_ms"]), str(x["file_name"])))
@@ -103,7 +120,7 @@ def build_fusion_vlm_payload(
     items: List[Dict[str, Any]] = []
     
     for entry in manifest_entries:
-        ts = int(entry.get("timestamp_ms", entry.get("start_ms", 0)))
+        ts = int(entry["timestamp_ms"])
         file_name = str(entry["file_name"])
         
         # Manifest에는 있는데 VLM 결과가 없으면 에러 (누락 방지)
@@ -146,7 +163,7 @@ def convert_vlm_raw_to_fusion_vlm(
     
     output_vlm_json.parent.mkdir(parents=True, exist_ok=True)
     output_vlm_json.write_text(
-        json.dumps(fusion_payload, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(fusion_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
