@@ -299,6 +299,7 @@ class JobAdapterMixin:
             records.append({
                 "video_id": video_id,
                 "preprocess_job_id": preprocess_job_id,
+                "stt_id": seg.get("id") or seg.get("stt_id"),
                 "start_ms": seg.get("start_ms"),
                 "end_ms": seg.get("end_ms"),
                 "transcript": seg.get("transcript") or seg.get("text"),
@@ -338,26 +339,25 @@ class JobAdapterMixin:
         capture_map = {}
 
         if needs_lookup:
-            # 해당 비디오의 모든 캡처 조회 (timestamp_ms -> id 매핑용)
-            captures = self.client.table("captures").select("id,start_ms").eq("video_id", video_id).execute()
+            # cap_id를 기준으로 mapping 테이블 생성 (start_ms 컬럼이 더 이상 존재하지 않음)
+            captures = self.client.table("captures").select("id,cap_id").eq("video_id", video_id).execute()
             if captures.data:
                 for cap in captures.data:
-                    ts = cap.get("start_ms")
-                    if ts is not None:
-                        capture_map[ts] = cap["id"]
+                    cid = cap.get("cap_id")
+                    if cid:
+                        capture_map[cid] = cap["id"]
 
         records = []
         for vlm in vlm_results:
+            # vlm.json의 id 필드 -> cap_id
+            cap_id = vlm.get("id") or vlm.get("cap_id")
+            
             # DB의 capture_id (FK) 조회
             db_capture_id = vlm.get("capture_id")
+            if not db_capture_id and cap_id in capture_map:
+                db_capture_id = capture_map[cap_id]
+
             timestamp_ms = vlm.get("timestamp_ms")
-
-            # capture_id가 없고 timestamp에 해당하는 캡처가 있으면 매핑
-            if not db_capture_id and timestamp_ms in capture_map:
-                db_capture_id = capture_map[timestamp_ms]
-
-            # vlm.json의 id 필드 -> cap_id로 추출
-            cap_id = vlm.get("id")  # e.g., "cap_001"
 
             records.append({
                 "video_id": video_id,

@@ -70,7 +70,7 @@ def get_vlm_results_with_fallback(
             # 새 스키마에서는 payload 대신 개별 컬럼 사용
             vlm_items = [
                 {
-                    "cap_id": row.get("cap_id"),
+                    "id": row.get("cap_id"),
                     "timestamp_ms": row.get("timestamp_ms"),
                     "extracted_text": row.get("extracted_text", ""),
                 }

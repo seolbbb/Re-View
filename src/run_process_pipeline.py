@@ -110,9 +110,20 @@ def run_processing_pipeline(
     if not isinstance(video_settings, dict):
         video_settings = {}
     if not video_name or not str(video_name).strip():
-        candidate = video_settings.get("process_name")
-        if candidate and str(candidate).strip():
-            video_name = str(candidate).strip()
+        # video_id가 있는 경우 DB에서 이름을 가져옴
+        if video_id:
+            from src.db.supabase_adapter import get_supabase_adapter
+            temp_adapter = get_supabase_adapter()
+            v_data = temp_adapter.client.table("videos").select("name").eq("id", video_id).execute()
+            if v_data.data:
+                video_name = v_data.data[0].get("name")
+                print(f"[DB] Resolved video_name '{video_name}' for ID {video_id}")
+        
+        # 여전히 없으면 설정 파일의 process_name 사용
+        if not video_name or not str(video_name).strip():
+            candidate = video_settings.get("process_name")
+            if candidate and str(candidate).strip():
+                video_name = str(candidate).strip()
 
     if not video_name and not video_id:
         raise ValueError("video_name or video_id is required (CLI or config/pipeline/settings.yaml).")
@@ -282,6 +293,7 @@ def run_processing_pipeline(
             for row in stt_rows:
                 stt_segments.append(
                     {
+                        "id": row.get("stt_id") or row.get("id"),
                         "start_ms": row.get("start_ms"),
                         "end_ms": row.get("end_ms"),
                         "text": row.get("transcript", ""),
@@ -297,7 +309,7 @@ def run_processing_pipeline(
 
         captures_query = (
             adapter.client.table(db_table_name)
-            .select("file_name,time_ranges,storage_path,preprocess_job_id")
+            .select("id,cap_id,file_name,time_ranges,storage_path,preprocess_job_id")
             .eq("video_id", video_id)
         )
         if latest_preprocess_job_id:
@@ -306,7 +318,7 @@ def run_processing_pipeline(
         if not capture_rows and latest_preprocess_job_id:
             capture_rows = (
                 adapter.client.table(db_table_name)
-                .select("file_name,time_ranges,storage_path")
+                .select("id,cap_id,file_name,time_ranges,storage_path")
                 .eq("video_id", video_id)
                 .execute()
                 .data
@@ -334,8 +346,9 @@ def run_processing_pipeline(
             if not file_name:
                 continue
             
-            # Manifest 항목 재구성
+            # Manifest 항목 재구성 (cap_id가 있으면 우선 사용)
             manifest_item = {
+                "id": row.get("cap_id") or row.get("id"),
                 "file_name": file_name,
                 "time_ranges": row.get("time_ranges") or [],
             }

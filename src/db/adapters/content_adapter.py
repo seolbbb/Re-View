@@ -132,8 +132,8 @@ class ContentAdapterMixin:
                 "end_ms": seg.get("end_ms"),
                 "transcript_units": transcript_text,  # 병합된 텍스트 저장
                 "visual_units": seg.get("visual_units"), # JSONB 타입
+                "source_refs": seg.get("source_refs"),   # JSONB (stt_ids, vlm_ids)
                 "processing_job_id": processing_job_id,
-                # NOTE: embedding 컬럼은 segments 스키마에 없음 (summaries에만 존재)
             })
         
         if rows:

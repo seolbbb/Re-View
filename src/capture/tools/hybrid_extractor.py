@@ -674,8 +674,8 @@ class HybridSlideExtractor:
                 current["end_ms"] = max(current["end_ms"], next_range["end_ms"])
             else:
                 # Push current and start new
-                merged.append(current)
-                current = next_range.copy()
+                merged.append({"start_ms": current["start_ms"], "end_ms": current["end_ms"]})
+                current = {"start_ms": next_range["start_ms"], "end_ms": next_range["end_ms"]}
         
-        merged.append(current)
+        merged.append({"start_ms": current["start_ms"], "end_ms": current["end_ms"]})
         return merged

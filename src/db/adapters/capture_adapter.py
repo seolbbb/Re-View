@@ -41,6 +41,7 @@ class CaptureAdapterMixin:
         for cap in captures:
             rows.append({
                 "video_id": video_id,
+                "cap_id": cap.get("id"),
                 "file_name": cap.get("file_name"),
                 "storage_path": cap.get("storage_path"),
                 "preprocess_job_id": kwargs.get("preprocess_job_id"),
@@ -307,6 +308,7 @@ class CaptureAdapterMixin:
             
             rows.append({
                 "video_id": video_id,
+                "cap_id": cap.get("id"),
                 "file_name": file_name,
                 "storage_path": storage_path, # 업로드 성공 시 경로, 아니면 None
                 "preprocess_job_id": preprocess_job_id,
@@ -358,6 +360,7 @@ class CaptureAdapterMixin:
 
             rows.append({
                 "video_id": video_id,
+                "cap_id": cap.get("id"),
                 "file_name": file_name,
                 "storage_path": storage_path,
                 "preprocess_job_id": preprocess_job_id,
