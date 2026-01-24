@@ -201,7 +201,7 @@ def run_preprocess_pipeline(
     # 진행 중에도 확인할 수 있도록 메타데이터를 먼저 저장한다.
     run_meta_path.parent.mkdir(parents=True, exist_ok=True)
     run_meta_path.write_text(
-        json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(run_meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -428,7 +428,7 @@ def run_preprocess_pipeline(
         run_meta["status"] = "ok"
         # 선택적 DB 동기화 전에 최종 메타데이터를 저장한다.
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -478,7 +478,7 @@ def run_preprocess_pipeline(
         run_meta["error"] = str(exc)
         run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         if sync_to_db and db_context:

@@ -244,7 +244,7 @@ def run_fusion_only_pipeline(
     }
     
     run_meta_path.write_text(
-        json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(run_meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 

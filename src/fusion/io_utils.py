@@ -21,7 +21,7 @@ def read_json(path: Path, label: str) -> Any:
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
 def read_jsonl(path: Path) -> Generator[Dict[str, Any], None, None]:
@@ -39,7 +39,7 @@ def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+            handle.write(json.dumps(row, ensure_ascii=False))
             handle.write("\n")
 
 

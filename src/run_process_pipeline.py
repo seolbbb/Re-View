@@ -444,7 +444,7 @@ def run_processing_pipeline(
     }
     # 진행 중 상태를 먼저 기록해 상태 조회가 가능하도록 한다.
     run_meta_path.write_text(
-        json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(run_meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -567,7 +567,7 @@ def run_processing_pipeline(
         run_meta["status"] = "ok"
         # 최종 메타데이터를 저장한다.
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -641,7 +641,7 @@ def run_processing_pipeline(
         run_meta["error"] = str(exc)
         run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
         run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         

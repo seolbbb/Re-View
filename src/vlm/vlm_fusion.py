@@ -163,7 +163,7 @@ def convert_vlm_raw_to_fusion_vlm(
     
     output_vlm_json.parent.mkdir(parents=True, exist_ok=True)
     output_vlm_json.write_text(
-        json.dumps(fusion_payload, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(fusion_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 

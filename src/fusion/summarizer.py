@@ -614,7 +614,7 @@ def run_summarizer(
                         },
                     }
                     output_handle.write(
-                        json.dumps(record, ensure_ascii=False, sort_keys=True)
+                        json.dumps(record, ensure_ascii=False)
                     )
                     output_handle.write("\n")
 
@@ -778,7 +778,7 @@ def run_batch_summarizer(
                         },
                     }
                     output_handle.write(
-                        json.dumps(record, ensure_ascii=False, sort_keys=True)
+                        json.dumps(record, ensure_ascii=False)
                     )
                     output_handle.write("\n")
 
