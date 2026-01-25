@@ -81,6 +81,116 @@ def _append_benchmark_report(path: Path, report_md: str, pipeline_label: str) ->
         path.write_text(report_md, encoding="utf-8")
 
 
+def _filter_captures_by_stt_events(
+    video_root: Path,
+    stt_payload: Dict[str, Any],
+    captures_payload: List[Dict[str, Any]],
+    manifest_path: Path,
+) -> Tuple[int, int]:
+    """STT 이벤트(music)를 기반으로 캡처를 필터링하고 인덱스를 재정렬한다.
+
+    Returns:
+        (removed_count, remaining_count)
+    """
+    events = stt_payload.get("events", [])
+    if not events:
+        return 0, len(captures_payload)
+
+    # 1. 음악 구간 추출
+    music_ranges = []
+    for evt in events:
+        label = evt.get("label", "")
+        if label == "music":
+            s = int(evt.get("start", 0))
+            e = int(evt.get("end", 0))
+            music_ranges.append((s, e))
+    
+    if not music_ranges:
+        return 0, len(captures_payload)
+
+    print(f"\n[Filter] Found {len(music_ranges)} music segments. Filtering captures...")
+
+    captures_dir = video_root / "captures"
+    valid_captures = []
+    removed_count = 0
+    
+    # 2. 캡처 필터링
+    # 캡처의 대표 시간(start_ms)이 음악 구간에 포함되면 제거
+    for item in captures_payload:
+        # manifest에는 start_ms가 있을 수도 있고 time_ranges가 있을 수도 있음
+        # 단순화를 위해 최상위 start_ms 또는 time_ranges[0].start_ms 사용
+        check_time = item.get("start_ms")
+        if check_time is None:
+             tr = item.get("time_ranges")
+             if tr and isinstance(tr, list):
+                 check_time = tr[0].get("start_ms")
+        
+        if check_time is None:
+            check_time = 0
+        
+        check_time = int(check_time)
+            
+        is_music = False
+        for (ms, me) in music_ranges:
+            if ms <= check_time <= me:
+                is_music = True
+                break
+        
+        if is_music:
+            removed_count += 1
+            # 파일 삭제
+            fname = item.get("file_name", "")
+            if fname:
+                fpath = captures_dir / fname
+                if fpath.exists():
+                    fpath.unlink()
+        else:
+            valid_captures.append(item)
+
+    if removed_count == 0:
+        return 0, len(captures_payload)
+
+    # 3. 리인덱싱 (Re-indexing)
+    # 남은 캡처들을 시간순 정렬 (이미 되어있겠지만 안전하게)
+    valid_captures.sort(key=lambda x: int(x.get("start_ms", 0)))
+    
+    new_manifest_payload = []
+    video_stem = video_root.name  # 폴더명을 prefix로 사용
+
+    for idx, item in enumerate(valid_captures, 1):
+        old_fname = item.get("file_name", "")
+        new_id = f"cap_{idx:03d}"
+        new_fname = f"{video_stem}_{idx:03d}.jpg"
+        
+        # 파일명 변경 (Rename)
+        if old_fname and old_fname != new_fname:
+            old_path = captures_dir / old_fname
+            new_path = captures_dir / new_fname
+            if old_path.exists():
+                old_path.rename(new_path)
+            elif not new_path.exists():
+                # 파일이 없는데 이름도 다르면 경고 (하지만 이미 삭제된 게 아니면 이상함)
+                pass
+        
+        # 메타데이터 업데이트
+        item["id"] = new_id
+        item["file_name"] = new_fname
+        new_manifest_payload.append(item)
+
+    # 4. Manifest 저장
+    manifest_path.write_text(
+        json.dumps(new_manifest_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+    
+    # 원본 리스트도 갱신 (참조 수정)
+    captures_payload.clear()
+    captures_payload.extend(new_manifest_payload)
+
+    print(f"[Filter] Removed {removed_count} music slides. Re-indexed {len(new_manifest_payload)} slides.")
+    return removed_count, len(new_manifest_payload)
+
+
 def run_preprocess_pipeline(
     *,
     video: Optional[str],
@@ -401,6 +511,17 @@ def run_preprocess_pipeline(
             _sync_stage("capture", captures_payload=capture_result)
 
         timer.end_total()
+
+        # [Post-Filter] STT 이벤트(Music) 기반 캡처 필터링 & 리인덱싱
+        if stt_payload and capture_result:
+            try:
+                removed, remaining = _filter_captures_by_stt_events(
+                    video_root, stt_payload, capture_result, manifest_json
+                )
+                if removed > 0:
+                    capture_count = remaining
+            except Exception as e:
+                print(f"⚠️ Warning: Music filtering failed: {e}")
 
         # 사람이 읽을 수 있는 벤치마크 리포트를 함께 저장한다.
         md_report = print_benchmark_report(

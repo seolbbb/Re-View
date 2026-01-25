@@ -126,6 +126,12 @@ class ClovaSpeechClient:
         stt_data: Dict[str, Any] = {
             "segments": _extract_segments(raw, include_confidence=include_confidence),
         }
+        
+        # 이벤트(음악 등) 정보가 있으면 포함
+        if "events" in raw:
+            stt_data["events"] = raw["events"]
+        if "eventTypes" in raw:
+            stt_data["eventTypes"] = raw["eventTypes"]
 
         if include_raw_response:
             stt_data["raw_response"] = raw
