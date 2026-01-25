@@ -147,7 +147,7 @@
 {
   "started_at": "2026-01-10T15:30:00Z",
   "ended_at": "2026-01-10T15:33:00Z",
-  "input_video_path": "data/inputs/lecture.mp4",
+  "input_video_path": "data/input/lecture.mp4",
   "video_info": {
     "duration_sec": 360,
     "resolution": "1920x1080",

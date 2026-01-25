@@ -203,7 +203,7 @@ ADK의 `ToolContext`를 통해 세션 상태를 공유합니다.
 STT와 캡처만 수행하고 싶을 때 사용합니다.
 
 ```bash
-python src/run_preprocess_pipeline.py --video "data/inputs/sample.mp4" --parallel
+python src/run_preprocess_pipeline.py --video "data/input/sample.mp4" --parallel
 ```
 
 ### 5.3 ADK Web UI 실행

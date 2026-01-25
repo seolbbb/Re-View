@@ -40,7 +40,7 @@ CLOVA_SPEECH_API_KEY=...    # STT (Clova 사용 시)
 가장 쉬운 방법입니다. 영상만 넣으면 최종 요약까지 한 번에 수행합니다.
 
 ```bash
-python src/run_video_pipeline.py --video "data/inputs/my_lecture.mp4"
+python src/run_video_pipeline.py --video "data/input/my_lecture.mp4"
 ```
 
 #### Option B: 단계별 실행 (Preprocess → ADK)
@@ -51,7 +51,7 @@ python src/run_video_pipeline.py --video "data/inputs/my_lecture.mp4"
 STT와 슬라이드 캡처를 수행합니다.
 
 ```bash
-python src/run_preprocess_pipeline.py --video "data/inputs/my_lecture.mp4"
+python src/run_preprocess_pipeline.py --video "data/input/my_lecture.mp4"
 ```
 
 **Step 2: 요약 및 검증 (ADK)**

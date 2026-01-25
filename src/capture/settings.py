@@ -58,8 +58,8 @@ def load_capture_settings(*, settings_path: Optional[Path] = None) -> CaptureSet
     if not isinstance(payload, dict):
         raise ValueError("capture 설정 형식이 올바르지 않습니다(맵이어야 함).")
 
-    input_dir = _resolve_path(_coerce_str(payload, "input_dir", "src/data/input"))
-    output_dir = _resolve_path(_coerce_str(payload, "output_dir", "src/data/output"))
+    input_dir = _resolve_path(_coerce_str(payload, "input_dir", "data/input"))
+    output_dir = _resolve_path(_coerce_str(payload, "output_dir", "data/outputs"))
 
     return CaptureSettings(
         input_dir=input_dir,

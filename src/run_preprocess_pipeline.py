@@ -498,8 +498,8 @@ def run_preprocess_pipeline(
         raise
 
 
-def main() -> None:
-    """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
+def get_parser() -> argparse.ArgumentParser:
+    """전처리 파이프라인용 ArgumentParser를 생성해 반환한다."""
     parser = argparse.ArgumentParser(description="Preprocess pipeline (STT + Capture only)")
     parser.add_argument("--video", default=None, help="Input video file path (or config/pipeline/settings.yaml)")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
@@ -531,6 +531,12 @@ def main() -> None:
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
     parser.set_defaults(db_sync=None)
+    return parser
+
+
+def main() -> None:
+    """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
+    parser = get_parser()
     args = parser.parse_args()
 
     run_preprocess_pipeline(

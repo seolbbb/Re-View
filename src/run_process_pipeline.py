@@ -12,7 +12,7 @@ Arguments:
     --video-id         (Optional) DB의 video_id (video_name 대신 사용 가능)
     --batch-mode       (Optional) 배치 처리 모드 활성화 (기본값: False)
     --limit            (Optional) 처리할 최대 세그먼트 수 (테스트용)
-    --sync-to-db       (Optional) 처리 결과를 DB에 업로드
+    --db-sync          (Optional) 처리 결과를 DB에 업로드
 
 Examples:
     # 기본 실행 (로컬 아티팩트 사용, 단일 모드)
@@ -22,7 +22,7 @@ Examples:
     python src/run_process_pipeline.py --video-name sample4 --batch-mode
 
     # DB 강제 다운로드 + 결과 DB 업로드
-    python src/run_process_pipeline.py --video-name sample4 --force-db --sync-to-db
+    python src/run_process_pipeline.py --video-name sample4 --force-db --db-sync
 """
 
 from __future__ import annotations
@@ -657,8 +657,8 @@ def run_processing_pipeline(
         raise
 
 
-def main() -> None:
-    """CLI 인자를 파싱하고 처리 파이프라인을 실행한다."""
+def get_parser() -> argparse.ArgumentParser:
+    """처리 파이프라인용 ArgumentParser를 생성해 반환한다."""
     parser = argparse.ArgumentParser(description="Processing pipeline (VLM + Fusion)")
     parser.add_argument("--video-name", default=None, help="Video name (videos.name)")
     parser.add_argument("--video-id", default=None, help="Video ID (videos.id)")
@@ -670,10 +670,16 @@ def main() -> None:
     parser.add_argument("--force-db", dest="force_db", action="store_true", help="Force DB download even if local exists")
     parser.add_argument("--no-force-db", dest="force_db", action="store_false", help="Disable DB download")
     parser.set_defaults(force_db=None)
-    parser.add_argument("--sync-to-db", dest="sync_to_db", action="store_true", help="Upload processing outputs to Supabase")
-    parser.add_argument("--no-sync-to-db", dest="sync_to_db", action="store_false", help="Skip Supabase upload")
-    parser.set_defaults(sync_to_db=None)
+    parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Upload processing outputs to Supabase")
+    parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase upload")
+    parser.set_defaults(db_sync=None)
     parser.add_argument("--db-table", default="captures", help="DB table name for captures (default: captures)")
+    return parser
+
+
+def main() -> None:
+    """CLI 인자를 파싱하고 처리 파이프라인을 실행한다."""
+    parser = get_parser()
     args = parser.parse_args()
 
     run_processing_pipeline(
@@ -682,7 +688,7 @@ def main() -> None:
         output_base=args.output_base,
         batch_mode=args.batch_mode,
         limit=args.limit,
-        sync_to_db=args.sync_to_db,
+        sync_to_db=args.db_sync,
         force_db=args.force_db,
         db_table_name=args.db_table,
     )
