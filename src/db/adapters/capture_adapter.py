@@ -311,6 +311,8 @@ class CaptureAdapterMixin:
                 "cap_id": cap.get("id"),
                 "file_name": file_name,
                 "storage_path": storage_path, # 업로드 성공 시 경로, 아니면 None
+                "time_ranges": cap.get("time_ranges"),
+                "info_score": cap.get("info_score"),
                 "preprocess_job_id": preprocess_job_id,
                 "time_ranges": cap.get("time_ranges"),
             })
@@ -363,6 +365,8 @@ class CaptureAdapterMixin:
                 "cap_id": cap.get("id"),
                 "file_name": file_name,
                 "storage_path": storage_path,
+                "time_ranges": cap.get("time_ranges"),
+                "info_score": cap.get("info_score"),
                 "preprocess_job_id": preprocess_job_id,
                 "time_ranges": cap.get("time_ranges"),
             })

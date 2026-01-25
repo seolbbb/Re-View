@@ -453,30 +453,70 @@ class JobAdapterMixin:
         video_id: str,
         *,
         processing_job_id: Optional[str] = None,
+        after_segment_index: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """비디오의 모든 요약 결과(세그먼트 포함)를 조회합니다.
         
         Args:
             video_id: 비디오 ID
             processing_job_id: 특정 작업 ID (선택)
+            after_segment_index: 해당 인덱스 이후의 세그먼트만 조회 (선택)
+            limit: 최대 반환 개수 (선택)
             
         Returns:
             List[Dict]: 요약 리스트 (segments 정보 포함/평탄화 필요 시 호출처 처리)
         """
-        query = self.client.table("summaries").select(
-            "*, segments(*)"
-        ).eq("video_id", video_id)
-        
-        if processing_job_id:
-            query = query.eq("processing_job_id", processing_job_id)
+        if after_segment_index is None:
+            query = self.client.table("summaries").select(
+                "*, segments(*)"
+            ).eq("video_id", video_id)
             
-        # 세그먼트 순서대로 정렬 (segment_index 기준)
-        # Note: segments가 nested object라 직접 정렬이 어려울 수 있으므로
-        # created_at 또는 fetch 후 정렬 권장. 여기서는 일단 summaries 생성순.
-        query = query.order("created_at", desc=False)
-        
-        result = query.execute()
-        return result.data if result.data else []
+            if processing_job_id:
+                query = query.eq("processing_job_id", processing_job_id)
+            if limit:
+                query = query.limit(limit)
+                
+            # 세그먼트 순서대로 정렬 (segment_index 기준)
+            # Note: segments가 nested object라 직접 정렬이 어려울 수 있으므로
+            # created_at 또는 fetch 후 정렬 권장. 여기서는 일단 summaries 생성순.
+            query = query.order("created_at", desc=False)
+            
+            result = query.execute()
+            return result.data if result.data else []
+
+        segment_query = (
+            self.client.table("segments")
+            .select("id, segment_index")
+            .eq("video_id", video_id)
+            .gt("segment_index", after_segment_index)
+            .order("segment_index", desc=False)
+        )
+        if processing_job_id:
+            segment_query = segment_query.eq("processing_job_id", processing_job_id)
+        if limit:
+            segment_query = segment_query.limit(limit)
+        segment_rows = segment_query.execute().data or []
+        if not segment_rows:
+            return []
+
+        segment_ids = [row.get("id") for row in segment_rows if row.get("id")]
+        if not segment_ids:
+            return []
+
+        summaries_query = (
+            self.client.table("summaries")
+            .select("*, segments(*)")
+            .eq("video_id", video_id)
+            .in_("segment_id", segment_ids)
+        )
+        if processing_job_id:
+            summaries_query = summaries_query.eq("processing_job_id", processing_job_id)
+        summaries = summaries_query.execute().data or []
+
+        segment_index_map = {row.get("id"): row.get("segment_index") for row in segment_rows}
+        summaries.sort(key=lambda item: segment_index_map.get(item.get("segment_id"), 0))
+        return summaries
     
     # =========================================================================
     # Judge

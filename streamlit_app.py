@@ -812,46 +812,6 @@ def main() -> None:
                 st.session_state.chat_mode_signature = None
                 st.rerun()
 
-            chat_mode_label = st.radio(
-                "Chat mode",
-                ["전문 요약", "부분 요약"],
-                horizontal=True,
-            )
-            chat_mode = "full" if chat_mode_label == "전문 요약" else "partial"
-            st.session_state.chat_mode = chat_mode
-            mode_signature = (video_name, chat_mode)
-            if st.session_state.chat_mode_signature != mode_signature:
-                if st.session_state.adk_busy:
-                    st.info("Chatbot is busy. Mode change will apply after it finishes.")
-                else:
-                    st.session_state.chat_messages = []
-                    st.session_state.adk_busy = True
-                    try:
-                        with st.spinner("Setting chat mode..."):
-                            responses = send_adk_message(
-                                st.session_state.adk_session, chat_mode
-                            )
-                        for response in responses:
-                            st.session_state.chat_messages.append(
-                                {
-                                    "role": "assistant",
-                                    "author": response.author,
-                                    "content": response.text,
-                                }
-                            )
-                    except Exception as exc:
-                        st.session_state.chat_messages.append(
-                            {
-                                "role": "assistant",
-                                "author": "system",
-                                "content": f"Chatbot error: {exc}",
-                            }
-                        )
-                    finally:
-                        st.session_state.adk_busy = False
-                        st.session_state.chat_mode_signature = mode_signature
-                    st.rerun()
-
             chat_container = st.container(height=520)
             with chat_container:
                 for message in st.session_state.chat_messages:

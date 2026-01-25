@@ -14,18 +14,8 @@ from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE
 from src.adk_chatbot.store import VideoStore
 
 
-def select_chat_mode(tool_context: ToolContext, mode: str) -> Dict[str, Any]:
-    if not mode or not str(mode).strip():
-        return {"success": False, "error": "mode is required"}
-    normalized = str(mode).strip().lower()
-    if normalized not in {"full", "partial"}:
-        return {"success": False, "error": "mode must be 'full' or 'partial'"}
-    tool_context.state["chat_mode"] = normalized
-    return {"success": True, "chat_mode": normalized}
-
-
 def _process_api_base() -> str:
-    return os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
+    return os.environ.get("PROCESS_API_URL", "http://localhost:8001").rstrip("/")
 
 
 def _call_process_api(method: str, path: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -58,35 +48,6 @@ def _call_process_api(method: str, path: str, payload: Dict[str, Any] | None = N
     except json.JSONDecodeError:
         payload = {"raw": body}
     return {"success": True, "status_code": status_code, "payload": payload}
-
-
-def start_summary_job(tool_context: ToolContext) -> Dict[str, Any]:
-    """요약 작업을 시작합니다 (processing_job 생성)."""
-    video_name = tool_context.state.get("video_name")
-    video_id = tool_context.state.get("video_id")
-    
-    if not video_name and not video_id:
-        return {"success": False, "error": "video_name or video_id is not set"}
-
-    payload: Dict[str, Any] = {}
-    if video_name:
-        payload["video_name"] = video_name
-    if video_id:
-        payload["video_id"] = video_id
-
-    response = _call_process_api("POST", "/process", payload)
-    if not response.get("success"):
-        return {
-            "success": False,
-            "error": response.get("error", "process_api request failed"),
-            "status_code": response.get("status_code"),
-        }
-    api_payload = response.get("payload", {})
-    return {
-        "success": True,
-        "status": api_payload.get("status", "started"),
-        "message": api_payload.get("message"),
-    }
 
 
 def get_summary_status(tool_context: ToolContext) -> Dict[str, Any]:
@@ -194,59 +155,6 @@ def get_summary_status(tool_context: ToolContext) -> Dict[str, Any]:
         "has_summary": has_summaries,
         "processing_stats": run_meta.get("processing_stats"),
     }
-
-
-def ensure_summary_exists(tool_context: ToolContext) -> Dict[str, Any]:
-    """요약이 없으면 자동으로 처리 작업을 시작합니다.
-    
-    챗봇 오픈 시 호출하여 요약 생성을 보장합니다.
-    """
-    status_result = get_summary_status(tool_context)
-    if not status_result.get("success"):
-        return status_result
-    
-    status = status_result.get("status")
-    has_summary = status_result.get("has_summary", False)
-    
-    # 이미 요약이 있거나 진행 중이면 그대로 반환
-    if has_summary or status in ("running", "summarizing", "in_progress"):
-        return {
-            "success": True,
-            "action": "none",
-            "status": status,
-            "has_summary": has_summary,
-            "message": "요약이 이미 존재하거나 진행 중입니다.",
-        }
-    
-    # 요약이 없고 전처리는 완료되었으면 자동 시작
-    if status == "not_started" or (not has_summary and status == "completed"):
-        start_result = start_summary_job(tool_context)
-        if start_result.get("success"):
-            return {
-                "success": True,
-                "action": "started",
-                "status": "running",
-                "has_summary": False,
-                "message": "요약 작업을 자동으로 시작했습니다.",
-            }
-        else:
-            return {
-                "success": False,
-                "action": "failed",
-                "error": start_result.get("error"),
-                "message": "요약 작업 시작에 실패했습니다.",
-            }
-    
-    # 그 외 상태
-    return {
-        "success": True,
-        "action": "none",
-        "status": status,
-        "has_summary": has_summary,
-        "message": f"현재 상태: {status}",
-    }
-
-
 def get_video_name(tool_context: ToolContext) -> Dict[str, Any]:
     video_name = tool_context.state.get("video_name")
     if not video_name:
@@ -259,16 +167,17 @@ def get_summary_updates(tool_context: ToolContext) -> Dict[str, Any]:
     if not video_name:
         return {"success": False, "error": "video_name is not set"}
 
-    last_segment_id = tool_context.state.get("last_segment_id", 0)
+    last_segment_id = tool_context.state.get("last_segment_id", -1)
     try:
         last_segment_id = int(last_segment_id)
     except (TypeError, ValueError):
-        last_segment_id = 0
+        last_segment_id = -1
 
     # 1. DB API 시도
     video_id = tool_context.state.get("video_id")
     if video_id:
-        response = _call_process_api("GET", f"/videos/{video_id}/summaries")
+        query = f"/videos/{video_id}/summaries?after_segment_index={last_segment_id}&limit=200"
+        response = _call_process_api("GET", query)
         if response.get("success"):
             items = response.get("payload", {}).get("items", [])
             new_updates = []
@@ -301,8 +210,8 @@ def get_summary_updates(tool_context: ToolContext) -> Dict[str, Any]:
     
     if not summaries_path.exists():
         tool_context.state["pending_updates"] = []
-        tool_context.state["last_segment_id"] = 0
-        return {"success": True, "last_segment_id": 0, "new_count": 0}
+        tool_context.state["last_segment_id"] = -1
+        return {"success": True, "last_segment_id": -1, "new_count": 0}
 
     updates = []
     max_segment_id = last_segment_id
@@ -398,10 +307,6 @@ def get_summary_context(
     }
 
 
-def partial_not_implemented(tool_context: ToolContext) -> Dict[str, Any]:
-    return {"success": False, "error": "Partial summary chatbot is not implemented yet."}
-
-
 summary_chat_agent = Agent(
     name="summary_chat_agent",
     model="gemini-2.5-flash",
@@ -411,12 +316,9 @@ summary_chat_agent = Agent(
         "Always respond in Korean.\n"
         "Workflow:\n"
         "1) Call get_summary_status when you need summary generation status.\n"
-        "   - If status is not_started and the user asked to start summaries or asked a summary question, call start_summary_job and tell the user the summary has started.\n"
         "2) If the user asks which video is selected, call get_video_name and reply with it.\n"
         "3) If the user asks about summary generation status, reply with the status from get_summary_status.\n"
-        "4) If the user explicitly asks to start or regenerate the summary, check the latest status.\n"
-        "   - If status is running, tell the user it is already running and do not call start_summary_job.\n"
-        "   - Otherwise call start_summary_job and reply with it.\n"
+        "4) If the user explicitly asks to start or regenerate the summary, tell them to use the UI process_start button.\n"
         "5) For summary questions, first call get_summary_updates.\n"
         "   - If it returns 'video_name is not set', tell the user to select a video in the UI and stop.\n"
         "6) Then call get_summary_context to fetch summary_cache for answering.\n"
@@ -428,7 +330,6 @@ summary_chat_agent = Agent(
     ),
     tools=[
         get_video_name,
-        start_summary_job,
         get_summary_status,
         get_summary_updates,
         get_summary_context,
@@ -436,46 +337,7 @@ summary_chat_agent = Agent(
     generate_content_config=types.GenerateContentConfig(temperature=0.2),
 )
 
-
-partial_summary_chat_agent = Agent(
-    name="partial_summary_chat_agent",
-    model="gemini-2.5-flash",
-    description="Placeholder for partial-summary chatbot.",
-    instruction=(
-        "You are the Partial Summary Chatbot.\n"
-        "Always respond in Korean.\n"
-        "Always call partial_not_implemented and relay the message."
-    ),
-    tools=[partial_not_implemented],
-    generate_content_config=types.GenerateContentConfig(temperature=0.2),
-)
+root_agent = summary_chat_agent
 
 
-root_agent = Agent(
-    name="adk_chatbot_root",
-    model="gemini-2.5-flash",
-    description="Root agent that routes users to the proper chatbot.",
-    instruction=(
-        "You are the routing agent for the ADK chatbot.\n"
-        "Always respond in Korean.\n"
-        "Workflow:\n"
-        "1) Ask the user to choose a chat mode: 'full' or 'partial'.\n"
-        "2) Call select_chat_mode with the user's choice.\n"
-        "3) If the user chose 'full', call ensure_summary_exists.\n"
-        "   - This automatically starts summary generation if not already done.\n"
-        "   - If action is 'started', tell the user processing has begun.\n"
-        "   - If it returns an error about video_id/video_name, tell the user to select a video in the UI and stop.\n"
-        "4) Transfer to the matching sub-agent.\n"
-        "If the user asks to change modes, repeat the selection flow."
-    ),
-    tools=[select_chat_mode, ensure_summary_exists, get_summary_status, start_summary_job],
-    sub_agents=[summary_chat_agent, partial_summary_chat_agent],
-    generate_content_config=types.GenerateContentConfig(temperature=0.2),
-)
-
-
-summary_chat_agent._sub_agents = [root_agent]
-partial_summary_chat_agent._sub_agents = [root_agent]
-
-
-__all__ = ["root_agent"]
+__all__ = ["summary_chat_agent", "root_agent"]

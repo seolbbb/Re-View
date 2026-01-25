@@ -136,6 +136,12 @@ def get_video_status(video_id: str) -> Dict[str, Any]:
     if processing_job_id:
         processing_job = adapter.get_processing_job(processing_job_id)
         if processing_job:
+            current_batch = processing_job.get("current_batch")
+            if current_batch is None:
+                current_batch = processing_job.get("progress_current")
+            total_batch = processing_job.get("total_batch")
+            if total_batch is None:
+                total_batch = processing_job.get("progress_total")
             result["processing_job"] = {
                 "id": processing_job_id,
                 "status": processing_job.get("status"),
@@ -185,6 +191,8 @@ def get_video_progress(video_id: str) -> Dict[str, Any]:
         "has_processing_job": True,
         "processing_job_id": processing_job_id,
         "status": processing_job.get("status"),
+        "current_batch": progress_current,
+        "total_batch": progress_total,
         "progress_current": progress_current,
         "progress_total": progress_total,
         "progress_percent": progress_percent,
@@ -226,7 +234,11 @@ def get_video_summary(video_id: str, format: Optional[str] = None) -> Dict[str, 
 
 
 @app.get("/videos/{video_id}/summaries")
-def get_video_summaries(video_id: str) -> Dict[str, Any]:
+def get_video_summaries(
+    video_id: str,
+    after_segment_index: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
     """세부 요약 세그먼트 리스트 조회 (Chatbot용)."""
     adapter = get_supabase_adapter()
     if not adapter:
@@ -236,8 +248,15 @@ def get_video_summaries(video_id: str) -> Dict[str, Any]:
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
         
+    if limit is not None:
+        limit = max(1, min(limit, 500))
+
     # summaries 테이블 조회 (segments 조인됨)
-    rows = adapter.get_summaries(video_id)
+    rows = adapter.get_summaries(
+        video_id,
+        after_segment_index=after_segment_index,
+        limit=limit,
+    )
     
     # 응답 포맷 구성
     items = []
