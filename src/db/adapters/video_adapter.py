@@ -120,6 +120,23 @@ class VideoAdapterMixin:
         result = self.client.table("videos").select("*").eq("id", video_id).execute()
         return result.data[0] if result.data else None
     
+    def list_videos(self) -> list:
+        """전체 비디오 목록을 최신순으로 조회합니다.
+
+        Returns:
+            List[Dict]: 비디오 레코드 리스트 (created_at 내림차순)
+        """
+        try:
+            result = (
+                self.client.table("videos")
+                .select("*")
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception:
+            return []
+
     # NOTE: pipeline_runs 테이블은 더 이상 사용되지 않습니다.
     # 대신 preprocessing_jobs/processing_jobs 테이블을 사용하세요.
     # 관련 함수는 job_adapter.py에서 제공됩니다.
