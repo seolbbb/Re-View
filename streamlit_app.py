@@ -31,7 +31,7 @@ from src.services.pipeline_service import (
 )
 
 ROOT = Path(__file__).resolve().parent
-INPUT_DIR = ROOT / "data" / "input"
+INPUT_DIR = ROOT / "data" / "inputs"
 CONFIG_ROOT = ROOT / "config"
 DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
 ADK_OUTPUT_BASE = get_default_output_base()
