@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.db.embedding import generate_embedding
+
 
 def compute_config_hash(config_paths: List[Path]) -> str:
     """설정 파일들의 해시를 계산합니다.
@@ -517,6 +519,38 @@ class JobAdapterMixin:
         segment_index_map = {row.get("id"): row.get("segment_index") for row in segment_rows}
         summaries.sort(key=lambda item: segment_index_map.get(item.get("segment_id"), 0))
         return summaries
+
+    def search_summaries(
+        self,
+        video_id: str,
+        query: str,
+        *,
+        match_count: int = 5,
+        match_threshold: float = 0.4,
+    ) -> List[Dict[str, Any]]:
+        """요약 결과에 대해 시맨틱 검색을 수행합니다.
+
+        Args:
+            video_id: 비디오 ID
+            query: 검색 질의 텍스트
+            match_count: 반환 개수
+            match_threshold: 유사도 임계값 (0~1)
+
+        Returns:
+            List[Dict]: 검색 결과 리스트 (RPC 응답)
+        """
+        if not query or not query.strip():
+            return []
+
+        query_embedding = generate_embedding(query)
+        params = {
+            "query_embedding": query_embedding,
+            "match_threshold": match_threshold,
+            "match_count": match_count,
+            "filter_video_id": video_id,
+        }
+        result = self.client.rpc("match_summaries", params).execute()
+        return result.data or []
     
     # =========================================================================
     # Judge

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -22,7 +23,7 @@ import streamlit as st
 import yaml
 
 from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
-from src.adk_chatbot.agent import root_agent as chatbot_root_agent
+from src.adk_chatbot.agent import root_agent as chatbot_root_agent, summary_chat_rag_agent
 from src.services.adk_session import AdkSession
 from src.services.pipeline_service import (
     get_default_output_base,
@@ -32,13 +33,15 @@ from src.services.pipeline_service import (
 
 ROOT = Path(__file__).resolve().parent
 INPUT_DIR = ROOT / "data" / "inputs"
+LOG_DIR = ROOT / "data" / "logs"
+CHAT_METRICS_LOG = LOG_DIR / "chat_metrics.jsonl"
 CONFIG_ROOT = ROOT / "config"
 DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
 ADK_OUTPUT_BASE = get_default_output_base()
 VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
 
 # API base URL for process API
-PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
+PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8001").rstrip("/")
 
 
 def _call_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -204,6 +207,15 @@ def _save_upload(uploaded_file) -> Path:
 @st.cache_data(show_spinner=False)
 def _load_video_bytes(path: str) -> bytes:
     return Path(path).read_bytes()
+
+
+def _log_chat_metrics(payload: Dict[str, Any]) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with CHAT_METRICS_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except OSError:
+        return
 
 
 def _load_manifest(video_root: Path) -> List[Dict[str, Any]]:
@@ -400,6 +412,7 @@ def main() -> None:
     st.set_page_config(page_title="Screentime Pipeline", layout="wide")
     st.title("Screentime Video Pipeline")
     st.toggle("Chat panel", value=True, key="show_chat")
+    st.toggle("Compare RAG (baseline vs RAG)", value=False, key="chat_compare")
 
     if "video_root" not in st.session_state:
         st.session_state.video_root = None
@@ -421,14 +434,20 @@ def main() -> None:
         st.session_state.preprocess_result = None
     if "adk_session" not in st.session_state:
         st.session_state.adk_session = None
+    if "rag_session" not in st.session_state:
+        st.session_state.rag_session = None
     if "chat_mode" not in st.session_state:
         st.session_state.chat_mode = "full"
     if "chat_mode_signature" not in st.session_state:
         st.session_state.chat_mode_signature = None
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
+    if "rag_messages" not in st.session_state:
+        st.session_state.rag_messages = []
     if "adk_busy" not in st.session_state:
         st.session_state.adk_busy = False
+    if "rag_busy" not in st.session_state:
+        st.session_state.rag_busy = False
     if "selected_output_name" not in st.session_state:
         st.session_state.selected_output_name = None
     if "preview_video_path" not in st.session_state:
@@ -498,8 +517,12 @@ def main() -> None:
                     st.session_state.preprocess_signature = None
                     st.session_state.preprocess_result = None
                     st.session_state.adk_session = None
+                    st.session_state.rag_session = None
                     st.session_state.chat_mode_signature = None
                     st.session_state.chat_messages = []
+                    st.session_state.rag_messages = []
+                    st.session_state.adk_busy = False
+                    st.session_state.rag_busy = False
                     st.session_state.selected_output_name = selected_output
                     preview_candidate = _find_existing_video(selected_output)
                     st.session_state.preview_video_path = (
@@ -518,8 +541,12 @@ def main() -> None:
             st.session_state.preprocess_signature = None
             st.session_state.preprocess_result = None
             st.session_state.adk_session = None
+            st.session_state.rag_session = None
             st.session_state.chat_mode_signature = None
             st.session_state.chat_messages = []
+            st.session_state.rag_messages = []
+            st.session_state.adk_busy = False
+            st.session_state.rag_busy = False
         st.session_state.preview_video_path = str(video_path)
 
     with st.sidebar:
@@ -640,9 +667,12 @@ def main() -> None:
     if st.session_state.chat_session_video_name != video_name:
         st.session_state.chat_session_video_name = video_name
         st.session_state.adk_session = None
+        st.session_state.rag_session = None
         st.session_state.chat_mode_signature = None
         st.session_state.chat_messages = []
+        st.session_state.rag_messages = []
         st.session_state.adk_busy = False
+        st.session_state.rag_busy = False
 
     if video_path:
         preprocess_signature: Tuple[str] = (str(video_path),)
@@ -654,8 +684,12 @@ def main() -> None:
             st.session_state.preprocess_status = "running"
             st.session_state.preprocess_error = None
             st.session_state.adk_session = None
+            st.session_state.rag_session = None
             st.session_state.chat_mode_signature = None
             st.session_state.chat_messages = []
+            st.session_state.rag_messages = []
+            st.session_state.adk_busy = False
+            st.session_state.rag_busy = False
             with st.spinner("Running preprocess..."):
                 try:
                     result = run_preprocess_pipeline(
@@ -700,6 +734,22 @@ def main() -> None:
                 },
             )
             st.session_state.chat_mode_signature = None
+        if st.session_state.chat_compare:
+            if st.session_state.rag_session is None:
+                st.session_state.rag_session = AdkSession(
+                    root_agent=summary_chat_rag_agent,
+                    app_name="screentime_chatbot_rag",
+                    user_id="streamlit",
+                    initial_state={
+                        "video_name": video_name,
+                        "video_id": st.session_state.get("video_id"),
+                        "rag_enabled": True,
+                    },
+                )
+        elif st.session_state.rag_session is not None:
+            st.session_state.rag_session = None
+            st.session_state.rag_messages = []
+            st.session_state.rag_busy = False
 
     if st.session_state.preprocess_status == "running":
         st.info("Preprocess is running. This can take a while for long videos.")
@@ -800,67 +850,263 @@ def main() -> None:
             if st.session_state.adk_session is None:
                 st.info("Chatbot session is not ready yet.")
                 return
-            if st.session_state.adk_busy:
+            if st.session_state.chat_compare and st.session_state.rag_session is None:
+                st.info("RAG chatbot session is not ready yet.")
+                return
+            if st.session_state.adk_busy or (st.session_state.chat_compare and st.session_state.rag_busy):
                 st.info("Chatbot is running. Please wait for the current run to finish.")
 
-            if st.button(
-                "Reset chat session",
-                disabled=st.session_state.adk_session is None or st.session_state.adk_busy,
-            ):
-                st.session_state.adk_session = None
-                st.session_state.chat_messages = []
-                st.session_state.chat_mode_signature = None
-                st.rerun()
+            if st.session_state.chat_compare:
+                if st.button(
+                    "Reset both chat sessions",
+                    disabled=(
+                        st.session_state.adk_session is None
+                        or st.session_state.rag_session is None
+                        or st.session_state.adk_busy
+                        or st.session_state.rag_busy
+                    ),
+                ):
+                    st.session_state.adk_session = None
+                    st.session_state.rag_session = None
+                    st.session_state.chat_messages = []
+                    st.session_state.rag_messages = []
+                    st.session_state.chat_mode_signature = None
+                    st.session_state.adk_busy = False
+                    st.session_state.rag_busy = False
+                    st.rerun()
 
-            chat_container = st.container(height=520)
-            with chat_container:
-                for message in st.session_state.chat_messages:
-                    role = message.get("role", "assistant")
-                    with st.chat_message(role):
-                        author = message.get("author")
-                        if author:
-                            st.caption(author)
-                        st.markdown(message.get("content", ""))
+                left_col, right_col = st.columns(2)
+                with left_col:
+                    st.markdown("#### Baseline")
+                    chat_container = st.container(height=520)
+                    with chat_container:
+                        for message in st.session_state.chat_messages:
+                            role = message.get("role", "assistant")
+                            with st.chat_message(role):
+                                author = message.get("author")
+                                if author:
+                                    st.caption(author)
+                                st.markdown(message.get("content", ""))
 
-            time_input = st.text_input(
-                "Time (mm:ss)",
-                value="",
-                key="chat_time_input",
-                placeholder="예: 01:23",
-            )
-            prompt = st.chat_input("Message chatbot", disabled=st.session_state.adk_busy)
-            if prompt and not st.session_state.adk_busy:
-                raw_time = st.session_state.get("chat_time_input", "")
-                time_ms = _parse_time_to_ms(raw_time)
-                if raw_time and time_ms is None:
-                    st.warning("Time format should be mm:ss (예: 01:23). Sending without time.")
-                st.session_state.adk_busy = True
-                st.session_state.chat_messages.append({"role": "user", "content": prompt})
-                user_message = prompt
-                if time_ms is not None:
-                    user_message = f"[time_ms={time_ms}] {prompt}"
-                try:
-                    with st.spinner("Waiting for chatbot..."):
-                        responses = send_adk_message(st.session_state.adk_session, user_message)
-                    for response in responses:
+                with right_col:
+                    st.markdown("#### RAG")
+                    chat_container = st.container(height=520)
+                    with chat_container:
+                        for message in st.session_state.rag_messages:
+                            role = message.get("role", "assistant")
+                            with st.chat_message(role):
+                                author = message.get("author")
+                                if author:
+                                    st.caption(author)
+                                st.markdown(message.get("content", ""))
+
+                time_input = st.text_input(
+                    "Time (mm:ss)",
+                    value="",
+                    key="chat_time_input_ab",
+                    placeholder="예: 01:23",
+                )
+                prompt = st.chat_input(
+                    "Message both chatbots",
+                    key="chat_input_ab",
+                    disabled=st.session_state.adk_busy or st.session_state.rag_busy,
+                )
+                if prompt and not (st.session_state.adk_busy or st.session_state.rag_busy):
+                    raw_time = st.session_state.get("chat_time_input_ab", "")
+                    time_ms = _parse_time_to_ms(raw_time)
+                    if raw_time and time_ms is None:
+                        st.warning("Time format should be mm:ss (예: 01:23). Sending without time.")
+                    st.session_state.adk_busy = True
+                    st.session_state.rag_busy = True
+                    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                    st.session_state.rag_messages.append({"role": "user", "content": prompt})
+                    user_message = prompt
+                    if time_ms is not None:
+                        user_message = f"[time_ms={time_ms}] {prompt}"
+                    try:
+                        with st.spinner("Waiting for chatbots..."):
+                            start_time = time.perf_counter()
+                            responses = send_adk_message(st.session_state.adk_session, user_message)
+                            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                        for response in responses:
+                            st.session_state.chat_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "author": response.author,
+                                    "content": response.text,
+                                }
+                            )
+                        _log_chat_metrics(
+                            {
+                                "ts": datetime.now().isoformat(),
+                                "variant": "baseline",
+                                "video_id": st.session_state.get("video_id"),
+                                "video_name": video_name,
+                                "prompt": prompt,
+                                "time_ms": time_ms,
+                                "latency_ms": elapsed_ms,
+                                "response_count": len(responses),
+                                "response_chars": sum(len(r.text) for r in responses),
+                            }
+                        )
+                    except Exception as exc:
                         st.session_state.chat_messages.append(
                             {
                                 "role": "assistant",
-                                "author": response.author,
-                                "content": response.text,
+                                "author": "system",
+                                "content": f"Chatbot error: {exc}",
                             }
                         )
-                except Exception as exc:
-                    st.session_state.chat_messages.append(
-                        {
-                            "role": "assistant",
-                            "author": "system",
-                            "content": f"Chatbot error: {exc}",
-                        }
-                    )
-                finally:
+                        _log_chat_metrics(
+                            {
+                                "ts": datetime.now().isoformat(),
+                                "variant": "baseline",
+                                "video_id": st.session_state.get("video_id"),
+                                "video_name": video_name,
+                                "prompt": prompt,
+                                "time_ms": time_ms,
+                                "error": str(exc),
+                            }
+                        )
+                    try:
+                        with st.spinner("Waiting for chatbots..."):
+                            start_time = time.perf_counter()
+                            responses = send_adk_message(st.session_state.rag_session, user_message)
+                            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                        for response in responses:
+                            st.session_state.rag_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "author": response.author,
+                                    "content": response.text,
+                                }
+                            )
+                        _log_chat_metrics(
+                            {
+                                "ts": datetime.now().isoformat(),
+                                "variant": "rag",
+                                "video_id": st.session_state.get("video_id"),
+                                "video_name": video_name,
+                                "prompt": prompt,
+                                "time_ms": time_ms,
+                                "latency_ms": elapsed_ms,
+                                "response_count": len(responses),
+                                "response_chars": sum(len(r.text) for r in responses),
+                            }
+                        )
+                    except Exception as exc:
+                        st.session_state.rag_messages.append(
+                            {
+                                "role": "assistant",
+                                "author": "system",
+                                "content": f"Chatbot error: {exc}",
+                            }
+                        )
+                        _log_chat_metrics(
+                            {
+                                "ts": datetime.now().isoformat(),
+                                "variant": "rag",
+                                "video_id": st.session_state.get("video_id"),
+                                "video_name": video_name,
+                                "prompt": prompt,
+                                "time_ms": time_ms,
+                                "error": str(exc),
+                            }
+                        )
+                    finally:
+                        st.session_state.adk_busy = False
+                        st.session_state.rag_busy = False
+                    st.rerun()
+            else:
+                if st.button(
+                    "Reset chat session",
+                    disabled=st.session_state.adk_session is None or st.session_state.adk_busy,
+                ):
+                    st.session_state.adk_session = None
+                    st.session_state.chat_messages = []
+                    st.session_state.chat_mode_signature = None
                     st.session_state.adk_busy = False
-                st.rerun()
+                    st.rerun()
+
+                chat_container = st.container(height=520)
+                with chat_container:
+                    for message in st.session_state.chat_messages:
+                        role = message.get("role", "assistant")
+                        with st.chat_message(role):
+                            author = message.get("author")
+                            if author:
+                                st.caption(author)
+                            st.markdown(message.get("content", ""))
+
+                time_input = st.text_input(
+                    "Time (mm:ss)",
+                    value="",
+                    key="chat_time_input",
+                    placeholder="예: 01:23",
+                )
+                prompt = st.chat_input(
+                    "Message chatbot",
+                    key="chat_input_single",
+                    disabled=st.session_state.adk_busy,
+                )
+                if prompt and not st.session_state.adk_busy:
+                    raw_time = st.session_state.get("chat_time_input", "")
+                    time_ms = _parse_time_to_ms(raw_time)
+                    if raw_time and time_ms is None:
+                        st.warning("Time format should be mm:ss (예: 01:23). Sending without time.")
+                    st.session_state.adk_busy = True
+                    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                    user_message = prompt
+                    if time_ms is not None:
+                        user_message = f"[time_ms={time_ms}] {prompt}"
+                    try:
+                        with st.spinner("Waiting for chatbot..."):
+                            start_time = time.perf_counter()
+                            responses = send_adk_message(st.session_state.adk_session, user_message)
+                            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                        for response in responses:
+                            st.session_state.chat_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "author": response.author,
+                                    "content": response.text,
+                                }
+                            )
+                        _log_chat_metrics(
+                            {
+                                "ts": datetime.now().isoformat(),
+                                "variant": "baseline",
+                                "video_id": st.session_state.get("video_id"),
+                                "video_name": video_name,
+                                "prompt": prompt,
+                                "time_ms": time_ms,
+                                "latency_ms": elapsed_ms,
+                                "response_count": len(responses),
+                                "response_chars": sum(len(r.text) for r in responses),
+                            }
+                        )
+                    except Exception as exc:
+                        st.session_state.chat_messages.append(
+                            {
+                                "role": "assistant",
+                                "author": "system",
+                                "content": f"Chatbot error: {exc}",
+                            }
+                        )
+                        _log_chat_metrics(
+                            {
+                                "ts": datetime.now().isoformat(),
+                                "variant": "baseline",
+                                "video_id": st.session_state.get("video_id"),
+                                "video_name": video_name,
+                                "prompt": prompt,
+                                "time_ms": time_ms,
+                                "error": str(exc),
+                            }
+                        )
+                    finally:
+                        st.session_state.adk_busy = False
+                    st.rerun()
 
 
 if __name__ == "__main__":

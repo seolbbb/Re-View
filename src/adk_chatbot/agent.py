@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 from typing import Any, Dict
 from urllib import error as urllib_error
@@ -16,6 +17,13 @@ from src.adk_chatbot.store import VideoStore
 
 def _process_api_base() -> str:
     return os.environ.get("PROCESS_API_URL", "http://localhost:8001").rstrip("/")
+
+
+_TIME_TAG_RE = re.compile(r"\[time_ms=\d+\]\s*")
+
+
+def _strip_time_tag(text: str) -> str:
+    return _TIME_TAG_RE.sub("", text or "").strip()
 
 
 def _call_process_api(method: str, path: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -307,6 +315,63 @@ def get_summary_context(
     }
 
 
+def search_summary_context(
+    tool_context: ToolContext,
+    query: str,
+    limit: int | None = None,
+    threshold: float | None = None,
+) -> Dict[str, Any]:
+    """RAG 기반 요약 검색 결과를 반환합니다."""
+    query = _strip_time_tag(query)
+    if not query:
+        return {"success": False, "error": "query is empty"}
+
+    video_id = tool_context.state.get("video_id")
+    video_name = tool_context.state.get("video_name")
+    if not video_id and not video_name:
+        return {"success": False, "error": "video_name or video_id is not set"}
+
+    if video_id:
+        try:
+            top_k = int(limit) if limit is not None else 5
+        except (TypeError, ValueError):
+            top_k = 5
+        try:
+            threshold_value = float(threshold) if threshold is not None else 0.4
+        except (TypeError, ValueError):
+            threshold_value = 0.4
+
+        payload = {
+            "query": query,
+            "top_k": top_k,
+            "threshold": threshold_value,
+        }
+        response = _call_process_api("POST", f"/videos/{video_id}/summaries/search", payload)
+        if response.get("success"):
+            items = response.get("payload", {}).get("items", [])
+            tool_context.state["summary_cache"] = items
+            tool_context.state["pending_updates"] = []
+            return {
+                "success": True,
+                "summary_cache": items,
+                "count": len(items),
+                "source": "rag",
+            }
+
+    # Fallback to local file-based flow if DB search fails or video_id is missing
+    fallback_updates = get_summary_updates(tool_context)
+    if fallback_updates.get("success"):
+        fallback_context = get_summary_context(tool_context)
+        fallback_context["source"] = "local_fallback"
+        return fallback_context
+
+    return {
+        "success": False,
+        "error": "rag search failed",
+        "details": fallback_updates.get("error"),
+    }
+
+
 summary_chat_agent = Agent(
     name="summary_chat_agent",
     model="gemini-2.5-flash",
@@ -337,7 +402,36 @@ summary_chat_agent = Agent(
     generate_content_config=types.GenerateContentConfig(temperature=0.2),
 )
 
+
+summary_chat_rag_agent = Agent(
+    name="summary_chat_rag_agent",
+    model="gemini-2.5-flash",
+    description="Chatbot for summary questions (RAG).",
+    instruction=(
+        "You are the Summary Chatbot (RAG).\n"
+        "Always respond in Korean.\n"
+        "Workflow:\n"
+        "1) Call get_summary_status when you need summary generation status.\n"
+        "2) If the user asks which video is selected, call get_video_name and reply with it.\n"
+        "3) If the user asks about summary generation status, reply with the status from get_summary_status.\n"
+        "4) If the user explicitly asks to start or regenerate the summary, tell them to use the UI process_start button.\n"
+        "5) If the user message includes [time_ms=...], call get_summary_updates then get_summary_context with time_ms.\n"
+        "6) For summary questions, call search_summary_context with query set to the user message.\n"
+        "   - If it returns 'video_name is not set', tell the user to select a video in the UI and stop.\n"
+        "   - If summary_cache is empty, say no relevant summaries are available.\n"
+        "7) Answer using ONLY summary_cache or matches. Do not guess beyond them."
+    ),
+    tools=[
+        get_video_name,
+        get_summary_status,
+        get_summary_updates,
+        get_summary_context,
+        search_summary_context,
+    ],
+    generate_content_config=types.GenerateContentConfig(temperature=0.2),
+)
+
 root_agent = summary_chat_agent
 
 
-__all__ = ["summary_chat_agent", "root_agent"]
+__all__ = ["summary_chat_agent", "summary_chat_rag_agent", "root_agent"]

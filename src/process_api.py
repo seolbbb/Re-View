@@ -30,6 +30,10 @@ GET 실행
     curl http://localhost:8000/videos/{video_id}/progress
 최신 요약:
     curl http://localhost:8000/videos/{video_id}/summary
+요약 시맨틱 검색:
+    curl -X POST http://localhost:8000/videos/{video_id}/summaries/search \\
+      -H "Content-Type: application/json" \\
+      -d '{"query":"검색어","top_k":5,"threshold":0.4}'
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from src.db import get_supabase_adapter
+from src.fusion.renderer import render_summary_to_text
 from src.run_process_pipeline import run_processing_pipeline
 
 
@@ -61,6 +66,12 @@ class ProcessRequest(BaseModel):
 class ProcessResponse(BaseModel):
     status: str
     message: str
+
+
+class SummarySearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    threshold: float = 0.4
 
 
 @app.get("/health")
@@ -275,6 +286,52 @@ def get_video_summaries(
     # segment_index 기준 정렬
     items.sort(key=lambda x: x.get("segment_index") or 0)
     
+    return {
+        "video_id": video_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.post("/videos/{video_id}/summaries/search")
+def search_video_summaries(video_id: str, request: SummarySearchRequest) -> Dict[str, Any]:
+    """요약 결과에 대한 시맨틱 검색 (RAG용)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    query = (request.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    top_k = max(1, min(request.top_k, 50))
+    threshold = max(0.0, min(request.threshold, 1.0))
+
+    rows = adapter.search_summaries(
+        video_id,
+        query=query,
+        match_count=top_k,
+        match_threshold=threshold,
+    )
+
+    items = []
+    for row in rows:
+        summary_payload = row.get("summary") or {}
+        items.append({
+            "summary_id": row.get("summary_id") or row.get("id"),
+            "segment_id": row.get("segment_id"),
+            "segment_index": row.get("segment_index"),
+            "start_ms": row.get("start_ms"),
+            "end_ms": row.get("end_ms"),
+            "summary": summary_payload,
+            "summary_text": render_summary_to_text(summary_payload),
+            "similarity": row.get("similarity"),
+        })
+
     return {
         "video_id": video_id,
         "count": len(items),

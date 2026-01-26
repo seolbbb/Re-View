@@ -282,6 +282,42 @@ CREATE POLICY "Users can delete summaries of own videos" ON summaries FOR DELETE
 CREATE INDEX IF NOT EXISTS idx_summaries_embedding_hnsw 
 ON summaries USING hnsw (embedding vector_cosine_ops);
 
+-- Semantic search RPC for summaries
+CREATE OR REPLACE FUNCTION match_summaries(
+    query_embedding vector(1024),
+    match_threshold float,
+    match_count int,
+    filter_video_id uuid DEFAULT NULL
+)
+RETURNS TABLE (
+    summary_id uuid,
+    segment_id uuid,
+    video_id uuid,
+    summary jsonb,
+    similarity float,
+    segment_index integer,
+    start_ms integer,
+    end_ms integer
+)
+LANGUAGE SQL STABLE AS $$
+    SELECT
+        s.id AS summary_id,
+        s.segment_id,
+        s.video_id,
+        s.summary,
+        1 - (s.embedding <=> query_embedding) AS similarity,
+        seg.segment_index,
+        seg.start_ms,
+        seg.end_ms
+    FROM summaries s
+    LEFT JOIN segments seg ON seg.id = s.segment_id
+    WHERE s.embedding IS NOT NULL
+      AND (filter_video_id IS NULL OR s.video_id = filter_video_id)
+      AND (1 - (s.embedding <=> query_embedding)) >= match_threshold
+    ORDER BY s.embedding <=> query_embedding
+    LIMIT match_count;
+$$;
+
 -- ============================================================================
 -- 10. summary_results (요약 결과 집계)
 -- ============================================================================
@@ -432,12 +468,9 @@ BEGIN
     ALTER TABLE summary_results ADD CONSTRAINT check_summary_format
         CHECK (format IN ('timeline', 'tldr', 'tldr_timeline'));
 
-    -- captures 추가 컬럼(time_ranges, info_score)
+    -- captures 추가 컬럼(time_ranges)
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'time_ranges') THEN
         ALTER TABLE captures ADD COLUMN time_ranges JSONB;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'captures' AND column_name = 'info_score') THEN
-        ALTER TABLE captures ADD COLUMN info_score DOUBLE PRECISION;
     END IF;
 
     -- judge.batch_index 컬럼 추가
