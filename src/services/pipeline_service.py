@@ -129,7 +129,7 @@ def start_adk_session(
 
 def _normalize_chat_backend(backend: Optional[str]) -> str:
     value = (backend or os.getenv("CHATBOT_BACKEND", "adk")).strip().lower()
-    if value in {"langgraph", "lg"}:
+    if value in {"langgraph", "lg", "langgraph-agent"}:
         return "langgraph" 
     return "adk"
 
@@ -160,3 +160,9 @@ def send_chat_message(session: Any, message: str) -> List[Any]:
 
 def send_adk_message(session: AdkSession, message: str) -> List[AdkMessage]:
     return send_chat_message(session, message)
+
+
+def stream_chat_message(session: Any, message: str) -> Any:
+    if hasattr(session, "stream_message"):
+        return session.stream_message(message)
+    return session.send_message(message)

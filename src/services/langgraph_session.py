@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,24 +22,19 @@ else:
     _LANGGRAPH_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
+_TRACE_LOGGER: Optional[logging.Logger] = None
+_TRACE_LOG_PATH = Path(os.getenv("CHATBOT_TRACE_LOG", "logs/langgraph_trace.log"))
 
 _TIME_TAG_RE = re.compile(r"\[time_ms=(\d+)\]")
 _BACKEND_AUTHOR = "langgraph_chatbot"
 _DEFAULT_MODEL = os.getenv("CHATBOT_LLM_MODEL", "gemini-2.5-flash")
 _DEFAULT_TEMPERATURE = os.getenv("CHATBOT_LLM_TEMPERATURE", "0.2")
 _DEFAULT_REASONING_MODE = os.getenv("CHATBOT_REASONING_MODE", "flash")
+_DEFAULT_ROUTER_MODE = os.getenv("CHATBOT_ROUTER", "rules").strip().lower()
 _DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
-_DETAIL_KEYWORDS = (
-    "자세히",
-    "상세",
-    "근거",
-    "원문",
-    "출처",
-    "증거",
-    "detail",
-    "evidence",
-    "source",
-)
+_RAG_ENABLED = os.getenv("CHATBOT_RAG_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
+_RAG_MATCH_COUNT = int(os.getenv("CHATBOT_RAG_MATCH_COUNT", "5"))
+_RAG_THRESHOLD = float(os.getenv("CHATBOT_RAG_THRESHOLD", "0.4"))
 _MAX_EVIDENCE_UNITS = int(os.getenv("CHATBOT_MAX_EVIDENCE_UNITS", "10"))
 
 _OUT_OF_RANGE_MESSAGE = (
@@ -51,17 +47,58 @@ _PARTIAL_NOT_READY = "Partial summary chatbot is not implemented yet."
 _NEED_REASONING_MODE_MESSAGE = "응답 모드를 선택해 주세요. (flash 또는 thinking)"
 
 
+def _get_trace_logger() -> logging.Logger:
+    global _TRACE_LOGGER
+    if _TRACE_LOGGER:
+        return _TRACE_LOGGER
+    trace_logger = logging.getLogger("langgraph_trace")
+    if not trace_logger.handlers:
+        _TRACE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(_TRACE_LOG_PATH, encoding="utf-8")
+        formatter = logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S")
+        handler.setFormatter(formatter)
+        trace_logger.addHandler(handler)
+    trace_logger.setLevel(logging.INFO)
+    trace_logger.propagate = False
+    _TRACE_LOGGER = trace_logger
+    return trace_logger
+
+
+def _trace(event: str, **fields: Any) -> None:
+    logger = _get_trace_logger()
+    if event == "session.message":
+        logger.info("=================================")
+    parts = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={value}")
+    payload = ", ".join(parts)
+    logger.info("%s | %s", event, payload)
+
+
+def _shorten(text: str, limit: int = 160) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[:limit]}..."
+
+
 class ChatState(TypedDict, total=False):
     message: str
     cleaned_message: str
     time_ms: Optional[int]
     intent: str
+    next_step: str
     selected_mode: Optional[str]
     selected_reasoning_mode: Optional[str]
     chat_mode: Optional[str]
     reasoning_mode: Optional[str]
-    detail_requested: bool
+    enrich_decision: str
+    summary_decision: str
     response: str
+    streaming: bool
+    prompt: str
     answer_records: List[Dict[str, Any]]
     history: List[Dict[str, str]]
     history_flash: List[Dict[str, str]]
@@ -73,7 +110,6 @@ class ChatState(TypedDict, total=False):
     video_id: Optional[str]
     video_root: Optional[str]
     output_base: Optional[str]
-    unit_cache: Dict[str, Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -101,12 +137,8 @@ def _normalize_reasoning_mode(text: str) -> Optional[str]:
     return None
 
 
-def _detail_requested(text: str) -> bool:
-    lowered = text.lower()
-    return any(keyword in lowered for keyword in _DETAIL_KEYWORDS)
-
-
 def _parse_input(state: ChatState) -> Dict[str, Any]:
+    """사용자 입력을 파싱해 라우팅에 필요한 필드를 구성한다."""
     message = state.get("message", "") or ""
     time_ms: Optional[int] = None
     match = _TIME_TAG_RE.search(message)
@@ -119,6 +151,12 @@ def _parse_input(state: ChatState) -> Dict[str, Any]:
     cleaned = message.strip()
     selected_reasoning_mode = _normalize_reasoning_mode(cleaned)
     selected_mode = _normalize_mode(cleaned)
+    _trace(
+        "node.parse_input",
+        has_time_tag=time_ms is not None,
+        selected_mode=selected_mode,
+        selected_reasoning=selected_reasoning_mode,
+    )
     if selected_reasoning_mode:
         intent = "reasoning_select"
     else:
@@ -129,24 +167,111 @@ def _parse_input(state: ChatState) -> Dict[str, Any]:
         "selected_mode": selected_mode,
         "selected_reasoning_mode": selected_reasoning_mode,
         "intent": intent,
-        "detail_requested": _detail_requested(cleaned),
     }
 
 
 def _route_after_parse(state: ChatState) -> str:
+    """parse_input 결과를 바탕으로 다음 노드를 규칙 기반으로 결정한다."""
     if state.get("intent") == "reasoning_select":
-        return "reasoning_select"
+        decision = "reasoning_select"
+        _trace("route.rules", decision=decision)
+        return decision
     if state.get("intent") == "mode_select":
-        return "mode_select"
+        decision = "mode_select"
+        _trace("route.rules", decision=decision)
+        return decision
     mode = state.get("chat_mode")
     if mode == "partial":
-        return "partial"
+        decision = "partial"
+        _trace("route.rules", decision=decision)
+        return decision
     if mode == "full":
-        return "full"
-    return "need_mode"
+        decision = "full"
+        _trace("route.rules", decision=decision)
+        return decision
+    decision = "need_mode"
+    _trace("route.rules", decision=decision)
+    return decision
+
+
+_ROUTER_LABELS = {"mode_select", "reasoning_select", "partial", "full", "need_mode"}
+
+
+def _build_router_prompt(state: ChatState) -> str:
+    """LLM 라우터용 프롬프트를 구성한다."""
+    message = state.get("cleaned_message", "")
+    return (
+        "You are a routing assistant for a chatbot state machine.\n"
+        "Choose exactly one label from: mode_select, reasoning_select, full, partial, need_mode.\n"
+        "Rules:\n"
+        "- If the user explicitly selects chat mode (full/partial), choose mode_select.\n"
+        "- If the user explicitly selects reasoning mode (flash/thinking), choose reasoning_select.\n"
+        "- If chat_mode is already set, choose full or partial to proceed.\n"
+        "- If chat_mode is not set and the user asks a question, choose need_mode.\n"
+        "- If unsure, choose need_mode.\n"
+        "\n"
+        f"message={message!r}\n"
+        f"selected_mode={state.get('selected_mode')!r}\n"
+        f"selected_reasoning_mode={state.get('selected_reasoning_mode')!r}\n"
+        f"chat_mode={state.get('chat_mode')!r}\n"
+        f"reasoning_mode={state.get('reasoning_mode')!r}\n"
+        f"time_ms={state.get('time_ms')!r}\n"
+        "\n"
+        "Return only the label."
+    )
+
+
+def _generate_router_choice(prompt: str) -> str:
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
+
+    client = genai.Client()
+    config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=16)
+    response = client.models.generate_content(
+        model=_DEFAULT_MODEL,
+        contents=prompt,
+        config=config,
+    )
+    text = _extract_genai_text(response)
+    return text.strip()
+
+
+def _normalize_router_label(value: str) -> str:
+    cleaned = re.sub(r"[^a-z_]", "", value.strip().lower())
+    return cleaned
+
+
+def _route_with_llm(state: ChatState) -> Dict[str, Any]:
+    """LLM 라우팅 결과를 next_step에 기록한다."""
+    if state.get("selected_mode") or state.get("selected_reasoning_mode"):
+        next_step = _route_after_parse(state)
+        _trace("route.llm", decision=next_step, reason="explicit_selection")
+        return {"next_step": next_step}
+    if state.get("chat_mode") in {"full", "partial"}:
+        decision = state.get("chat_mode")
+        _trace("route.llm", decision=decision, reason="chat_mode_set")
+        return {"next_step": decision}
+    prompt = _build_router_prompt(state)
+    try:
+        raw = _generate_router_choice(prompt)
+    except Exception as exc:
+        logger.warning("LLM router failed: %s", exc)
+        _trace("route.llm", decision="fallback_rules", error=str(exc))
+        return {"next_step": _route_after_parse(state)}
+    label = _normalize_router_label(raw)
+    if label not in _ROUTER_LABELS:
+        _trace("route.llm", decision="fallback_rules", raw=raw, normalized=label)
+        return {"next_step": _route_after_parse(state)}
+    _trace("route.llm", decision=label, raw=raw)
+    return {"next_step": label}
 
 
 def _handle_mode_select(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    """사용자가 선택한 chat_mode를 반영하고 요약 상태를 확인한다."""
+    _trace("node.mode_select", selected=state.get("selected_mode"))
     selected_mode = state.get("selected_mode")
     if selected_mode not in {"full", "partial"}:
         return {"response": _NEED_MODE_MESSAGE}
@@ -166,6 +291,8 @@ def _handle_mode_select(state: ChatState, backend: SummaryBackend) -> Dict[str, 
 
 
 def _handle_reasoning_select(state: ChatState) -> Dict[str, Any]:
+    """사용자가 선택한 reasoning_mode를 반영한다."""
+    _trace("node.reasoning_select", selected=state.get("selected_reasoning_mode"))
     selected_mode = state.get("selected_reasoning_mode")
     if selected_mode not in {"flash", "thinking"}:
         return {"response": _NEED_REASONING_MODE_MESSAGE}
@@ -176,11 +303,14 @@ def _handle_reasoning_select(state: ChatState) -> Dict[str, Any]:
 
 
 def _handle_partial(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    _trace("node.partial")
     result = backend.partial_not_implemented(state)
     return {"response": result.get("error", _PARTIAL_NOT_READY)}
 
 
 def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    """요약 캐시/시간 필터를 준비해 answer_records를 구성한다."""
+    _trace("node.prepare_full", video_id=state.get("video_id"), time_ms=state.get("time_ms"))
     updates = backend.get_summary_updates(state)
     if not updates.get("success"):
         return {"response": updates.get("error", "요약 업데이트에 실패했습니다.")}
@@ -197,27 +327,17 @@ def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     if time_ms is not None and context.get("out_of_range"):
         return {"response": _OUT_OF_RANGE_MESSAGE}
 
+    # 시간 태그가 있으면 해당 구간만 우선 사용
     matches = context.get("matches") or []
     records = matches or summary_cache
-    reasoning_mode = state.get("reasoning_mode") or "flash"
-    detail_requested = bool(state.get("detail_requested")) and reasoning_mode != "flash"
-    if reasoning_mode == "thinking":
-        stt_ids, cap_ids = _collect_evidence_ids(records)
-        if stt_ids or cap_ids:
-            evidence = backend.get_evidence(state, stt_ids=stt_ids, cap_ids=cap_ids)
-            if evidence.get("success"):
-                records = _attach_db_evidence(
-                    records,
-                    evidence.get("stt", []),
-                    evidence.get("vlm", []),
-                )
-            else:
-                logger.warning("Evidence lookup failed: %s", evidence.get("error"))
-        return {"answer_records": records}
-    if detail_requested:
-        cache = _get_unit_cache(state)
-        records = _attach_evidence(records, cache)
-        return {"answer_records": records, "unit_cache": cache}
+    _trace(
+        "summary.records",
+        total=len(summary_cache),
+        matches=len(matches),
+        used=len(records),
+        reasoning_mode=state.get("reasoning_mode"),
+    )
+    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
     if reasoning_mode == "flash":
         records = _sanitize_records_for_flash(records)
     return {"answer_records": records}
@@ -225,7 +345,9 @@ def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
 
 def _route_after_prepare(state: ChatState) -> str:
     if state.get("response"):
+        _trace("route.prepare_full", decision="respond")
         return "respond"
+    _trace("route.prepare_full", decision="llm")
     return "llm"
 
 
@@ -258,165 +380,6 @@ def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
     return items
 
 
-def _load_units_from_segments_units(paths: List[Path]) -> Dict[str, Dict[str, Any]]:
-    stt_units: Dict[str, Dict[str, Any]] = {}
-    vlm_units: Dict[str, Dict[str, Any]] = {}
-    for path in paths:
-        for record in _iter_jsonl(path):
-            for unit in record.get("transcript_units", []) or []:
-                unit_id = unit.get("unit_id")
-                if isinstance(unit_id, str) and unit_id not in stt_units:
-                    stt_units[unit_id] = unit
-            for unit in record.get("visual_units", []) or []:
-                unit_id = unit.get("unit_id")
-                if isinstance(unit_id, str) and unit_id not in vlm_units:
-                    vlm_units[unit_id] = unit
-    return {"stt": stt_units, "vlm": vlm_units}
-
-
-def _load_stt_units(path: Path, cache: Dict[str, Dict[str, Any]]) -> None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(payload, list):
-        payload = payload.get("segments", []) if isinstance(payload, dict) else []
-    for segment in payload or []:
-        if not isinstance(segment, dict):
-            continue
-        unit_id = segment.get("id")
-        if isinstance(unit_id, str) and unit_id not in cache:
-            cache[unit_id] = {
-                "unit_id": unit_id,
-                "start_ms": segment.get("start_ms"),
-                "end_ms": segment.get("end_ms"),
-                "text": segment.get("text"),
-            }
-
-
-def _load_vlm_units(paths: List[Path], cache: Dict[str, Dict[str, Any]]) -> None:
-    for path in paths:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        items = payload.get("items") if isinstance(payload, dict) else None
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            unit_id = item.get("id")
-            if isinstance(unit_id, str) and unit_id not in cache:
-                cache[unit_id] = {
-                    "unit_id": unit_id,
-                    "timestamp_ms": item.get("timestamp_ms"),
-                    "text": item.get("extracted_text") or item.get("text"),
-                }
-
-
-def _build_unit_cache(state: ChatState) -> Dict[str, Dict[str, Any]]:
-    video_root = _resolve_video_root(state)
-    cache: Dict[str, Dict[str, Any]] = {"stt": {}, "vlm": {}}
-    if not video_root:
-        return cache
-
-    segment_paths: List[Path] = []
-    fusion_units = video_root / "fusion" / "segments_units.jsonl"
-    if fusion_units.exists():
-        segment_paths.append(fusion_units)
-    batches_dir = video_root / "batches"
-    if batches_dir.exists():
-        segment_paths.extend(sorted(batches_dir.glob("batch_*/segments_units.jsonl")))
-
-    if segment_paths:
-        unit_data = _load_units_from_segments_units(segment_paths)
-        cache["stt"].update(unit_data["stt"])
-        cache["vlm"].update(unit_data["vlm"])
-
-    stt_path = video_root / "stt.json"
-    if stt_path.exists():
-        _load_stt_units(stt_path, cache["stt"])
-
-    vlm_paths: List[Path] = []
-    vlm_root = video_root / "vlm.json"
-    if vlm_root.exists():
-        vlm_paths.append(vlm_root)
-    if batches_dir.exists():
-        vlm_paths.extend(sorted(batches_dir.glob("batch_*/vlm.json")))
-    if vlm_paths:
-        _load_vlm_units(vlm_paths, cache["vlm"])
-
-    return cache
-
-
-def _cache_key(state: ChatState) -> str:
-    video_root = state.get("video_root")
-    if video_root:
-        return str(video_root)
-    return state.get("video_name") or ""
-
-
-def _get_unit_cache(state: ChatState) -> Dict[str, Dict[str, Any]]:
-    cache = state.get("unit_cache")
-    key = _cache_key(state)
-    if not isinstance(cache, dict) or cache.get("_cache_key") != key:
-        cache = _build_unit_cache(state)
-        cache["_cache_key"] = key
-    return cache
-
-
-def _format_unit(unit_id: str, unit: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "unit_id": unit_id,
-        "start_ms": unit.get("start_ms"),
-        "end_ms": unit.get("end_ms"),
-        "timestamp_ms": unit.get("timestamp_ms"),
-        "text": unit.get("text"),
-    }
-
-
-def _attach_evidence(
-    records: List[Dict[str, Any]],
-    cache: Dict[str, Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    stt_cache = cache.get("stt", {})
-    vlm_cache = cache.get("vlm", {})
-    enriched: List[Dict[str, Any]] = []
-    for record in records:
-        source_refs = record.get("source_refs", {}) or {}
-        stt_ids = source_refs.get("stt_ids") or []
-        vlm_ids = source_refs.get("vlm_ids") or []
-
-        evidence: Dict[str, Any] = {}
-        if stt_ids:
-            items: List[Dict[str, Any]] = []
-            for unit_id in stt_ids[:_MAX_EVIDENCE_UNITS]:
-                if not isinstance(unit_id, str):
-                    continue
-                unit = stt_cache.get(unit_id)
-                if unit:
-                    items.append(_format_unit(unit_id, unit))
-            if items:
-                evidence["stt"] = items
-        if vlm_ids:
-            items = []
-            for unit_id in vlm_ids[:_MAX_EVIDENCE_UNITS]:
-                if not isinstance(unit_id, str):
-                    continue
-                unit = vlm_cache.get(unit_id)
-                if unit:
-                    items.append(_format_unit(unit_id, unit))
-            if items:
-                evidence["vlm"] = items
-
-        if evidence:
-            updated = dict(record)
-            updated["evidence"] = evidence
-            enriched.append(updated)
-        else:
-            enriched.append(record)
-    return enriched
 
 
 def _normalize_evidence_refs(value: Any) -> List[str]:
@@ -460,6 +423,26 @@ def _collect_evidence_ids(records: List[Dict[str, Any]]) -> Tuple[List[str], Lis
                 seen_stt.add(ref)
                 stt_ids.append(ref)
             elif (ref.startswith("cap_") or ref.startswith("vlm_")) and ref not in seen_cap:
+                seen_cap.add(ref)
+                cap_ids.append(ref)
+    return stt_ids, cap_ids
+
+
+def _collect_source_ref_ids(records: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    stt_ids: List[str] = []
+    cap_ids: List[str] = []
+    seen_stt = set()
+    seen_cap = set()
+    for record in records:
+        source_refs = record.get("source_refs") or {}
+        stt_list = source_refs.get("stt_ids") or []
+        vlm_list = source_refs.get("vlm_ids") or []
+        for ref in stt_list:
+            if ref and ref not in seen_stt:
+                seen_stt.add(ref)
+                stt_ids.append(ref)
+        for ref in vlm_list:
+            if ref and ref not in seen_cap:
                 seen_cap.add(ref)
                 cap_ids.append(ref)
     return stt_ids, cap_ids
@@ -565,16 +548,243 @@ def _build_prompt(state: ChatState) -> str:
         lines = [f"{item.get('role')}: {item.get('content')}" for item in tail]
         history_text = "\n".join(lines)
     summary_json = _format_records(records)
-    prompt = (
-        "You are the Summary Chatbot.\n"
-        "Always respond in Korean.\n"
-        "Use only the provided summary records and evidence to answer.\n"
-        "If the answer is not present, say you cannot find it.\n"
-    )
+    if reasoning_mode == "thinking":
+        prompt = (
+            "You are the Summary Chatbot.\n"
+            "Always respond in Korean.\n"
+            "Use only the provided summary records and evidence to answer.\n"
+            "Explain evidence in natural language. Do not reveal internal IDs (e.g., segment_id, cap_001, stt_001).\n"
+            "If summaries are missing but evidence is sufficient, provide a reasonable interpretation based on the evidence.\n"
+            "If the answer is not present, say you cannot find it.\n"
+        )
+    else:
+        prompt = (
+            "You are the Summary Chatbot.\n"
+            "Always respond in Korean.\n"
+            "Use only the provided summary records to answer.\n"
+            "Explain evidence in natural language. Do not reveal internal IDs (e.g., segment_id, cap_001, stt_001).\n"
+            "If summaries are missing but evidence is sufficient, provide a reasonable interpretation based on the evidence.\n"
+            "If the answer is not present, say you cannot find it.\n"
+        )
     if history_text:
         prompt += f"\nRecent conversation:\n{history_text}\n"
     prompt += f"\nUser question:\n{question}\n\nSummary records:\n{summary_json}\n"
     return prompt
+
+
+def _build_enrichment_prompt(state: ChatState) -> str:
+    question = state.get("cleaned_message", "").strip()
+    records = state.get("answer_records") or []
+    condensed: List[Dict[str, Any]] = []
+    for record in records[:6]:
+        summary = record.get("summary") or {}
+        bullets = summary.get("bullets") or []
+        claims = [item.get("claim") for item in bullets if item.get("claim")]
+        condensed.append(
+            {
+                "segment_id": record.get("segment_id") or record.get("segment_index"),
+                "claims": claims[:6],
+            }
+        )
+    payload = json.dumps(condensed, ensure_ascii=False, indent=2)
+    return (
+        "You are deciding whether the current summaries are sufficient to answer the user.\n"
+        "If the summaries are likely insufficient and you should fetch extra evidence, reply with 'enrich'.\n"
+        "If the summaries are sufficient, reply with 'answer'.\n"
+        "Return only one word: enrich or answer.\n"
+        "\n"
+        f"Question:\n{question}\n\n"
+        f"Summary claims:\n{payload}\n"
+    )
+
+
+def _build_summary_sufficiency_prompt(state: ChatState) -> str:
+    """요약만으로 답변 가능 여부를 판단하기 위한 프롬프트."""
+    question = state.get("cleaned_message", "").strip()
+    records = state.get("answer_records") or []
+    condensed: List[Dict[str, Any]] = []
+    for record in records[:8]:
+        summary = record.get("summary") or {}
+        bullets = summary.get("bullets") or []
+        claims = [item.get("claim") for item in bullets if item.get("claim")]
+        condensed.append(
+            {
+                "segment_id": record.get("segment_id") or record.get("segment_index"),
+                "claims": claims[:8],
+            }
+        )
+    payload = json.dumps(condensed, ensure_ascii=False, indent=2)
+    return (
+        "Decide if the summaries alone are sufficient to answer the user.\n"
+        "If sufficient, reply 'answer'. If not, reply 'need_evidence'.\n"
+        "Return only one word: answer or need_evidence.\n"
+        "\n"
+        f"Question:\n{question}\n\n"
+        f"Summary claims:\n{payload}\n"
+    )
+
+
+def _normalize_summary_sufficiency(value: str) -> str:
+    cleaned = re.sub(r"[^a-z_]", "", value.strip().lower())
+    if cleaned == "need_evidence":
+        return "need_evidence"
+    return "answer"
+
+
+def _decide_summary_sufficiency(state: ChatState) -> Dict[str, Any]:
+    """요약만으로 충분한지 판단해 summary_decision을 반환한다."""
+    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
+    if reasoning_mode == "thinking":
+        _trace("summary.decide", decision="need_evidence", reason="thinking_mode")
+        return {"summary_decision": "need_evidence"}
+    prompt = _build_summary_sufficiency_prompt(state)
+    try:
+        raw = _generate_with_genai(prompt)
+    except Exception as exc:
+        logger.warning("Summary sufficiency decision failed: %s", exc)
+        _trace("summary.decide", decision="answer", error=str(exc))
+        return {"summary_decision": "answer"}
+    decision = _normalize_summary_sufficiency(raw)
+    _trace("summary.decide", decision=decision, raw=raw)
+    return {"summary_decision": decision}
+
+
+def _route_after_summary_sufficiency(state: ChatState) -> str:
+    if state.get("summary_decision") == "need_evidence":
+        return "need_evidence"
+    return "answer"
+
+
+def _normalize_enrich_decision(value: str) -> str:
+    cleaned = re.sub(r"[^a-z]", "", value.strip().lower())
+    return "enrich" if cleaned == "enrich" else "answer"
+
+
+def _decide_enrichment(state: ChatState) -> Dict[str, Any]:
+    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
+    if reasoning_mode == "thinking":
+        _trace("enrich.decide", decision="enrich", reason="thinking_mode")
+        return {"enrich_decision": "enrich"}
+    prompt = _build_enrichment_prompt(state)
+    try:
+        raw = _generate_with_genai(prompt)
+    except Exception as exc:
+        logger.warning("Enrichment decision failed: %s", exc)
+        _trace("enrich.decide", decision="answer", error=str(exc))
+        return {"enrich_decision": "answer"}
+    decision = _normalize_enrich_decision(raw)
+    _trace("enrich.decide", decision=decision, raw=raw)
+    return {"enrich_decision": decision}
+
+
+def _route_after_enrich_decision(state: ChatState) -> str:
+    if state.get("enrich_decision") == "enrich":
+        return "enrich"
+    return "answer"
+
+
+def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    """summary의 source_refs를 기반으로 STT/VLM evidence를 조회해 병합한다."""
+    records = state.get("answer_records") or []
+    stt_ids, cap_ids = _collect_source_ref_ids(records)
+    if not stt_ids and not cap_ids:
+        stt_ids, cap_ids = _collect_evidence_ids(records)
+    if not stt_ids and not cap_ids:
+        _trace("enrich.evidence", status="skip", stt_ids=0, cap_ids=0)
+        return {}
+    evidence = backend.get_evidence(state, stt_ids=stt_ids, cap_ids=cap_ids)
+    if not evidence.get("success"):
+        logger.warning("Evidence lookup failed: %s", evidence.get("error"))
+        _trace("enrich.evidence", status="error", error=evidence.get("error"))
+        return {}
+    enriched = _attach_db_evidence(
+        records,
+        evidence.get("stt", []),
+        evidence.get("vlm", []),
+    )
+    _trace(
+        "enrich.evidence",
+        status="ok",
+        stt_ids=len(stt_ids),
+        cap_ids=len(cap_ids),
+        stt_rows=len(evidence.get("stt") or []),
+        vlm_rows=len(evidence.get("vlm") or []),
+    )
+    return {"answer_records": enriched}
+
+
+def _rag_row_to_record(row: Dict[str, Any]) -> Dict[str, Any]:
+    summary = row.get("summary")
+    if not isinstance(summary, dict):
+        text = row.get("summary_text") or row.get("text") or ""
+        summary = {"rag_text": text}
+    return {
+        "segment_id": row.get("segment_id") or row.get("segment_index") or row.get("id"),
+        "start_ms": row.get("start_ms"),
+        "end_ms": row.get("end_ms"),
+        "summary": summary,
+        "rag_score": row.get("similarity"),
+    }
+
+
+def _merge_rag_records(
+    records: List[Dict[str, Any]],
+    rag_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    existing_ids = set()
+    for record in records:
+        seg_id = record.get("segment_id") or record.get("segment_index")
+        if seg_id is not None:
+            existing_ids.add(str(seg_id))
+    merged = list(records)
+    for row in rag_rows:
+        record = _rag_row_to_record(row)
+        seg_id = record.get("segment_id")
+        if seg_id is not None and str(seg_id) in existing_ids:
+            continue
+        merged.append(record)
+        if seg_id is not None:
+            existing_ids.add(str(seg_id))
+    return merged
+
+
+def _rag_search(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
+    """semantic search 결과를 요약 레코드에 병합한다."""
+    if not _RAG_ENABLED:
+        _trace("rag.search", enabled=False)
+        return {}
+
+    query = state.get("cleaned_message", "")
+    try:
+        result = backend.search_semantic_summaries(
+            state,
+            query=query,
+            match_count=_RAG_MATCH_COUNT,
+            threshold=_RAG_THRESHOLD,
+        )
+    except AttributeError:
+        _trace("rag.search", enabled=False, error="backend_not_supported")
+        return {}
+
+    if not result.get("success"):
+        _trace("rag.search", enabled=True, status="error", error=result.get("error"))
+        return {}
+
+    items = result.get("items") or []
+    if not items:
+        _trace("rag.search", enabled=True, status="empty", query=_shorten(query))
+        return {}
+
+    merged = _merge_rag_records(state.get("answer_records") or [], items)
+    _trace(
+        "rag.search",
+        enabled=True,
+        status="ok",
+        query=_shorten(query),
+        results=len(items),
+        merged=len(merged),
+    )
+    return {"answer_records": merged}
 
 
 def _generate_with_genai(prompt: str) -> str:
@@ -601,6 +811,57 @@ def _generate_with_genai(prompt: str) -> str:
     return str(response)
 
 
+def _extract_genai_text(response: Any) -> str:
+    text = getattr(response, "text", None)
+    if text:
+        return text
+    candidates = getattr(response, "candidates", None)
+    if candidates:
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            if not content:
+                continue
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    return part_text
+    return ""
+
+
+def _generate_with_genai_stream(prompt: str) -> Any:
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
+
+    client = genai.Client()
+    try:
+        temperature = float(_DEFAULT_TEMPERATURE)
+    except ValueError:
+        temperature = 0.2
+    config = types.GenerateContentConfig(temperature=temperature)
+    stream = client.models.generate_content_stream(
+        model=_DEFAULT_MODEL,
+        contents=prompt,
+        config=config,
+    )
+    buffer = ""
+    for chunk in stream:
+        text = _extract_genai_text(chunk)
+        if not text:
+            continue
+        if buffer and text.startswith(buffer):
+            delta = text[len(buffer):]
+            buffer = text
+        else:
+            delta = text
+            buffer += text
+        if delta:
+            yield delta
+
+
 def _fallback_answer(records: List[Dict[str, Any]]) -> str:
     lines: List[str] = []
     for record in records:
@@ -616,14 +877,47 @@ def _fallback_answer(records: List[Dict[str, Any]]) -> str:
     return "요약 데이터에서 답변할 근거를 찾지 못했습니다."
 
 
+def _count_evidence(records: List[Dict[str, Any]]) -> Tuple[int, int]:
+    stt_total = 0
+    vlm_total = 0
+    for record in records:
+        evidence = record.get("evidence") or {}
+        stt_total += len(evidence.get("stt") or [])
+        vlm_total += len(evidence.get("vlm") or [])
+    return stt_total, vlm_total
+
+
 def _generate_answer(state: ChatState) -> Dict[str, Any]:
+    """LLM 호출을 수행하고 응답/히스토리를 갱신한다."""
     records = state.get("answer_records") or []
+    stt_count, vlm_count = _count_evidence(records)
     prompt = _build_prompt(state)
+    if state.get("streaming"):
+        _trace(
+            "llm.prepare",
+            streaming=True,
+            summary_records=len(records),
+            stt_evidence=stt_count,
+            vlm_evidence=vlm_count,
+        )
+        return {"prompt": prompt, "answer_records": records}
     try:
+        started = time.monotonic()
         response_text = _generate_with_genai(prompt)
+        elapsed = time.monotonic() - started
     except Exception as exc:
         logger.warning("LangGraph LLM call failed: %s", exc)
         response_text = _fallback_answer(records)
+        elapsed = None
+
+    _trace(
+        "llm.call",
+        streaming=False,
+        duration_ms=int(elapsed * 1000) if elapsed is not None else None,
+        summary_records=len(records),
+        stt_evidence=stt_count,
+        vlm_evidence=vlm_count,
+    )
 
     reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
     history_key = f"history_{reasoning_mode}"
@@ -637,7 +931,7 @@ def _generate_answer(state: ChatState) -> Dict[str, Any]:
     return {"response": response_text, history_key: history}
 
 
-def _build_graph(backend: SummaryBackend) -> Any:
+def _build_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
     if _LANGGRAPH_IMPORT_ERROR:
         raise RuntimeError(
             "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
@@ -653,17 +947,32 @@ def _build_graph(backend: SummaryBackend) -> Any:
     graph.add_node("generate_answer", _generate_answer)
 
     graph.set_entry_point("parse_input")
-    graph.add_conditional_edges(
-        "parse_input",
-        _route_after_parse,
-        {
-            "mode_select": "mode_select",
-            "reasoning_select": "reasoning_select",
-            "partial": "partial",
-            "full": "prepare_full",
-            "need_mode": "need_mode",
-        },
-    )
+    if router_mode == "llm":
+        graph.add_node("route_with_llm", _route_with_llm)
+        graph.add_edge("parse_input", "route_with_llm")
+        graph.add_conditional_edges(
+            "route_with_llm",
+            lambda state: state.get("next_step") or "need_mode",
+            {
+                "mode_select": "mode_select",
+                "reasoning_select": "reasoning_select",
+                "partial": "partial",
+                "full": "prepare_full",
+                "need_mode": "need_mode",
+            },
+        )
+    else:
+        graph.add_conditional_edges(
+            "parse_input",
+            _route_after_parse,
+            {
+                "mode_select": "mode_select",
+                "reasoning_select": "reasoning_select",
+                "partial": "partial",
+                "full": "prepare_full",
+                "need_mode": "need_mode",
+            },
+        )
     graph.add_conditional_edges(
         "prepare_full",
         _route_after_prepare,
@@ -680,7 +989,81 @@ def _build_graph(backend: SummaryBackend) -> Any:
     return graph.compile()
 
 
+def _build_agent_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
+    """에이전트형 그래프를 구성한다 (요약 판단 → RAG → evidence → 답변)."""
+    if _LANGGRAPH_IMPORT_ERROR:
+        raise RuntimeError(
+            "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
+        ) from _LANGGRAPH_IMPORT_ERROR
+
+    graph: Any = StateGraph(ChatState)
+    graph.add_node("parse_input", _parse_input)
+    graph.add_node("mode_select", lambda state: _handle_mode_select(state, backend))
+    graph.add_node("reasoning_select", _handle_reasoning_select)
+    graph.add_node("need_mode", lambda _: {"response": _NEED_MODE_MESSAGE})
+    graph.add_node("partial", lambda state: _handle_partial(state, backend))
+    graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
+    graph.add_node("decide_summary", _decide_summary_sufficiency)
+    graph.add_node("rag_search", lambda state: _rag_search(state, backend))
+    graph.add_node("enrich_evidence", lambda state: _enrich_with_db_evidence(state, backend))
+    graph.add_node("generate_answer", _generate_answer)
+
+    graph.set_entry_point("parse_input")
+    if router_mode == "llm":
+        graph.add_node("route_with_llm", _route_with_llm)
+        graph.add_edge("parse_input", "route_with_llm")
+        graph.add_conditional_edges(
+            "route_with_llm",
+            lambda state: state.get("next_step") or "need_mode",
+            {
+                "mode_select": "mode_select",
+                "reasoning_select": "reasoning_select",
+                "partial": "partial",
+                "full": "prepare_full",
+                "need_mode": "need_mode",
+            },
+        )
+    else:
+        graph.add_conditional_edges(
+            "parse_input",
+            _route_after_parse,
+            {
+                "mode_select": "mode_select",
+                "reasoning_select": "reasoning_select",
+                "partial": "partial",
+                "full": "prepare_full",
+                "need_mode": "need_mode",
+            },
+        )
+
+    graph.add_conditional_edges(
+        "prepare_full",
+        _route_after_prepare,
+        {
+            "respond": END,
+            "llm": "decide_summary",
+        },
+    )
+    graph.add_conditional_edges(
+        "decide_summary",
+        _route_after_summary_sufficiency,
+        {
+            "need_evidence": "rag_search",
+            "answer": "generate_answer",
+        },
+    )
+    graph.add_edge("rag_search", "enrich_evidence")
+    graph.add_edge("enrich_evidence", "generate_answer")
+    graph.add_edge("mode_select", END)
+    graph.add_edge("reasoning_select", END)
+    graph.add_edge("need_mode", END)
+    graph.add_edge("partial", END)
+    graph.add_edge("generate_answer", END)
+    return graph.compile()
+
+
 class LangGraphSession:
+    """LangGraph 기반 챗봇 세션. 상태/그래프를 내부에 보관한다."""
     def __init__(
         self,
         *,
@@ -693,15 +1076,17 @@ class LangGraphSession:
         self._user_id = user_id
         self._session_id = f"langgraph-{uuid.uuid4().hex}"
         self._backend = backend or ProcessApiBackend()
-        self._graph = _build_graph(self._backend)
-        self._state: Dict[str, Any] = dict(initial_state or {})
+        state_seed = dict(initial_state or {})
+        router_mode = (state_seed.get("router_mode") or _DEFAULT_ROUTER_MODE).strip().lower()
+        self._graph = _build_agent_graph(self._backend, router_mode=router_mode)
+        self._state = state_seed
         self._state.setdefault("summary_cache", [])
         self._state.setdefault("pending_updates", [])
         self._state.setdefault("last_segment_id", 0)
         self._state.setdefault("history", [])
         self._state.setdefault("history_flash", [])
         self._state.setdefault("history_thinking", [])
-        self._state.setdefault("unit_cache", {})
+        self._state.setdefault("router_mode", router_mode)
         default_reasoning_mode = _normalize_reasoning_mode(_DEFAULT_REASONING_MODE) or "flash"
         self._state.setdefault("reasoning_mode", default_reasoning_mode)
 
@@ -718,12 +1103,92 @@ class LangGraphSession:
         return self._session_id
 
     def send_message(self, text: str) -> List[LangGraphMessage]:
+        started = time.monotonic()
+        _trace(
+            "session.message",
+            session_id=self._session_id,
+            router=self._state.get("router_mode"),
+            streaming=False,
+            question=_shorten(text),
+        )
         input_state = dict(self._state)
         input_state["message"] = text
         result = self._graph.invoke(input_state)
         response_text = result.get("response", "")
         self._state = self._prune_state(result)
+        _trace(
+            "session.complete",
+            session_id=self._session_id,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         return [LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)]
+
+    def stream_message(self, text: str) -> Any:
+        started = time.monotonic()
+        _trace(
+            "session.message",
+            session_id=self._session_id,
+            router=self._state.get("router_mode"),
+            streaming=True,
+            question=_shorten(text),
+        )
+        input_state = dict(self._state)
+        input_state["message"] = text
+        input_state["streaming"] = True
+        result = self._graph.invoke(input_state)
+        prompt = result.get("prompt")
+        if not prompt:
+            response_text = result.get("response", "")
+            self._state = self._prune_state(result)
+            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+            return
+
+        stt_count, vlm_count = _count_evidence(result.get("answer_records") or [])
+        response_text = ""
+        try:
+            started = time.monotonic()
+            for chunk in _generate_with_genai_stream(prompt):
+                if not chunk:
+                    continue
+                response_text += chunk
+                yield LangGraphMessage(author=_BACKEND_AUTHOR, text=chunk, is_final=False)
+            elapsed = time.monotonic() - started
+        except Exception as exc:
+            logger.warning("LangGraph streaming LLM call failed: %s", exc)
+            response_text = _fallback_answer(result.get("answer_records") or [])
+            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+            result["response"] = response_text
+            self._state = self._prune_state(result)
+            return
+        _trace(
+            "llm.call",
+            streaming=True,
+            duration_ms=int(elapsed * 1000) if "elapsed" in locals() else None,
+            summary_records=len(result.get("answer_records") or []),
+            stt_evidence=stt_count,
+            vlm_evidence=vlm_count,
+        )
+        if not response_text:
+            response_text = _fallback_answer(result.get("answer_records") or [])
+            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+
+        reasoning_mode = _normalize_reasoning_mode(result.get("reasoning_mode") or "") or "flash"
+        history_key = f"history_{reasoning_mode}"
+        history = result.get(history_key, [])
+        if not isinstance(history, list):
+            history = []
+        history = history + [
+            {"role": "user", "content": result.get("cleaned_message", "")},
+            {"role": "assistant", "content": response_text},
+        ]
+        result[history_key] = history
+        result["response"] = response_text
+        self._state = self._prune_state(result)
+        _trace(
+            "session.complete",
+            session_id=self._session_id,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     def close(self) -> None:
         return None
@@ -734,11 +1199,15 @@ class LangGraphSession:
             "message",
             "cleaned_message",
             "intent",
+            "next_step",
             "selected_mode",
             "selected_reasoning_mode",
             "response",
             "time_ms",
-            "detail_requested",
             "answer_records",
+            "streaming",
+            "prompt",
+            "enrich_decision",
+            "summary_decision",
         }
         return {k: v for k, v in state.items() if k not in scratch_keys}

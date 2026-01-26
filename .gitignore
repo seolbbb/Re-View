@@ -36,6 +36,8 @@ SUMMARY.md
 *_readable.txt
 *_frames/
 frontend/
+logs/
+test.json
 
 # IDE
 .vscode/

@@ -27,6 +27,7 @@ from src.services.pipeline_service import (
     get_default_output_base,
     run_preprocess_pipeline,
     send_chat_message,
+    stream_chat_message,
     start_chatbot_session,
 )
 
@@ -36,7 +37,7 @@ CONFIG_ROOT = ROOT / "config"
 DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
 ADK_OUTPUT_BASE = get_default_output_base()
 VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
-DEFAULT_CHATBOT_BACKEND = os.environ.get("CHATBOT_BACKEND", "adk").strip().lower()
+DEFAULT_CHATBOT_BACKEND = os.environ.get("CHATBOT_BACKEND", "langgraph").strip().lower()
 
 # API base URL for process API
 PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
@@ -44,7 +45,7 @@ PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rst
 
 def _normalize_chat_backend(backend: Optional[str]) -> str:
     value = (backend or os.environ.get("CHATBOT_BACKEND", "adk")).strip().lower()
-    if value in {"langgraph", "lg"}:
+    if value in {"langgraph", "lg", "langgraph-agent"}:
         return "langgraph"
     return "adk"
 
@@ -359,9 +360,20 @@ def _render_captures(video_root: Path) -> None:
         st.info("No capture manifest found.")
         return
 
-    vlm_payload = _read_json(video_root / "vlm.json")
     vlm_lookup: Dict[int, str] = {}
-    if isinstance(vlm_payload, dict):
+    vlm_lookup_by_id: Dict[str, str] = {}
+    vlm_paths: List[Path] = []
+    vlm_root = video_root / "vlm.json"
+    if vlm_root.exists():
+        vlm_paths.append(vlm_root)
+    batches_dir = video_root / "batches"
+    if batches_dir.exists():
+        vlm_paths.extend(sorted(batches_dir.glob("batch_*/vlm.json")))
+
+    for vlm_path in vlm_paths:
+        vlm_payload = _read_json(vlm_path)
+        if not isinstance(vlm_payload, dict):
+            continue
         for item in vlm_payload.get("items", []):
             try:
                 timestamp = int(item.get("timestamp_ms"))
@@ -369,17 +381,59 @@ def _render_captures(video_root: Path) -> None:
                 continue
             text = item.get("extracted_text")
             if isinstance(text, str) and text.strip():
-                vlm_lookup[timestamp] = text.strip()
+                vlm_lookup.setdefault(timestamp, text.strip())
+            cap_id = item.get("id") or item.get("cap_id")
+            if isinstance(cap_id, str) and cap_id.strip():
+                if isinstance(text, str) and text.strip():
+                    vlm_lookup_by_id.setdefault(cap_id, text.strip())
 
-    manifest = sorted(
-        manifest,
-        key=lambda item: _extract_manifest_timestamp_ms(item) or 0,
+    expanded_manifest: List[Dict[str, Any]] = []
+    for item in manifest:
+        if not isinstance(item, dict):
+            continue
+        file_name = str(item.get("file_name", "")).strip()
+        if not file_name:
+            continue
+        capture_id = item.get("id") or item.get("capture_id")
+        time_ranges = item.get("time_ranges")
+        if isinstance(time_ranges, list) and time_ranges:
+            for rng in time_ranges:
+                if not isinstance(rng, dict):
+                    continue
+                try:
+                    start_ms = int(rng.get("start_ms"))
+                except (TypeError, ValueError):
+                    continue
+                expanded_manifest.append(
+                    {
+                        "file_name": file_name,
+                        "timestamp_ms": start_ms,
+                        "timestamp_human": item.get("timestamp_human"),
+                        "capture_id": capture_id,
+                    }
+                )
+        else:
+            timestamp_ms = _extract_manifest_timestamp_ms(item)
+            if timestamp_ms is None:
+                continue
+            expanded_manifest.append(
+                {
+                    "file_name": file_name,
+                    "timestamp_ms": timestamp_ms,
+                    "timestamp_human": item.get("timestamp_human"),
+                    "capture_id": capture_id,
+                }
+            )
+
+    expanded_manifest = sorted(
+        expanded_manifest,
+        key=lambda item: int(item.get("timestamp_ms", 0)),
     )
     max_items = st.slider(
         "Max captures",
         min_value=1,
-        max_value=len(manifest),
-        value=min(24, len(manifest)),
+        max_value=len(expanded_manifest),
+        value=min(24, len(expanded_manifest)),
     )
     show_vlm = st.checkbox("Show VLM text above captures", value=True)
     show_full_vlm = False
@@ -388,14 +442,15 @@ def _render_captures(video_root: Path) -> None:
     columns = st.slider("Columns", min_value=2, max_value=5, value=3)
     cols = st.columns(columns)
 
-    for idx, item in enumerate(manifest[:max_items]):
+    for idx, item in enumerate(expanded_manifest[:max_items]):
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
             continue
         image_path = video_root / "captures" / file_name
         if not image_path.exists():
             continue
-        timestamp_ms = _extract_manifest_timestamp_ms(item)
+        timestamp_ms = item.get("timestamp_ms")
+        capture_id = item.get("capture_id")
         caption = item.get("timestamp_human")
         if not caption and timestamp_ms is not None:
             caption = f"{timestamp_ms / 1000:.2f}s"
@@ -403,14 +458,21 @@ def _render_captures(video_root: Path) -> None:
             caption = file_name
         with cols[idx % columns]:
             if show_vlm:
-                vlm_text = vlm_lookup.get(timestamp_ms) if timestamp_ms is not None else None
+                vlm_text = None
+                if isinstance(capture_id, str) and capture_id:
+                    vlm_text = vlm_lookup_by_id.get(capture_id)
+                if not vlm_text and timestamp_ms is not None:
+                    try:
+                        vlm_text = vlm_lookup.get(int(timestamp_ms))
+                    except (TypeError, ValueError):
+                        vlm_text = None
                 if vlm_text:
                     if show_full_vlm:
-                        st.markdown(vlm_text)
+                        st.text(vlm_text)
                     else:
                         preview = " ".join(vlm_text.split())
                         preview = preview[:200] + ("..." if len(preview) > 200 else "")
-                        st.caption(preview)
+                        st.text(preview)
                 else:
                     st.caption("VLM: (no text)")
             st.image(str(image_path), caption=caption, width="stretch")
@@ -452,7 +514,10 @@ def main() -> None:
     if "active_chat_session_id" not in st.session_state:
         st.session_state.active_chat_session_id = None
     if "chat_backend" not in st.session_state:
-        st.session_state.chat_backend = DEFAULT_CHATBOT_BACKEND
+        if DEFAULT_CHATBOT_BACKEND in {"langgraph", "lg"}:
+            st.session_state.chat_backend = "langgraph"
+        else:
+            st.session_state.chat_backend = DEFAULT_CHATBOT_BACKEND
     if "chat_mode" not in st.session_state:
         st.session_state.chat_mode = "full"
     if "chat_mode_signature" not in st.session_state:
@@ -488,7 +553,7 @@ def main() -> None:
 
     source = st.radio(
         "Video source",
-        ["Upload", "Local path", "Existing output"],
+        ["Upload", "Existing output"],
         horizontal=True,
     )
     if st.session_state.selected_source != source:
@@ -506,14 +571,6 @@ def main() -> None:
                 st.session_state.uploaded_video_signature = signature
             if st.session_state.uploaded_video_path:
                 video_path = Path(st.session_state.uploaded_video_path)
-    elif source == "Local path":
-        path_str = st.text_input("Video path", value="")
-        if path_str:
-            candidate = Path(path_str).expanduser().resolve()
-            if candidate.exists():
-                video_path = candidate
-            else:
-                st.error("Video path does not exist.")
     else:
         available_outputs = _list_output_names(ADK_OUTPUT_BASE)
         if not available_outputs:
@@ -744,7 +801,8 @@ def main() -> None:
     elif st.session_state.preprocess_status == "error":
         st.error(f"Preprocess failed: {st.session_state.preprocess_error}")
     elif st.session_state.preprocess_status == "done":
-        st.success("Preprocess completed.")
+        if not st.session_state.get("video_id"):
+            st.success("Preprocess completed.")
         
         # Processing controls and progress display
         process_col1, process_col2 = st.columns([1, 3])
@@ -974,13 +1032,17 @@ def main() -> None:
 
             chat_container = st.container(height=520)
             with chat_container:
-                for message in st.session_state.chat_messages:
-                    role = message.get("role", "assistant")
-                    with st.chat_message(role):
-                        author = message.get("author")
-                        if author:
-                            st.caption(author)
-                        st.markdown(message.get("content", ""))
+                messages_placeholder = st.container()
+                spinner_placeholder = st.empty()
+                with messages_placeholder:
+                    for message in st.session_state.chat_messages:
+                        role = message.get("role", "assistant")
+                        with st.chat_message(role):
+                            author = message.get("author")
+                            if author:
+                                st.caption(author)
+                            st.markdown(message.get("content", ""))
+                spinner_placeholder.empty()
 
             time_input = st.text_input(
                 "Time (mm:ss)",
@@ -1000,16 +1062,38 @@ def main() -> None:
                 if time_ms is not None:
                     user_message = f"[time_ms={time_ms}] {prompt}"
                 try:
-                    with st.spinner("Waiting for chatbot..."):
-                        responses = send_chat_message(st.session_state.adk_session, user_message)
-                    for response in responses:
-                        st.session_state.chat_messages.append(
-                            {
-                                "role": "assistant",
-                                "author": response.author,
-                                "content": response.text,
-                            }
-                        )
+                    with spinner_placeholder:
+                        with st.spinner("Waiting for chatbot..."):
+                            if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                                full_text = ""
+                                author = "langgraph_chatbot"
+                                with messages_placeholder:
+                                    with st.chat_message("assistant"):
+                                        st.caption(author)
+                                        placeholder = st.empty()
+                                        for chunk in stream_chat_message(st.session_state.adk_session, user_message):
+                                            text = getattr(chunk, "text", "") or ""
+                                            if not text:
+                                                continue
+                                            full_text += text
+                                            placeholder.markdown(full_text)
+                                st.session_state.chat_messages.append(
+                                    {
+                                        "role": "assistant",
+                                        "author": author,
+                                        "content": full_text,
+                                    }
+                                )
+                            else:
+                                responses = send_chat_message(st.session_state.adk_session, user_message)
+                                for response in responses:
+                                    st.session_state.chat_messages.append(
+                                        {
+                                            "role": "assistant",
+                                            "author": response.author,
+                                            "content": response.text,
+                                        }
+                                    )
                 except Exception as exc:
                     st.session_state.chat_messages.append(
                         {

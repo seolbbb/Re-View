@@ -34,6 +34,16 @@ class SummaryBackend(Protocol):
     ) -> Dict[str, Any]:
         """Fetch evidence records for given STT/VLM IDs."""
 
+    def search_semantic_summaries(
+        self,
+        state: State,
+        *,
+        query: str,
+        match_count: int = 5,
+        threshold: float = 0.4,
+    ) -> Dict[str, Any]:
+        """Search summaries with semantic embeddings."""
+
 
 class ProcessApiBackend:
     def __init__(self, process_api_url: Optional[str] = None) -> None:
@@ -268,6 +278,43 @@ class ProcessApiBackend:
             "summary_status": summary_status,
             "processing_job": processing_job,
         }
+
+    def search_semantic_summaries(
+        self,
+        state: State,
+        *,
+        query: str,
+        match_count: int = 5,
+        threshold: float = 0.4,
+    ) -> Dict[str, Any]:
+        from src.db.embedding import generate_embedding
+        from src.db.supabase_adapter import get_supabase_adapter
+
+        adapter = get_supabase_adapter()
+        if not adapter:
+            return {"success": False, "error": "Supabase is not configured"}
+
+        cleaned = (query or "").strip()
+        if not cleaned:
+            return {"success": False, "error": "query is empty"}
+
+        try:
+            query_embedding = generate_embedding(cleaned)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        params = {
+            "query_embedding": query_embedding,
+            "match_threshold": threshold,
+            "match_count": match_count,
+        }
+
+        try:
+            result = adapter.client.rpc("match_summaries", params).execute()
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        return {"success": True, "items": result.data or []}
 
     def _start_summary_job(self, state: State) -> Dict[str, Any]:
         video_id = state.get("video_id")
