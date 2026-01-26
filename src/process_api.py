@@ -35,10 +35,16 @@ GET 실행
 from __future__ import annotations
 
 import json
+import os
+import re
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.db import get_supabase_adapter
@@ -46,6 +52,13 @@ from src.run_process_pipeline import run_processing_pipeline
 
 
 app = FastAPI(title="Screentime Processing API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ProcessRequest(BaseModel):
@@ -303,6 +316,175 @@ def get_video_evidence(
         "stt": stt_rows,
         "vlm": vlm_rows,
     }
+
+
+# =============================================================================
+# 프론트엔드 연동 엔드포인트
+# =============================================================================
+
+INPUT_DIR = Path("data/inputs")
+OUTPUT_DIR = Path("data/outputs")
+
+
+def _sanitize_filename(name: str) -> str:
+    """파일명에서 안전하지 않은 문자를 제거합니다."""
+    return re.sub(r'[^\w\-.]', '_', name)
+
+
+def _run_full_pipeline(video_path: str, video_id: str) -> None:
+    """전처리 → 처리 파이프라인을 순차 실행합니다 (BackgroundTasks용)."""
+    from src.run_preprocess_pipeline import run_preprocess_pipeline
+
+    adapter = get_supabase_adapter()
+    try:
+        # 1. 전처리
+        run_preprocess_pipeline(
+            video=video_path,
+            sync_to_db=True,
+            write_local_json=True,
+        )
+        if adapter:
+            adapter.update_video_status(video_id, "PREPROCESS_DONE")
+
+        # 2. 처리 파이프라인
+        video_name = Path(video_path).stem
+        run_processing_pipeline(
+            video_name=video_name,
+            video_id=video_id,
+            sync_to_db=True,
+            force_db=True,
+        )
+    except Exception as exc:
+        if adapter:
+            adapter.update_video_status(video_id, "FAILED", error=str(exc))
+
+
+class UploadResponse(BaseModel):
+    video_id: str
+    video_name: str
+    status: str
+
+
+@app.post("/api/videos/upload", response_model=UploadResponse)
+async def upload_video(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+) -> UploadResponse:
+    """비디오 업로드 + 자동 파이프라인 실행."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일명이 없습니다.")
+
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    safe_name = _sanitize_filename(file.filename)
+    save_path = INPUT_DIR / f"{timestamp}_{safe_name}"
+
+    content = await file.read()
+    save_path.write_bytes(content)
+
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video_name = Path(file.filename).stem
+    video = adapter.create_video(
+        name=video_name,
+        original_filename=file.filename,
+    )
+    video_id = video["id"]
+    adapter.update_video_status(video_id, "PREPROCESSING")
+
+    background_tasks.add_task(_run_full_pipeline, str(save_path), video_id)
+
+    return UploadResponse(
+        video_id=video_id,
+        video_name=video_name,
+        status="PREPROCESSING",
+    )
+
+
+@app.get("/api/videos")
+def list_videos() -> Dict[str, Any]:
+    """비디오 목록 조회 (최신순)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    videos = adapter.list_videos()
+    return {"videos": videos}
+
+
+@app.get("/api/videos/{video_id}/stream")
+def stream_video(video_id: str):
+    """비디오 파일 서빙."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    original_filename = video.get("original_filename", "")
+
+    # data/inputs/ 디렉토리에서 파일 검색
+    if INPUT_DIR.exists():
+        for f in sorted(INPUT_DIR.iterdir(), reverse=True):
+            if f.name.endswith(original_filename) or original_filename in f.name:
+                return FileResponse(
+                    path=str(f),
+                    media_type="video/mp4",
+                    filename=original_filename,
+                )
+
+    raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+
+@app.get("/api/videos/{video_id}/thumbnail")
+def get_video_thumbnail(video_id: str):
+    """비디오 썸네일 이미지 서빙."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_name = video.get("name", "")
+    captures_dir = OUTPUT_DIR / video_name / "captures"
+
+    if captures_dir.exists():
+        images = sorted(captures_dir.glob("*.jpg")) + sorted(captures_dir.glob("*.png"))
+        if images:
+            return FileResponse(
+                path=str(images[0]),
+                media_type="image/jpeg",
+            )
+
+    raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+
+class ChatRequest(BaseModel):
+    video_id: str
+    message: str
+    session_id: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    """챗봇 API (placeholder — LangGraph 구현 전)."""
+    session_id = request.session_id or str(uuid.uuid4())
+    return ChatResponse(
+        response="챗봇 준비 중입니다. LangGraph 연결 후 실제 답변이 제공됩니다.",
+        session_id=session_id,
+    )
 
 
 # =============================================================================

@@ -1,29 +1,91 @@
-import { useState } from 'react';
-import { Sparkles, RotateCcw, Bot, Send } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Sparkles, RotateCcw, Bot, Send, Loader2 } from 'lucide-react';
+import { sendChatMessage } from '../api/chat';
+import { useVideo } from '../context/VideoContext';
 
-function ChatBot() {
-    const [messages] = useState([
+function ChatBot({ videoId }) {
+    const { chatSessionId, setChatSessionId } = useVideo();
+    const [messages, setMessages] = useState([
         {
-            id: 1,
+            id: 'welcome',
             type: 'bot',
-            text: 'Hi! I\'m analyzing the lecture on Mitosis. Feel free to ask me to clarify any concepts or generate a quiz!',
-            timestamp: 'Just now'
-        },
-        {
-            id: 2,
-            type: 'user',
-            text: 'Can you explain what happens to the spindle fibers in prophase?',
-            timestamp: '2 mins ago'
-        },
-        {
-            id: 3,
-            type: 'bot',
-            text: 'Absolutely. During prophase, the mitotic spindle begins to form. The spindle fibers are made of microtubules that extend from the centrosomes. They push the centrosomes apart as they grow.',
-            timestamp: 'Just now',
-            actions: ['Explain simpler', 'Make a quiz']
+            text: '영상에 대해 궁금한 점을 물어보세요!',
+            timestamp: 'Now',
         },
     ]);
     const [inputValue, setInputValue] = useState('');
+    const [sending, setSending] = useState(false);
+    const messagesEndRef = useRef(null);
+
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    const handleSend = async () => {
+        const text = inputValue.trim();
+        if (!text || sending) return;
+
+        const userMsg = {
+            id: `user-${Date.now()}`,
+            type: 'user',
+            text,
+            timestamp: 'Now',
+        };
+        setMessages((prev) => [...prev, userMsg]);
+        setInputValue('');
+        setSending(true);
+
+        try {
+            const result = await sendChatMessage({
+                videoId: videoId || '',
+                message: text,
+                sessionId: chatSessionId,
+            });
+            if (result.session_id) {
+                setChatSessionId(result.session_id);
+            }
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: `bot-${Date.now()}`,
+                    type: 'bot',
+                    text: result.response,
+                    timestamp: 'Now',
+                },
+            ]);
+        } catch (err) {
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: `err-${Date.now()}`,
+                    type: 'bot',
+                    text: `오류가 발생했습니다: ${err.message || 'Unknown error'}`,
+                    timestamp: 'Now',
+                },
+            ]);
+        } finally {
+            setSending(false);
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+        }
+    };
+
+    const handleClear = () => {
+        setMessages([
+            {
+                id: 'welcome',
+                type: 'bot',
+                text: '영상에 대해 궁금한 점을 물어보세요!',
+                timestamp: 'Now',
+            },
+        ]);
+        setChatSessionId(null);
+    };
 
     return (
         <aside className="w-[360px] hidden lg:flex flex-col border-l border-[var(--border-color)] bg-surface shrink-0 h-full">
@@ -33,7 +95,11 @@ function ChatBot() {
                     <Sparkles className="w-5 h-5 text-primary" />
                     <h3 className="text-[var(--text-primary)] font-medium text-sm">Ask Re:View AI</h3>
                 </div>
-                <button className="text-gray-400 hover:text-[var(--text-primary)]" title="Clear History">
+                <button
+                    onClick={handleClear}
+                    className="text-gray-400 hover:text-[var(--text-primary)]"
+                    title="Clear History"
+                >
                     <RotateCcw className="w-[18px] h-[18px]" />
                 </button>
             </div>
@@ -47,27 +113,30 @@ function ChatBot() {
                                 <Bot className="w-4 h-4 text-primary" />
                             </div>
                         ) : (
-                            <div className="size-8 rounded-full bg-gray-700 flex items-center justify-center shrink-0" style={{ backgroundImage: 'url("https://lh3.googleusercontent.com/aida-public/AB6AXuB7Wy36nRa92eDOTh8zejr_WMJQpHNQjbGDYsZPIFRNXkpRuhVpaMpqZWoQFCHS8W-KxRKGKJp2-P0ra0IFtCaxuCgCgo4eNPR8L4VTF-yaFOHkTznSci9FC8PrKvL4y7Tjif1ZHBzJ8qZJLsAICI11qX5NTlbDKJ-GvU3aH_OCkHM965naANsWIKgNmOcLjwpwxK3yqfutdAotQDo-MQjgZrhf7aj-imomG4z1Eq1L2ShZkUbogm22mBtU-tSB27wnKWuvqIKnPTd3")', backgroundSize: 'cover' }}></div>
+                            <div className="size-8 rounded-full bg-gray-700 flex items-center justify-center shrink-0 text-white text-xs font-bold">
+                                U
+                            </div>
                         )}
 
                         <div className={`flex flex-col gap-1 ${msg.type === 'user' ? 'items-end' : ''} max-w-[85%]`}>
                             <div className={`${msg.type === 'bot' ? 'bg-surface-highlight rounded-tl-none border border-[var(--border-color)] text-[var(--text-secondary)]' : 'bg-primary rounded-tr-none text-white'} p-3 rounded-2xl text-sm leading-relaxed shadow-sm`}>
-                                <p dangerouslySetInnerHTML={{ __html: msg.text.replace('prophase', '<span class="font-bold text-[var(--text-primary)]">prophase</span>').replace('Mitosis', '<span class="text-primary font-medium">Mitosis</span>') }}></p>
+                                <p>{msg.text}</p>
                             </div>
                             <span className={`text-[10px] text-gray-500 ${msg.type === 'user' ? 'pr-1' : 'pl-1'}`}>{msg.timestamp}</span>
-
-                            {msg.actions && (
-                                <div className="flex gap-2 mt-1">
-                                    {msg.actions.map((action, i) => (
-                                        <button key={i} className="text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] px-2 py-1 rounded text-gray-400 border border-[var(--border-color)] transition-colors">
-                                            {action}
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
                         </div>
                     </div>
                 ))}
+                {sending && (
+                    <div className="flex gap-3">
+                        <div className="size-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0 border border-primary/20">
+                            <Bot className="w-4 h-4 text-primary" />
+                        </div>
+                        <div className="bg-surface-highlight rounded-2xl rounded-tl-none border border-[var(--border-color)] p-3 text-sm">
+                            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                        </div>
+                    </div>
+                )}
+                <div ref={messagesEndRef} />
             </div>
 
             {/* Input Area */}
@@ -79,8 +148,14 @@ function ChatBot() {
                         type="text"
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        disabled={sending}
                     />
-                    <button className="absolute right-2 p-1.5 bg-primary hover:bg-[var(--accent-coral-dark)] rounded-lg text-white transition-colors shadow-lg">
+                    <button
+                        onClick={handleSend}
+                        disabled={sending || !inputValue.trim()}
+                        className="absolute right-2 p-1.5 bg-primary hover:bg-[var(--accent-coral-dark)] rounded-lg text-white transition-colors shadow-lg disabled:opacity-50"
+                    >
                         <Send className="w-[18px] h-[18px]" />
                     </button>
                 </div>

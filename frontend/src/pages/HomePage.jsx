@@ -1,20 +1,60 @@
+import { useState, useEffect } from 'react';
 import Header from '../components/Header';
 import VideoCard from '../components/VideoCard';
 import UploadArea from '../components/UploadArea';
-import { Library } from 'lucide-react';
+import { Library, Loader2 } from 'lucide-react';
+import { listVideos } from '../api/videos';
 import './HomePage.css';
 
-// 더미 데이터
-const dummyVideos = [
-    { id: '1', title: '인공지능 기초 강의 1강', thumbnail: 'https://picsum.photos/seed/ai1/400/225', duration: '14:25', date: '2026.01.20', status: 'done' },
-    { id: '2', title: '딥러닝 실습 - CNN 구현', thumbnail: 'https://picsum.photos/seed/dl2/400/225', duration: '32:18', date: '2026.01.18', status: 'done' },
-    { id: '3', title: '파이썬 데이터 분석', thumbnail: 'https://picsum.photos/seed/py3/400/225', duration: '28:42', date: '2026.01.15', status: 'progress' },
-    { id: '4', title: 'NLP 자연어 처리 입문', thumbnail: 'https://picsum.photos/seed/nlp4/400/225', duration: '45:10', date: '2026.01.12', status: 'done' },
-    { id: '5', title: '컴퓨터 비전 프로젝트', thumbnail: 'https://picsum.photos/seed/cv5/400/225', duration: '21:33', date: '2026.01.10', status: 'pending' },
-    { id: '6', title: 'MLOps 배포 가이드', thumbnail: 'https://picsum.photos/seed/mlops6/400/225', duration: '38:55', date: '2026.01.08', status: 'done' },
-];
+// DB 상태 → UI 상태 매핑
+function mapStatus(dbStatus) {
+    if (!dbStatus) return 'pending';
+    const s = dbStatus.toUpperCase();
+    if (s === 'DONE') return 'done';
+    if (s === 'FAILED') return 'done';
+    if (['PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'VLM_RUNNING', 'SUMMARY_RUNNING', 'JUDGE_RUNNING'].includes(s))
+        return 'progress';
+    return 'pending';
+}
+
+function formatDuration(sec) {
+    if (!sec) return '--:--';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function formatDate(isoStr) {
+    if (!isoStr) return '';
+    const d = new Date(isoStr);
+    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
 
 function HomePage() {
+    const [videos, setVideos] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [filter, setFilter] = useState('all');
+
+    useEffect(() => {
+        setLoading(true);
+        listVideos()
+            .then((data) => {
+                setVideos(data.videos || []);
+                setError(null);
+            })
+            .catch((err) => setError(err.message || 'Failed to load videos'))
+            .finally(() => setLoading(false));
+    }, []);
+
+    const filtered = videos.filter((v) => {
+        if (filter === 'all') return true;
+        const uiStatus = mapStatus(v.status);
+        if (filter === 'done') return uiStatus === 'done';
+        if (filter === 'progress') return uiStatus === 'progress' || uiStatus === 'pending';
+        return true;
+    });
+
     return (
         <div className="home-page">
             <Header />
@@ -36,7 +76,7 @@ function HomePage() {
                         </div>
                         <div className="hero-stats">
                             <div className="stat-item">
-                                <span className="stat-number">1,234</span>
+                                <span className="stat-number">{videos.length}</span>
                                 <span className="stat-label">분석된 영상</span>
                             </div>
                             <div className="stat-divider"></div>
@@ -58,24 +98,43 @@ function HomePage() {
                     <div className="section-header">
                         <div className="section-title-group">
                             <h2><Library className="inline-block w-6 h-6 mr-2 align-text-bottom" /> 내 라이브러리</h2>
-                            <span className="video-count">{dummyVideos.length}개 영상</span>
+                            <span className="video-count">{filtered.length}개 영상</span>
                         </div>
                         <div className="section-filters">
-                            <button className="filter-btn active">전체</button>
-                            <button className="filter-btn">분석 완료</button>
-                            <button className="filter-btn">진행 중</button>
+                            <button className={`filter-btn ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>전체</button>
+                            <button className={`filter-btn ${filter === 'done' ? 'active' : ''}`} onClick={() => setFilter('done')}>분석 완료</button>
+                            <button className={`filter-btn ${filter === 'progress' ? 'active' : ''}`} onClick={() => setFilter('progress')}>진행 중</button>
                         </div>
                     </div>
+
+                    {loading && (
+                        <div className="flex justify-center py-12">
+                            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="text-center py-12 text-red-400">
+                            <p>{error}</p>
+                        </div>
+                    )}
+
+                    {!loading && !error && filtered.length === 0 && (
+                        <div className="text-center py-12 text-gray-400">
+                            <p>아직 업로드된 영상이 없습니다.</p>
+                        </div>
+                    )}
+
                     <div className="video-grid">
-                        {dummyVideos.map((video, index) => (
+                        {filtered.map((video, index) => (
                             <div key={video.id} style={{ '--index': index }}>
                                 <VideoCard
                                     id={video.id}
-                                    title={video.title}
-                                    thumbnail={video.thumbnail}
-                                    duration={video.duration}
-                                    date={video.date}
-                                    status={video.status}
+                                    title={video.name || video.original_filename}
+                                    thumbnailVideoId={video.id}
+                                    duration={formatDuration(video.duration_sec)}
+                                    date={formatDate(video.created_at)}
+                                    status={mapStatus(video.status)}
                                 />
                             </div>
                         ))}
@@ -85,7 +144,7 @@ function HomePage() {
 
             {/* Footer */}
             <footer className="home-footer">
-                <p>© 2026 Re:View. AI-Powered Video Analysis Platform</p>
+                <p>&copy; 2026 Re:View. AI-Powered Video Analysis Platform</p>
             </footer>
         </div>
     );
