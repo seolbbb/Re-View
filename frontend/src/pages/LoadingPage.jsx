@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Upload, Music, FileText, Bot } from 'lucide-react';
 import './LoadingPage.css';
 
 function LoadingPage() {
@@ -8,10 +9,10 @@ function LoadingPage() {
     const navigate = useNavigate();
 
     const stages = [
-        { name: '영상 업로드 중...', icon: '📤' },
-        { name: '오디오 추출 중...', icon: '🎵' },
-        { name: 'STT 변환 중...', icon: '📝' },
-        { name: 'AI 분석 시작...', icon: '🤖' },
+        { name: '영상 업로드 중...', Icon: Upload },
+        { name: '오디오 추출 중...', Icon: Music },
+        { name: 'STT 변환 중...', Icon: FileText },
+        { name: 'AI 분석 시작...', Icon: Bot },
     ];
 
     useEffect(() => {
@@ -36,6 +37,8 @@ function LoadingPage() {
         else setStage(3);
     }, [progress]);
 
+    const CurrentIcon = stages[stage].Icon;
+
     return (
         <div className="loading-page">
             <div className="loading-card">
@@ -49,7 +52,7 @@ function LoadingPage() {
                 </div>
 
                 <div className="loading-stage">
-                    <span className="stage-icon">{stages[stage].icon}</span>
+                    <span className="stage-icon"><CurrentIcon className="w-6 h-6" /></span>
                     <span className="stage-name">{stages[stage].name}</span>
                 </div>
 

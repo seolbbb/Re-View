@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { CloudUpload } from 'lucide-react';
 import './UploadArea.css';
 
 function UploadArea() {
@@ -36,11 +37,7 @@ function UploadArea() {
             onClick={handleClick}
         >
             <div className="upload-icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" />
-                    <path d="M12 12v9" />
-                    <path d="m16 16-4-4-4 4" />
-                </svg>
+                <CloudUpload className="w-12 h-12" strokeWidth={1.5} />
             </div>
             <p className="upload-text">여기에 영상을 드래그하거나</p>
             <p className="upload-text">클릭하여 업로드</p>

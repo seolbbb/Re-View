@@ -1,6 +1,7 @@
 import Header from '../components/Header';
 import VideoCard from '../components/VideoCard';
 import UploadArea from '../components/UploadArea';
+import { Library } from 'lucide-react';
 import './HomePage.css';
 
 // 더미 데이터
@@ -56,7 +57,7 @@ function HomePage() {
                 <section className="library-section">
                     <div className="section-header">
                         <div className="section-title-group">
-                            <h2>📚 내 라이브러리</h2>
+                            <h2><Library className="inline-block w-6 h-6 mr-2 align-text-bottom" /> 내 라이브러리</h2>
                             <span className="video-count">{dummyVideos.length}개 영상</span>
                         </div>
                         <div className="section-filters">

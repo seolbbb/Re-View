@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { Play, Calendar } from 'lucide-react';
 import './VideoCard.css';
 
 function VideoCard({ id, title, thumbnail, duration, date, status = 'done' }) {
@@ -15,7 +16,9 @@ function VideoCard({ id, title, thumbnail, duration, date, status = 'done' }) {
             <div className="video-thumbnail">
                 <img src={thumbnail} alt={title} />
                 <div className="video-overlay">
-                    <div className="play-icon">▶</div>
+                    <div className="play-icon">
+                        <Play className="w-6 h-6" fill="currentColor" />
+                    </div>
                 </div>
                 <span className="video-duration">{duration}</span>
                 <span
@@ -28,7 +31,7 @@ function VideoCard({ id, title, thumbnail, duration, date, status = 'done' }) {
             </div>
             <div className="video-info">
                 <h3 className="video-title">{title}</h3>
-                <span className="video-date">{date}</span>
+                <span className="video-date"><Calendar className="w-3 h-3" />{date}</span>
             </div>
         </Link>
     );
