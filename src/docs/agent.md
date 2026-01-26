@@ -16,7 +16,7 @@
 ## 차이점 (참고)
 - **흐름 제어**: ADK는 agent/툴 기반, LangGraph는 고정 그래프 노드 기반.
 - **데이터 소스**: ADK는 DB 우선 + 로컬 `segment_summaries.jsonl` fallback, LangGraph는 DB 전용(필수 `video_id`).
-- **증거(evidence)**: LangGraph는 “자세히/근거” 요청 시 로컬 파일(`segments_units.jsonl`, `stt.json`, `vlm.json`)을 읽어 근거를 붙임. ADK는 증거 병합 없음.
+- **증거(evidence)**: LangGraph는 요약의 `source_refs(stt_ids/vlm_ids)`를 기반으로 DB evidence를 조회해 결합. 로컬 파일 evidence는 사용하지 않음.
 - **LLM 호출**: ADK는 `google.adk` Agent, LangGraph는 직접 `google.genai` 호출.
 - **세션 관리**: ADK는 `InMemoryRunner` 이벤트 스트림, LangGraph는 `LangGraphSession` 내부 상태 dict.
 
@@ -34,7 +34,6 @@
 - partial: placeholder (not implemented)
 - prepare_full: fetch updates, build summary cache (summary-only)
 - decide_summary: 요약만으로 답변 가능한지 판단(answer/need_evidence). thinking은 항상 need_evidence로 보강.
-- rag_search: 시맨틱 검색(RAG)으로 요약 후보 확장
 - enrich_evidence: summary의 source_refs(stt_ids/vlm_ids)로 DB evidence 조회 및 결합
 - generate_answer: build prompt, call LLM, update history
 
@@ -47,21 +46,15 @@
 - (llm) parse_input -> route_with_llm -> {mode_select|reasoning_select|partial|prepare_full|need_mode}
 - prepare_full -> END (response already available)
 - prepare_full -> decide_summary (needs LLM)
-- decide_summary -> rag_search -> enrich_evidence -> generate_answer (need_evidence)
+- decide_summary -> enrich_evidence -> generate_answer (need_evidence)
 - decide_summary -> generate_answer (answer)
 - mode_select -> END
 - need_mode -> END
 - partial -> END
 - generate_answer -> END
 
-### RAG 옵션
-- `CHATBOT_RAG_ENABLED=1`일 때만 동작 (기본 on).
-- `CHATBOT_RAG_MATCH_COUNT`로 검색 결과 개수 조절.
-- `CHATBOT_RAG_THRESHOLD`로 유사도 임계값 조절.
-- RAG는 부족하다고 판단될 때만 실행되며, 기존 요약 레코드에 결과를 병합함.
-
 ### 모드별 동작 요약
-- flash: 요약만으로 충분한지 판단 → 부족하면 evidence(STT/VLM) 보강
+- flash: decide_summary에서 요약만으로 충분한지 판단 → 부족하면 evidence(STT/VLM) 보강
 - thinking: 시작부터 evidence(STT/VLM) 보강 (summary 판단 없이 곧바로 need_evidence)
 
 ### Mermaid
@@ -77,9 +70,10 @@ flowchart TD
   route_with_llm -->|partial| partial
   route_with_llm -->|full| prepare_full
   route_with_llm -->|need_mode| need_mode
+  reasoning_select --> END
   prepare_full -->|respond| END
   prepare_full -->|llm| decide_summary
   decide_summary -->|answer| generate_answer --> END
-  decide_summary -->|need_evidence| rag_search --> enrich_evidence --> generate_answer
+  decide_summary -->|need_evidence| enrich_evidence --> generate_answer
   generate_answer --> END
 ```

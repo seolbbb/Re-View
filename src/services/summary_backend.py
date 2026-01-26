@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+
 State = Dict[str, Any]
 
 
@@ -303,11 +304,14 @@ class ProcessApiBackend:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+        video_id = state.get("video_id")
         params = {
             "query_embedding": query_embedding,
             "match_threshold": threshold,
             "match_count": match_count,
         }
+        if video_id:
+            params["filter_video_id"] = video_id
 
         try:
             result = adapter.client.rpc("match_summaries", params).execute()
