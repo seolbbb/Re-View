@@ -55,7 +55,7 @@ app = FastAPI(title="Screentime Processing API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -332,16 +332,21 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _run_full_pipeline(video_path: str, video_id: str) -> None:
-    """전처리 → 처리 파이프라인을 순차 실행합니다 (BackgroundTasks용)."""
+    """전처리 → 처리 파이프라인을 순차 실행합니다 (BackgroundTasks용).
+
+    업로드 엔드포인트에서 이미 videos 레코드를 생성했으므로,
+    existing_video_id를 전달하여 파이프라인 내부에서 중복 생성을 방지한다.
+    """
     from src.run_preprocess_pipeline import run_preprocess_pipeline
 
     adapter = get_supabase_adapter()
     try:
-        # 1. 전처리
+        # 1. 전처리 (existing_video_id로 기존 레코드 재사용, DB 중복 생성 방지)
         run_preprocess_pipeline(
             video=video_path,
             sync_to_db=True,
             write_local_json=True,
+            existing_video_id=video_id,
         )
         if adapter:
             adapter.update_video_status(video_id, "PREPROCESS_DONE")

@@ -96,6 +96,7 @@ def run_preprocess_pipeline(
     write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
     db_table_name: str = "captures",
+    existing_video_id: Optional[str] = None,
 ) -> Optional[str]:
     """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
     # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
@@ -216,6 +217,7 @@ def run_preprocess_pipeline(
             duration_sec=video_info.get("duration_sec"),
             stt_backend=stt_backend,
             table_name=db_table_name,
+            existing_video_id=existing_video_id,
         )
         if db_context:
             _, _, preprocess_job_id = db_context
