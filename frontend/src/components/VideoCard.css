@@ -157,8 +157,3 @@
     align-items: center;
     gap: 6px;
 }
-
-.video-date::before {
-    content: '📅';
-    font-size: 11px;
-}
