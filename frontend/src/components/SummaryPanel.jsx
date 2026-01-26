@@ -75,7 +75,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId }) {
                 setItems(newItems);
                 prevCountRef.current = newItems.length;
             })
-            .catch(() => {})
+            .catch(() => { })
             .finally(() => setInitialLoading(false));
     }, [videoId]);
 
@@ -95,7 +95,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId }) {
         if (videoStatus && (videoStatus.toUpperCase() === 'DONE')) {
             getVideoSummaries(videoId)
                 .then((data) => setItems(data.items || []))
-                .catch(() => {});
+                .catch(() => { });
         }
     }, [videoStatus, videoId]);
 
@@ -147,19 +147,30 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId }) {
         );
     };
 
+    const renderBulletText = (b) => {
+        if (typeof b === 'string') return b;
+        const prefix = b.bullet_id ? `(${b.bullet_id}) ` : '';
+        return prefix + (b.claim || b.text || JSON.stringify(b));
+    };
+
     const renderSummaryItem = (item, index) => {
         const summaryContent = item.summary || {};
-        const title = summaryContent.title || summaryContent.heading || `Segment ${item.segment_index ?? index + 1}`;
-        const bullets = summaryContent.bullets || summaryContent.points || [];
-        const body = summaryContent.body || summaryContent.text || '';
+        const segIdx = item.segment_index ?? index + 1;
+        const timeRange = `${formatMs(item.start_ms)}–${formatMs(item.end_ms)}`;
+        const title = `Segment ${segIdx} (${timeRange})`;
+
+        const bullets = summaryContent.bullets || [];
+        const definitions = summaryContent.definitions || [];
+        const explanations = summaryContent.explanations || [];
+        const openQuestions = summaryContent.open_questions || [];
         const isNew = index >= prevCountRef.current - 1 && isProcessing;
+        const hasSections = bullets.length > 0 || definitions.length > 0 || explanations.length > 0;
 
         return (
             <div
                 key={item.summary_id || index}
-                className={`group flex flex-col md:flex-row gap-2 md:gap-8 ${
-                    isExpanded ? 'p-4 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)]'
-                } ${isNew ? 'animate-fade-in' : ''} transition-colors cursor-pointer`}
+                className={`group flex flex-col md:flex-row gap-2 md:gap-8 ${isExpanded ? 'p-5 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)]'
+                    } ${isNew ? 'animate-fade-in' : ''} transition-colors`}
             >
                 <div className="md:w-24 shrink-0 flex md:justify-end">
                     <span className="font-mono text-sm text-gray-400 bg-surface/50 px-2 py-0.5 rounded border border-[var(--border-color)] group-hover:border-primary/50 transition-colors h-fit">
@@ -167,17 +178,64 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId }) {
                     </span>
                 </div>
                 <div className="flex-1">
-                    <h4 className={`text-[var(--text-primary)] font-medium ${isExpanded ? 'mb-2 text-lg' : 'mb-1'}`}>{title}</h4>
-                    {bullets.length > 0 ? (
-                        <ul className={`list-disc list-outside ml-4 text-[var(--text-secondary)] ${isExpanded ? 'text-base space-y-2' : 'text-sm space-y-1'} leading-relaxed`}>
-                            {bullets.map((b, i) => (
-                                <li key={i}>{typeof b === 'string' ? b : b.text || JSON.stringify(b)}</li>
-                            ))}
-                        </ul>
-                    ) : body ? (
-                        <p className={`text-[var(--text-secondary)] ${isExpanded ? 'text-base' : 'text-sm'} leading-relaxed`}>{body}</p>
-                    ) : (
-                        <p className="text-[var(--text-secondary)] text-sm italic">Summary data available</p>
+                    <h4 className={`text-[var(--text-primary)] font-semibold ${isExpanded ? 'mb-3 text-lg' : 'mb-1'}`}>{title}</h4>
+
+                    {!hasSections && (
+                        <p className="text-[var(--text-secondary)] text-sm italic">요약 데이터 준비 중...</p>
+                    )}
+
+                    {/* 요약 (Bullets) */}
+                    {bullets.length > 0 && (
+                        <div className={isExpanded ? 'mb-4' : 'mb-1'}>
+                            {isExpanded && (
+                                <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">요약</h5>
+                            )}
+                            <ul className={`list-disc list-outside ml-4 text-[var(--text-secondary)] ${isExpanded ? 'text-base space-y-1.5' : 'text-sm space-y-0.5'} leading-relaxed`}>
+                                {bullets.map((b, i) => (
+                                    <li key={i}>{renderBulletText(b)}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {/* 정의 (Definitions) — expanded only */}
+                    {isExpanded && definitions.length > 0 && (
+                        <div className="mb-4">
+                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">정의</h5>
+                            <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
+                                {definitions.map((d, i) => (
+                                    <li key={i}>
+                                        <span className="font-semibold text-[var(--text-primary)]">{d.term}</span>
+                                        {': '}
+                                        {d.definition}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {/* 해설 (Explanations) — expanded only */}
+                    {isExpanded && explanations.length > 0 && (
+                        <div className="mb-4">
+                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">해설</h5>
+                            <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
+                                {explanations.map((e, i) => (
+                                    <li key={i}>{e.point || e.text || JSON.stringify(e)}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {/* 미해결 질문 (Open Questions) — expanded only */}
+                    {isExpanded && openQuestions.length > 0 && (
+                        <div className="mb-2">
+                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">미해결 질문</h5>
+                            <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed italic">
+                                {openQuestions.map((q, i) => (
+                                    <li key={i}>{q.question || q.text || JSON.stringify(q)}</li>
+                                ))}
+                            </ul>
+                        </div>
                     )}
                 </div>
             </div>
