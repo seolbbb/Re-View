@@ -10,7 +10,15 @@ export function ThemeProvider({ children }) {
     });
 
     useEffect(() => {
-        // 테마 변경 시 body에 클래스 추가
+        const root = window.document.documentElement;
+
+        // Remove old theme class
+        root.classList.remove('light', 'dark');
+
+        // Add new theme class
+        root.classList.add(theme);
+
+        // Also set data-theme attribute for CSS variables
         document.body.setAttribute('data-theme', theme);
         localStorage.setItem('theme', theme);
     }, [theme]);
