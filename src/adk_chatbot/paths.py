@@ -45,4 +45,3 @@ def resolve_video_path(input_dir: Path, video_name_or_file: str) -> Path:
     raise FileNotFoundError(
         f"입력 비디오를 찾을 수 없습니다: {candidate} (또는 {mp4_candidate})"
     )
-
