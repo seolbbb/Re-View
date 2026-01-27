@@ -171,6 +171,12 @@ def prepare_preprocess_db_sync(
             if existing_video:
                 video_id = existing_video["id"]
 
+        if video_id and duration_sec is not None:
+            # 기존 레코드의 duration_sec를 업데이트한다.
+            adapter.client.table("videos").update(
+                {"duration_sec": duration_sec}
+            ).eq("id", video_id).execute()
+
         if not video_id:
             # 없으면 새로 만들고 이후 단계에서 재사용한다.
             video_data = adapter.create_video(

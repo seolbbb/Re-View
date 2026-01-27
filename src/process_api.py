@@ -338,6 +338,37 @@ def _sanitize_filename(name: str) -> str:
     return re.sub(r'[^\w\-.]', '_', name)
 
 
+def _ensure_preprocess_job_finalized(adapter, video_id: str) -> None:
+    """preprocessing_job이 RUNNING 상태로 남아있으면 DONE으로 전환합니다."""
+    try:
+        video = adapter.get_video(video_id)
+        if not video:
+            return
+        job_id = video.get("current_preprocess_job_id")
+        if not job_id:
+            return
+        job = adapter.get_preprocessing_job(job_id)
+        if job and job.get("status") == "RUNNING":
+            adapter.update_preprocessing_job_status(job_id, "DONE")
+    except Exception:
+        pass
+
+
+def _update_video_duration(adapter, video_id: str, video_path: str) -> None:
+    """비디오 파일에서 duration_sec를 추출하여 DB에 업데이트합니다."""
+    try:
+        from src.pipeline.benchmark import get_video_info
+        video_info = get_video_info(Path(video_path))
+        duration = video_info.get("duration_sec")
+        if duration is not None:
+            duration = int(float(duration))
+            adapter.client.table("videos").update(
+                {"duration_sec": duration}
+            ).eq("id", video_id).execute()
+    except Exception:
+        pass
+
+
 def _run_full_pipeline(video_path: str, video_id: str) -> None:
     """전처리 → 처리 파이프라인을 순차 실행합니다 (BackgroundTasks용).
 
@@ -356,6 +387,8 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
             existing_video_id=video_id,
         )
         if adapter:
+            _update_video_duration(adapter, video_id, video_path)
+            _ensure_preprocess_job_finalized(adapter, video_id)
             adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
         # 2. 처리 파이프라인
@@ -529,6 +562,8 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
             existing_video_id=video_id,
         )
         if adapter:
+            _update_video_duration(adapter, video_id, str(tmp_path))
+            _ensure_preprocess_job_finalized(adapter, video_id)
             adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
         # 3. 처리 파이프라인
