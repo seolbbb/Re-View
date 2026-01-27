@@ -67,3 +67,7 @@ export function getVideoStreamUrl(videoId) {
 export function getThumbnailUrl(videoId) {
   return `${BASE_URL}/api/videos/${videoId}/thumbnail`;
 }
+
+export function restartProcessing(videoId) {
+  return post('/process', { video_id: videoId });
+}

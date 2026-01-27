@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StickyNote, RefreshCw, Pencil, Minimize2, Maximize2, Loader2 } from 'lucide-react';
-import { getVideoSummaries, getVideoStatus } from '../api/videos';
+import { StickyNote, RefreshCw, Pencil, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
+import { getVideoSummaries, getVideoStatus, restartProcessing } from '../api/videos';
 import usePolling from '../hooks/usePolling';
 
 function formatMs(ms) {
@@ -15,8 +15,11 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     const [items, setItems] = useState([]);
     const [initialLoading, setInitialLoading] = useState(true);
     const [videoStatus, setVideoStatus] = useState(null);
-    const [progressInfo, setProgressInfo] = useState({ current: 0, total: 0, percent: 0 });
+    const [progressInfo, setProgressInfo] = useState({ current: 0, total: 0, percent: 0, stage: '' });
     const prevCountRef = useRef(0);
+    const [errorMessage, setErrorMessage] = useState(null);
+    const [isRestarting, setIsRestarting] = useState(false);
+    const [pollingKey, setPollingKey] = useState(0);
 
     // 비디오 상태 확인: 처리 중인지 판단
     const isProcessing = videoStatus && !['DONE', 'FAILED'].includes((videoStatus).toUpperCase());
@@ -24,12 +27,12 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     const fetchStatus = useCallback(() => {
         if (!videoId) return Promise.resolve(null);
         return getVideoStatus(videoId);
-    }, [videoId]);
+    }, [videoId, pollingKey]);
 
     const fetchSummaries = useCallback(() => {
         if (!videoId) return Promise.resolve(null);
         return getVideoSummaries(videoId);
-    }, [videoId]);
+    }, [videoId, pollingKey]);
 
     // 상태 폴링: DONE/FAILED까지
     const { data: statusData } = usePolling(fetchStatus, {
@@ -52,15 +55,26 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     useEffect(() => {
         if (!statusData) return;
         setVideoStatus(statusData.video_status);
+        setErrorMessage(statusData.error_message || null);
         const job = statusData.processing_job;
         if (job) {
             const current = job.progress_current || 0;
             const total = job.progress_total || 1;
+            const jobStatus = (job.status || '').toUpperCase();
+
+            // Stage-aware progress: each stage adds partial progress within the current batch
+            const stageWeight = { VLM_RUNNING: 0.3, SUMMARY_RUNNING: 0.6, JUDGE_RUNNING: 0.9 };
+            const basePct = total > 0 ? (current / total) * 100 : 0;
+            const batchWidth = total > 0 ? 100 / total : 0;
+            const stageBonus = (stageWeight[jobStatus] || 0) * batchWidth;
+            const percent = jobStatus === 'DONE' ? 100
+                : Math.min(Math.round(basePct + stageBonus), 99);
+
             setProgressInfo({
                 current,
                 total,
-                percent: total > 0 ? Math.round((current / total) * 100) : 0,
-                stage: job.status,
+                percent,
+                stage: jobStatus,
             });
         }
     }, [statusData]);
@@ -101,9 +115,12 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
 
     const stageLabel = (() => {
         const s = (progressInfo.stage || videoStatus || '').toUpperCase();
-        if (s === 'VLM_RUNNING') return 'AI 분석 진행 중...';
-        if (s === 'SUMMARY_RUNNING') return '요약 생성 중...';
-        if (s === 'JUDGE_RUNNING') return '품질 평가 중...';
+        const batchPrefix = progressInfo.total > 1
+            ? `배치 ${Math.min(progressInfo.current + 1, progressInfo.total)}/${progressInfo.total} · `
+            : '';
+        if (s === 'VLM_RUNNING') return `${batchPrefix}AI 분석 진행 중...`;
+        if (s === 'SUMMARY_RUNNING') return `${batchPrefix}요약 생성 중...`;
+        if (s === 'JUDGE_RUNNING') return `${batchPrefix}품질 평가 중...`;
         if (s === 'PREPROCESSING' || s === 'PREPROCESS_DONE') return '전처리 완료, 분석 대기 중...';
         return '영상 분석 중...';
     })();
@@ -143,6 +160,47 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         return (
             <div className="bg-green-500/10 rounded-lg p-3 border border-green-500/20 flex items-center gap-2 mb-4">
                 <span className="text-green-400 text-sm font-medium">분석 완료 - {items.length}개 세그먼트</span>
+            </div>
+        );
+    };
+
+    const FailedBanner = () => {
+        if (!videoStatus || videoStatus.toUpperCase() !== 'FAILED') return null;
+
+        const handleRestart = async () => {
+            setIsRestarting(true);
+            try {
+                await restartProcessing(videoId);
+                setVideoStatus(null);
+                setErrorMessage(null);
+                setProgressInfo({ current: 0, total: 0, percent: 0, stage: '' });
+                setPollingKey(k => k + 1);
+            } catch (err) {
+                setErrorMessage(`재시작 실패: ${err.message || '알 수 없는 오류'}`);
+            } finally {
+                setIsRestarting(false);
+            }
+        };
+
+        return (
+            <div className="bg-red-500/10 rounded-lg p-4 border border-red-500/20 flex flex-col gap-3 mb-4">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-red-400" />
+                        <span className="text-red-400 text-sm font-medium">분석 실패</span>
+                    </div>
+                    <button
+                        onClick={handleRestart}
+                        disabled={isRestarting}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-medium rounded-lg border border-red-500/30 transition-colors disabled:opacity-50"
+                    >
+                        <RotateCcw className={`w-3.5 h-3.5 ${isRestarting ? 'animate-spin' : ''}`} />
+                        {isRestarting ? '재시작 중...' : '요약 재시작'}
+                    </button>
+                </div>
+                {errorMessage && (
+                    <p className="text-red-400/70 text-xs">{errorMessage}</p>
+                )}
             </div>
         );
     };
@@ -301,6 +359,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                     <>
                         <ProcessingStatusBar />
                         <CompletedBanner />
+                        <FailedBanner />
                         <div className="flex items-center justify-between border-b border-[var(--border-color)] pb-2">
                             <div className="flex items-center gap-2">
                                 <StickyNote className="w-6 h-6 text-primary" />
@@ -324,6 +383,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                     <>
                         <ProcessingStatusBar />
                         <CompletedBanner />
+                        <FailedBanner />
                     </>
                 )}
 
