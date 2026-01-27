@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,7 @@ from src.adk_chatbot.store import VideoStore
 from src.run_preprocess_pipeline import run_preprocess_pipeline as run_preprocess_pipeline_job
 
 from .adk_session import AdkMessage, AdkSession
+from .langgraph_session import LangGraphSession
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_ROOT = (PROJECT_ROOT / DEFAULT_OUTPUT_BASE).resolve()
@@ -125,5 +127,42 @@ def start_adk_session(
     )
 
 
+def _normalize_chat_backend(backend: Optional[str]) -> str:
+    value = (backend or os.getenv("CHATBOT_BACKEND", "adk")).strip().lower()
+    if value in {"langgraph", "lg", "langgraph-agent"}:
+        return "langgraph" 
+    return "adk"
+
+
+def start_chatbot_session(
+    *,
+    state: Dict[str, Any],
+    app_name: str = "screentime_pipeline",
+    user_id: str = "streamlit",
+    backend: Optional[str] = None,
+) -> Any:
+    selected = _normalize_chat_backend(backend)
+    if selected == "langgraph":
+        if not state.get("video_id"):
+            raise ValueError("video_id is required for LangGraph backend. Run preprocess with DB sync.")
+        return LangGraphSession(app_name=app_name, user_id=user_id, initial_state=state)
+    return AdkSession(
+        root_agent=chatbot_root_agent,
+        app_name=app_name,
+        user_id=user_id,
+        initial_state=state,
+    )
+
+
+def send_chat_message(session: Any, message: str) -> List[Any]:
+    return session.send_message(message)
+
+
 def send_adk_message(session: AdkSession, message: str) -> List[AdkMessage]:
+    return send_chat_message(session, message)
+
+
+def stream_chat_message(session: Any, message: str) -> Any:
+    if hasattr(session, "stream_message"):
+        return session.stream_message(message)
     return session.send_message(message)

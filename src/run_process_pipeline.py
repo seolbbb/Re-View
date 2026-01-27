@@ -113,6 +113,8 @@ def run_processing_pipeline(
         # video_id가 있는 경우 DB에서 이름을 가져옴
         if video_id:
             temp_adapter = get_supabase_adapter()
+            if not temp_adapter:
+                raise ValueError("Supabase adapter not configured. Check SUPABASE_URL/SUPABASE_KEY.")
             v_data = temp_adapter.client.table("videos").select("name").eq("id", video_id).execute()
             if v_data.data:
                 video_name = v_data.data[0].get("name")
