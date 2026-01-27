@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Sparkles, RotateCcw, Bot, Send, Loader2 } from 'lucide-react';
-import { sendChatMessage } from '../api/chat';
+import { streamChatMessage } from '../api/chat';
 import { useVideo } from '../context/VideoContext';
 
 function ChatBot({ videoId }) {
@@ -16,56 +16,90 @@ function ChatBot({ videoId }) {
     const [inputValue, setInputValue] = useState('');
     const [sending, setSending] = useState(false);
     const messagesEndRef = useRef(null);
+    const abortRef = useRef(null);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
+    useEffect(() => {
+        return () => {
+            abortRef.current?.abort();
+        };
+    }, []);
+
     const handleSend = async () => {
         const text = inputValue.trim();
         if (!text || sending) return;
 
+        const botId = `bot-${Date.now()}`;
         const userMsg = {
             id: `user-${Date.now()}`,
             type: 'user',
             text,
             timestamp: 'Now',
         };
-        setMessages((prev) => [...prev, userMsg]);
+        const botMsg = {
+            id: botId,
+            type: 'bot',
+            text: '',
+            timestamp: 'Now',
+            streaming: true,
+        };
+        setMessages((prev) => [...prev, userMsg, botMsg]);
         setInputValue('');
         setSending(true);
 
-        try {
-            const result = await sendChatMessage({
-                videoId: videoId || '',
-                message: text,
-                sessionId: chatSessionId,
-            });
-            if (result.session_id) {
-                setChatSessionId(result.session_id);
-            }
-            setMessages((prev) => [
-                ...prev,
-                {
-                    id: `bot-${Date.now()}`,
-                    type: 'bot',
-                    text: result.response,
-                    timestamp: 'Now',
-                },
-            ]);
-        } catch (err) {
-            setMessages((prev) => [
-                ...prev,
-                {
-                    id: `err-${Date.now()}`,
-                    type: 'bot',
-                    text: `오류가 발생했습니다: ${err.message || 'Unknown error'}`,
-                    timestamp: 'Now',
-                },
-            ]);
-        } finally {
-            setSending(false);
-        }
+        abortRef.current = streamChatMessage({
+            videoId: videoId || '',
+            message: text,
+            sessionId: chatSessionId,
+            onSessionId: (sessionId) => {
+                if (sessionId) setChatSessionId(sessionId);
+            },
+            onChunk: (chunk, isFinal) => {
+                if (!chunk && !isFinal) return;
+                setMessages((prev) =>
+                    prev.map((msg) => {
+                        if (msg.id !== botId) return msg;
+                        const nextText = `${msg.text || ''}${chunk || ''}`;
+                        return {
+                            ...msg,
+                            text: nextText,
+                            streaming: !isFinal,
+                        };
+                    })
+                );
+                if (isFinal) {
+                    setSending(false);
+                }
+            },
+            onDone: () => {
+                setMessages((prev) =>
+                    prev.map((msg) =>
+                        msg.id === botId ? { ...msg, streaming: false } : msg
+                    )
+                );
+                setSending(false);
+                abortRef.current = null;
+            },
+            onError: (err) => {
+                setMessages((prev) => {
+                    const next = prev.map((msg) =>
+                        msg.id === botId ? { ...msg, streaming: false } : msg
+                    );
+                    next.push({
+                        id: `err-${Date.now()}`,
+                        type: 'bot',
+                        text: `오류가 발생했습니다: ${err.message || 'Unknown error'}`,
+                        timestamp: 'Now',
+                    });
+                    return next;
+                });
+                setSending(false);
+                abortRef.current = null;
+            },
+        });
     };
 
     const handleKeyDown = (e) => {
@@ -76,6 +110,9 @@ function ChatBot({ videoId }) {
     };
 
     const handleClear = () => {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setSending(false);
         setMessages([
             {
                 id: 'welcome',
@@ -120,22 +157,21 @@ function ChatBot({ videoId }) {
 
                         <div className={`flex flex-col gap-1 ${msg.type === 'user' ? 'items-end' : ''} max-w-[85%]`}>
                             <div className={`${msg.type === 'bot' ? 'bg-surface-highlight rounded-tl-none border border-[var(--border-color)] text-[var(--text-secondary)]' : 'bg-primary rounded-tr-none text-white'} p-3 rounded-2xl text-sm leading-relaxed shadow-sm`}>
-                                <p>{msg.text}</p>
+                                <p className="whitespace-pre-wrap">
+                                    {msg.text}
+                                    {msg.streaming && (
+                                        msg.text ? (
+                                            <span className="inline-block w-2 h-4 bg-primary/70 animate-pulse align-middle ml-1 rounded-sm" />
+                                        ) : (
+                                            <Loader2 className="w-4 h-4 animate-spin text-primary inline-block" />
+                                        )
+                                    )}
+                                </p>
                             </div>
                             <span className={`text-[10px] text-gray-500 ${msg.type === 'user' ? 'pr-1' : 'pl-1'}`}>{msg.timestamp}</span>
                         </div>
                     </div>
                 ))}
-                {sending && (
-                    <div className="flex gap-3">
-                        <div className="size-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0 border border-primary/20">
-                            <Bot className="w-4 h-4 text-primary" />
-                        </div>
-                        <div className="bg-surface-highlight rounded-2xl rounded-tl-none border border-[var(--border-color)] p-3 text-sm">
-                            <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                        </div>
-                    </div>
-                )}
                 <div ref={messagesEndRef} />
             </div>
 
