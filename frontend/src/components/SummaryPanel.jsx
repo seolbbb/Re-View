@@ -20,6 +20,8 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     const [errorMessage, setErrorMessage] = useState(null);
     const [isRestarting, setIsRestarting] = useState(false);
     const [pollingKey, setPollingKey] = useState(0);
+    const prevBatchRef = useRef(-1);
+    const staleFlagRef = useRef(false);
 
     // 비디오 상태 확인: 처리 중인지 판단
     const isProcessing = videoStatus && !['DONE', 'FAILED'].includes((videoStatus).toUpperCase());
@@ -66,7 +68,21 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
             const stageWeight = { VLM_RUNNING: 0.3, SUMMARY_RUNNING: 0.6, JUDGE_RUNNING: 0.9 };
             const basePct = total > 0 ? (current / total) * 100 : 0;
             const batchWidth = total > 0 ? 100 / total : 0;
-            const stageBonus = (stageWeight[jobStatus] || 0) * batchWidth;
+
+            // Guard: after current_batch increments, status may still show the
+            // previous batch's JUDGE_RUNNING for 1+ poll cycles. Suppress the
+            // stale bonus until status actually moves to the new batch's stage.
+            if (prevBatchRef.current >= 0 && current !== prevBatchRef.current) {
+                staleFlagRef.current = true;
+            }
+            prevBatchRef.current = current;
+            if (staleFlagRef.current && jobStatus !== 'JUDGE_RUNNING') {
+                staleFlagRef.current = false;
+            }
+            const stageBonus = staleFlagRef.current
+                ? 0
+                : (stageWeight[jobStatus] || 0) * batchWidth;
+
             const percent = jobStatus === 'DONE' ? 100
                 : Math.min(Math.round(basePct + stageBonus), 99);
 
@@ -174,6 +190,8 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                 setVideoStatus(null);
                 setErrorMessage(null);
                 setProgressInfo({ current: 0, total: 0, percent: 0, stage: '' });
+                prevBatchRef.current = -1;
+                staleFlagRef.current = false;
                 setPollingKey(k => k + 1);
             } catch (err) {
                 setErrorMessage(`재시작 실패: ${err.message || '알 수 없는 오류'}`);
