@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useVideo } from '../context/VideoContext';
@@ -15,6 +15,43 @@ function AnalysisPage() {
     const { theme, toggleTheme } = useTheme();
     const { setCurrentVideoId } = useVideo();
     const [videoInfo, setVideoInfo] = useState(null);
+
+    // Shared video element ref & playback state for preserving across expand/collapse
+    const videoElRef = useRef(null);
+    const playbackStateRef = useRef({ time: 0, playing: false });
+
+    // Current playback time (ms) for segment highlighting
+    const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
+    const timeThrottleRef = useRef(0);
+    const handleTimeUpdate = useCallback((timeSec) => {
+        const now = Date.now();
+        if (now - timeThrottleRef.current >= 500) {
+            timeThrottleRef.current = now;
+            setCurrentPlaybackMs(timeSec * 1000);
+        }
+    }, []);
+
+    const handleToggleExpand = useCallback((expanded) => {
+        // Save current playback state before the VideoPlayer remounts
+        const v = videoElRef.current;
+        if (v) {
+            playbackStateRef.current = {
+                time: v.currentTime,
+                playing: !v.paused,
+            };
+        }
+        setIsExpanded(expanded);
+    }, []);
+
+    const handleSeekTo = useCallback((timeMs) => {
+        const v = videoElRef.current;
+        if (!v) return;
+        v.currentTime = timeMs / 1000;
+        setCurrentPlaybackMs(timeMs);
+        if (v.paused) {
+            v.play().catch(() => {});
+        }
+    }, []);
 
     useEffect(() => {
         if (videoId) {
@@ -77,14 +114,17 @@ function AnalysisPage() {
                         {isExpanded ? (
                             <>
                                 {/* Detailed Summary View (Full) */}
-                                <SummaryPanel isExpanded={true} onToggleExpand={() => setIsExpanded(false)} videoId={videoId} />
+                                <SummaryPanel isExpanded={true} onToggleExpand={() => handleToggleExpand(false)} videoId={videoId} onSeekTo={handleSeekTo} currentTimeMs={currentPlaybackMs} />
 
                                 {/* PIP Video Player */}
                                 <div className="absolute bottom-6 right-6 w-80 lg:w-96 aspect-video z-50 transition-all hover:scale-[1.02]">
                                     <VideoPlayer
                                         isPip={true}
-                                        onTogglePip={() => setIsExpanded(false)}
+                                        onTogglePip={() => handleToggleExpand(false)}
                                         videoId={videoId}
+                                        videoElRef={videoElRef}
+                                        playbackRestore={playbackStateRef}
+                                        onTimeUpdate={handleTimeUpdate}
                                         className="relative w-full h-full rounded-xl overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.5)] border border-[var(--border-color)] ring-1 ring-white/5 group bg-black"
                                     />
                                 </div>
@@ -94,11 +134,11 @@ function AnalysisPage() {
                             <div className="flex flex-col overflow-y-auto custom-scrollbar p-6 lg:p-8 gap-8 min-w-0 h-full">
                                 {/* Video Player Section */}
                                 <div className="flex flex-col gap-4">
-                                    <VideoPlayer isPip={false} videoId={videoId} />
+                                    <VideoPlayer isPip={false} videoId={videoId} videoElRef={videoElRef} playbackRestore={playbackStateRef} onTimeUpdate={handleTimeUpdate} />
                                 </div>
 
                                 {/* Summary Section */}
-                                <SummaryPanel isExpanded={false} onToggleExpand={() => setIsExpanded(true)} videoId={videoId} />
+                                <SummaryPanel isExpanded={false} onToggleExpand={() => handleToggleExpand(true)} videoId={videoId} onSeekTo={handleSeekTo} currentTimeMs={currentPlaybackMs} />
                             </div>
                         )}
                     </div>

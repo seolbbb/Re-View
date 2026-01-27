@@ -11,7 +11,7 @@ function formatMs(ms) {
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function SummaryPanel({ isExpanded, onToggleExpand, videoId }) {
+function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTimeMs }) {
     const [items, setItems] = useState([]);
     const [initialLoading, setInitialLoading] = useState(true);
     const [videoStatus, setVideoStatus] = useState(null);
@@ -166,16 +166,42 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId }) {
         const isNew = index >= prevCountRef.current - 1 && isProcessing;
         const hasSections = bullets.length > 0 || definitions.length > 0 || explanations.length > 0;
 
+        const isActive = currentTimeMs != null &&
+            item.start_ms != null && item.end_ms != null &&
+            currentTimeMs >= item.start_ms && currentTimeMs < item.end_ms;
+
+        const handleCardClick = () => {
+            if (!isExpanded && onSeekTo && item.start_ms != null) {
+                onSeekTo(item.start_ms);
+            }
+        };
+
         return (
             <div
                 key={item.summary_id || index}
-                className={`group flex flex-col md:flex-row gap-2 md:gap-8 ${isExpanded ? 'p-5 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)]'
+                className={`group flex flex-col md:flex-row gap-2 md:gap-8 border-l-2 ${
+                    isActive
+                        ? 'border-l-primary bg-primary/10'
+                        : 'border-l-transparent'
+                } ${isExpanded ? 'p-5 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)] cursor-pointer'
                     } ${isNew ? 'animate-fade-in' : ''} transition-colors`}
+                onClick={handleCardClick}
             >
                 <div className="md:w-24 shrink-0 flex md:justify-end">
-                    <span className="font-mono text-sm text-gray-400 bg-surface/50 px-2 py-0.5 rounded border border-[var(--border-color)] group-hover:border-primary/50 transition-colors h-fit">
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (onSeekTo && item.start_ms != null) onSeekTo(item.start_ms);
+                        }}
+                        className={`font-mono text-sm bg-surface/50 px-2 py-0.5 rounded border transition-colors h-fit cursor-pointer ${
+                            isActive
+                                ? 'text-primary border-primary/50 bg-primary/10'
+                                : 'text-gray-400 border-[var(--border-color)] group-hover:border-primary/50 hover:text-primary hover:bg-primary/10'
+                        }`}
+                        title={`${formatMs(item.start_ms)} 으로 이동`}
+                    >
                         {formatMs(item.start_ms)}
-                    </span>
+                    </button>
                 </div>
                 <div className="flex-1">
                     <h4 className={`text-[var(--text-primary)] font-semibold ${isExpanded ? 'mb-3 text-lg' : 'mb-1'}`}>{title}</h4>

@@ -9,8 +9,9 @@ function formatTime(sec) {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function VideoPlayer({ isPip, onTogglePip, videoId, className = "" }) {
-    const videoRef = useRef(null);
+function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, playbackRestore, onTimeUpdate }) {
+    const internalRef = useRef(null);
+    const videoRef = videoElRef || internalRef;
     const [playing, setPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -47,12 +48,41 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "" }) {
     useEffect(() => {
         const v = videoRef.current;
         if (!v) return;
-        const onTime = () => setCurrentTime(v.currentTime);
-        const onDur = () => setDuration(v.duration);
+
+        const restorePlayback = () => {
+            if (playbackRestore?.current) {
+                const { time, playing: wasPlaying } = playbackRestore.current;
+                if (time > 0) {
+                    v.currentTime = time;
+                    setCurrentTime(time);
+                }
+                if (wasPlaying) {
+                    v.play().catch(() => {});
+                    setPlaying(true);
+                }
+                playbackRestore.current = { time: 0, playing: false };
+            }
+        };
+
+        const onTime = () => {
+            setCurrentTime(v.currentTime);
+            onTimeUpdate?.(v.currentTime);
+        };
+        const onDur = () => {
+            setDuration(v.duration);
+            restorePlayback();
+        };
         const onEnd = () => setPlaying(false);
         v.addEventListener('timeupdate', onTime);
         v.addEventListener('loadedmetadata', onDur);
         v.addEventListener('ended', onEnd);
+
+        // If metadata already loaded (cached video), restore immediately
+        if (v.readyState >= 1) {
+            setDuration(v.duration);
+            restorePlayback();
+        }
+
         return () => {
             v.removeEventListener('timeupdate', onTime);
             v.removeEventListener('loadedmetadata', onDur);
