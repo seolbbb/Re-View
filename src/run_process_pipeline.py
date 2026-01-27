@@ -381,6 +381,28 @@ def run_processing_pipeline(
     if not (stt_json and manifest_json and captures_dir):
         raise ValueError("Input artifacts are not resolved.")
 
+    # DB Sync가 켜져 있는데 video_id가 없으면, video_name으로 DB에서 조회한다.
+    if (sync_to_db or use_db) and not video_id:
+        adapter_lookup = get_supabase_adapter()
+        if adapter_lookup:
+            for candidate in [video_name, safe_video_name]:
+                if not candidate:
+                    continue
+                v_res = (
+                    adapter_lookup.client.table("videos")
+                    .select("id,name")
+                    .eq("name", candidate)
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if v_res.data:
+                    video_id = v_res.data[0]["id"]
+                    print(f"[DB] Resolved video_id {video_id} for name '{candidate}'")
+                    break
+            if not video_id:
+                print(f"[DB] Warning: Could not resolve video_id for '{video_name}'. DB sync might fail.")
+
     # 캡처 개수를 로딩해 리포트에 반영한다.
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
     capture_count = len(manifest_payload) if isinstance(manifest_payload, list) else 0
@@ -660,6 +682,7 @@ def run_processing_pipeline(
 def get_parser() -> argparse.ArgumentParser:
     """처리 파이프라인용 ArgumentParser를 생성해 반환한다."""
     parser = argparse.ArgumentParser(description="Processing pipeline (VLM + Fusion)")
+    parser.add_argument("--video", default=None, help="Input video file path (for unifying with preprocess CLI)")
     parser.add_argument("--video-name", default=None, help="Video name (videos.name)")
     parser.add_argument("--video-id", default=None, help="Video ID (videos.id)")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
@@ -682,8 +705,13 @@ def main() -> None:
     parser = get_parser()
     args = parser.parse_args()
 
+    # --video가 있으면 video_name을 추출하여 사용
+    video_name = args.video_name
+    if args.video and not video_name:
+        video_name = Path(args.video).stem
+
     run_processing_pipeline(
-        video_name=args.video_name,
+        video_name=video_name,
         video_id=args.video_id,
         output_base=args.output_base,
         batch_mode=args.batch_mode,

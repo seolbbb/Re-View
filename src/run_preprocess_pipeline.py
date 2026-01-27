@@ -117,7 +117,18 @@ def run_preprocess_pipeline(
     # 부분 출력이 생기기 전에 입력 경로를 먼저 확정한다.
     video_path = Path(str(video_value)).expanduser().resolve()
     if not video_path.exists():
-        raise FileNotFoundError(f"Video file not found: {video_path}")
+        # 입력된 경로에 없으면 data/input 또는 data/inputs 폴더를 찾아본다.
+        fallback_path = ROOT / "data" / "input" / video_value
+        if fallback_path.exists():
+            video_path = fallback_path.resolve()
+            print(f"[Info] Resolved video path from data/input: {video_path}")
+        else:
+            fallback_inputs = ROOT / "data" / "inputs" / video_value
+            if fallback_inputs.exists():
+                 video_path = fallback_inputs.resolve()
+                 print(f"[Info] Resolved video path from data/inputs: {video_path}")
+            else:
+                 raise FileNotFoundError(f"Video file not found: {video_value} (checked current dir and data/input/)")
 
     # 캡처 설정은 config/capture/settings.yaml에서 기본값을 가져온다.
     capture_settings = load_capture_settings()
