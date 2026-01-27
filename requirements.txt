@@ -18,3 +18,4 @@ torch
 streamlit
 supabase>=2.0.0
 uvicorn
+langgraph

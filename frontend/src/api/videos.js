@@ -1,10 +1,44 @@
-import { get, postForm } from './client';
+import { get, post, BASE_URL } from './client';
 
-export function uploadVideo(file) {
-  const form = new FormData();
-  form.append('file', file);
-  return postForm('/api/videos/upload', form);
+// ---------------------------------------------------------------------------
+// Signed URL 기반 3단계 업로드
+// ---------------------------------------------------------------------------
+
+export async function initUpload(file) {
+  return post('/api/videos/upload/init', {
+    filename: file.name,
+    content_type: file.type || 'video/mp4',
+  });
 }
+
+export async function uploadToStorage(uploadUrl, file) {
+  const res = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type || 'video/mp4' },
+    body: file,
+  });
+  if (!res.ok) {
+    throw new Error('Storage upload failed');
+  }
+}
+
+export async function completeUpload(videoId, storageKey) {
+  return post('/api/videos/upload/complete', {
+    video_id: videoId,
+    storage_key: storageKey,
+  });
+}
+
+export async function uploadVideo(file) {
+  const { video_id, video_name, upload_url, storage_key } = await initUpload(file);
+  await uploadToStorage(upload_url, file);
+  await completeUpload(video_id, storage_key);
+  return { video_id, video_name, status: 'PREPROCESSING' };
+}
+
+// ---------------------------------------------------------------------------
+// 조회 API
+// ---------------------------------------------------------------------------
 
 export function listVideos() {
   return get('/api/videos');
@@ -27,9 +61,9 @@ export function getVideoSummaries(videoId) {
 }
 
 export function getVideoStreamUrl(videoId) {
-  return `/api/videos/${videoId}/stream`;
+  return `${BASE_URL}/api/videos/${videoId}/stream`;
 }
 
 export function getThumbnailUrl(videoId) {
-  return `/api/videos/${videoId}/thumbnail`;
+  return `${BASE_URL}/api/videos/${videoId}/thumbnail`;
 }

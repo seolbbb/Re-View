@@ -35,6 +35,8 @@ SUMMARY.md
 .agent/
 *_readable.txt
 *_frames/
+logs/
+test.json
 
 # IDE
 .vscode/
