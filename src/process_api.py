@@ -352,8 +352,9 @@ OUTPUT_DIR = Path("data/outputs")
 
 
 def _sanitize_filename(name: str) -> str:
-    """파일명에서 안전하지 않은 문자를 제거합니다."""
-    return re.sub(r'[^\w\-.]', '_', name)
+    """파일명에서 안전하지 않은 문자를 제거합니다 (ASCII, 숫자, -, . 만 허용)."""
+    # 한글 등 비-ASCII 문자는 _로 치환하여 Storage/FS 호환성 확보
+    return re.sub(r'[^a-zA-Z0-9.\-_]', '_', name)
 
 
 def _ensure_preprocess_job_finalized(adapter, video_id: str) -> None:
