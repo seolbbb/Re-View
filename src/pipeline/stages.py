@@ -144,14 +144,30 @@ def run_stt(
     backend: str,
     write_output: bool = True,
 ) -> Dict[str, Any]:
-    """음성 인식을 실행해 stt 결과를 반환한다."""
+    """미디어 파일(비디오 등)에서 오디오를 추출하고 음성 인식을 실행한다."""
     router = STTRouter(provider=backend)
-    audio_output_path = output_stt_json.with_name(f"{video_path.stem}.wav") if output_stt_json else None
     return router.transcribe_media(
         video_path,
         provider=backend,
         audio_output_path=None,  # 코덱 설정에 따라 자동 결정
         mono_method="auto",
+        output_path=output_stt_json if write_output else None,
+        write_output=write_output,
+    )
+
+
+def run_stt_only(
+    audio_path: Path,
+    output_stt_json: Optional[Path],
+    *,
+    backend: str,
+    write_output: bool = True,
+) -> Dict[str, Any]:
+    """이미 추출된 오디오 파일에 대해 음성 인식을 실행한다."""
+    router = STTRouter(provider=backend)
+    return router.transcribe(
+        audio_path,
+        provider=backend,
         output_path=output_stt_json if write_output else None,
         write_output=write_output,
     )
