@@ -1,3 +1,5 @@
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
 export class ApiError extends Error {
   constructor(status, message) {
     super(message);
@@ -7,7 +9,7 @@ export class ApiError extends Error {
 }
 
 async function request(url, options = {}) {
-  const res = await fetch(url, {
+  const res = await fetch(BASE_URL + url, {
     headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
   });
@@ -39,7 +41,7 @@ export function post(url, body) {
 }
 
 export function postForm(url, formData) {
-  return fetch(url, { method: 'POST', body: formData }).then(async (res) => {
+  return fetch(BASE_URL + url, { method: 'POST', body: formData }).then(async (res) => {
     if (!res.ok) {
       let message = res.statusText;
       try {

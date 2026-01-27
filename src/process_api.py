@@ -37,6 +37,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +46,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 from src.db import get_supabase_adapter
@@ -53,9 +55,14 @@ from src.run_process_pipeline import run_processing_pipeline
 
 app = FastAPI(title="Screentime Processing API")
 
+_cors_origins_str = os.getenv(
+    "CORS_ORIGINS", "http://localhost:5173,http://localhost:5174"
+)
+_cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -409,6 +416,137 @@ async def upload_video(
     )
 
 
+# =============================================================================
+# Signed URL 기반 업로드 엔드포인트
+# =============================================================================
+
+
+class UploadInitRequest(BaseModel):
+    filename: str
+    content_type: str = "video/mp4"
+
+
+class UploadInitResponse(BaseModel):
+    video_id: str
+    video_name: str
+    upload_url: str
+    storage_key: str
+
+
+@app.post("/api/videos/upload/init", response_model=UploadInitResponse)
+def init_upload(request: UploadInitRequest):
+    """Signed URL 발급 + 비디오 레코드 생성."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video_name = Path(request.filename).stem
+    safe_name = _sanitize_filename(request.filename)
+    # 임시 ID 없이 레코드 먼저 생성하여 video_id 확보
+    video = adapter.create_video(
+        name=video_name,
+        original_filename=request.filename,
+    )
+    video_id = video["id"]
+
+    storage_key = f"{video_id}/{safe_name}"
+    adapter.update_video_storage_key(video_id, storage_key)
+
+    # Supabase Storage signed upload URL 생성
+    signed = adapter.client.storage.from_("videos").create_signed_upload_url(
+        storage_key
+    )
+    upload_url = signed.get("signed_url") or signed.get("signedURL", "")
+
+    return UploadInitResponse(
+        video_id=video_id,
+        video_name=video_name,
+        upload_url=upload_url,
+        storage_key=storage_key,
+    )
+
+
+class UploadCompleteRequest(BaseModel):
+    video_id: str
+    storage_key: str
+
+
+class UploadCompleteResponse(BaseModel):
+    video_id: str
+    status: str
+
+
+@app.post("/api/videos/upload/complete", response_model=UploadCompleteResponse)
+def complete_upload(
+    request: UploadCompleteRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Storage 업로드 완료 알림 → 파이프라인 실행."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(request.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    adapter.update_video_status(request.video_id, "PREPROCESSING")
+
+    background_tasks.add_task(
+        _run_full_pipeline_from_storage,
+        request.video_id,
+        request.storage_key,
+    )
+
+    return UploadCompleteResponse(
+        video_id=request.video_id,
+        status="PREPROCESSING",
+    )
+
+
+def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
+    """Storage에서 비디오를 다운로드하여 전처리 → 처리 파이프라인을 순차 실행합니다."""
+    from src.run_preprocess_pipeline import run_preprocess_pipeline
+
+    adapter = get_supabase_adapter()
+    tmp_dir = None
+    try:
+        # 1. Storage에서 임시 디렉토리로 다운로드
+        tmp_dir = tempfile.mkdtemp()
+        original_name = Path(storage_key).name
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        tmp_filename = f"{timestamp}_{original_name}"
+        tmp_path = Path(tmp_dir) / tmp_filename
+
+        file_data = adapter.client.storage.from_("videos").download(storage_key)
+        tmp_path.write_bytes(file_data)
+
+        # 2. 전처리
+        run_preprocess_pipeline(
+            video=str(tmp_path),
+            sync_to_db=True,
+            write_local_json=True,
+            existing_video_id=video_id,
+        )
+        if adapter:
+            adapter.update_video_status(video_id, "PREPROCESS_DONE")
+
+        # 3. 처리 파이프라인
+        video_name = tmp_path.stem
+        run_processing_pipeline(
+            video_name=video_name,
+            video_id=video_id,
+            sync_to_db=True,
+            force_db=True,
+        )
+    except Exception as exc:
+        if adapter:
+            adapter.update_video_status(video_id, "FAILED", error=str(exc))
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @app.get("/api/videos")
 def list_videos() -> Dict[str, Any]:
     """비디오 목록 조회 (최신순)."""
@@ -422,7 +560,7 @@ def list_videos() -> Dict[str, Any]:
 
 @app.get("/api/videos/{video_id}/stream")
 def stream_video(video_id: str):
-    """비디오 파일 서빙."""
+    """비디오 파일 서빙 (Storage signed URL 또는 로컬 fallback)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -431,9 +569,15 @@ def stream_video(video_id: str):
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    original_filename = video.get("original_filename", "")
+    # Storage에 업로드된 비디오가 있으면 signed URL로 리다이렉트
+    storage_key = video.get("video_storage_key")
+    if storage_key:
+        signed_url = adapter.get_signed_url(storage_key, bucket="videos")
+        if signed_url:
+            return RedirectResponse(url=signed_url)
 
-    # data/inputs/ 디렉토리에서 파일 검색
+    # Fallback: 로컬 파일시스템에서 제공
+    original_filename = video.get("original_filename", "")
     if INPUT_DIR.exists():
         for f in sorted(INPUT_DIR.iterdir(), reverse=True):
             if f.name.endswith(original_filename) or original_filename in f.name:
@@ -443,12 +587,12 @@ def stream_video(video_id: str):
                     filename=original_filename,
                 )
 
-    raise HTTPException(status_code=404, detail="Video file not found on disk")
+    raise HTTPException(status_code=404, detail="Video file not found")
 
 
 @app.get("/api/videos/{video_id}/thumbnail")
 def get_video_thumbnail(video_id: str):
-    """비디오 썸네일 이미지 서빙."""
+    """비디오 썸네일 이미지 서빙 (captures 버킷 signed URL 또는 로컬 fallback)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -457,6 +601,25 @@ def get_video_thumbnail(video_id: str):
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
+    # DB에서 첫 번째 캡처의 storage_path 조회
+    try:
+        caps = (
+            adapter.client.table("captures")
+            .select("storage_path")
+            .eq("video_id", video_id)
+            .limit(1)
+            .execute()
+        )
+        if caps.data and caps.data[0].get("storage_path"):
+            signed_url = adapter.get_signed_url(
+                caps.data[0]["storage_path"], bucket="captures"
+            )
+            if signed_url:
+                return RedirectResponse(url=signed_url)
+    except Exception:
+        pass
+
+    # Fallback: 로컬 파일시스템
     video_name = video.get("name", "")
     captures_dir = OUTPUT_DIR / video_name / "captures"
 
