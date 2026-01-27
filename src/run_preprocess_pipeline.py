@@ -1,76 +1,124 @@
 """
-STT + 캡처 전처리 파이프라인 엔트리포인트 (선택적 DB 동기화 포함).
+[Intent]
+STT(음성 인식)와 비디오 캡처 과정을 통합하여 실행하는 전처리 파이프라인의 메인 진입점입니다.
+오디오 추출, STT 분석, 슬라이드 캡처 작업을 병렬 또는 순차적으로 수행하며,
+결과물을 로컬 파일 시스템에 저장하거나 Supabase DB와 연동하여 관리합니다.
 
-영상 파일을 입력받아 STT 추출 결과와 프레임 캡처 이미지를 생성합니다.
-로컬 실행(`--local-json`) 시 `data/outputs/{video_name}`에 결과물이 저장됩니다.
+[Usage]
+- 터미널이나 외부 스크립트에서 `--video` 인자와 함께 호출하여 실행합니다.
+- 예: python src/run_preprocess_pipeline.py --video data/input/lecture.mp4 --local-json
 
-Usage:
-    python src/run_preprocess_pipeline.py --video data/input/sample.mp4 [options]
-
-Arguments:
-    --video            (Required) 입력 비디오 파일 경로
-    --output-base      (Optional) 출력 루트 디렉토리 (기본값: data/outputs)
-    --parallel         (Optional) STT와 캡처 병렬 실행 여부 (기본값: True)
-    --local-json       (Optional) 로컬에 JSON 아티팩트 저장 여부 (기본값: config 설정 따름)
-    --db-sync          (Optional) Supabase DB 동기화 여부
-
-Examples:
-    # 기본 실행 (로컬 JSON 생성 + 병렬 처리)
-    python src/run_preprocess_pipeline.py --video data/input/sample4.mp4 --local-json
-
-    # DB 동기화 없이 로컬 생성만 수행
-    python src/run_preprocess_pipeline.py --video data/input/sample4.mp4 --local-json --no-db-sync
+[Usage Method]
+1. CLI 인자를 파싱하여 실행 모드(병렬 여부, DB 동기화 여부 등)를 결정합니다.
+2. 입력 비디오의 메타데이터를 확인하고 출력 디렉토리를 생성합니다.
+3. run_preprocess_pipeline() 함수를 통해 실제 작업을 오케스트레이션합니다.
+4. 작업 완료 후 벤치마크 리포트를 생성하고 최종 상태를 기록합니다.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import argparse
-from dotenv import load_dotenv
 import yaml
+from dotenv import load_dotenv
 
-# 스크립트 실행 시 로컬 import가 동작하도록 레포 루트를 설정한다.
+# 프로젝트 루트 경로 설정
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-# API 키와 로컬 설정을 위해 환경 변수를 로드한다.
-ENV_PATH = ROOT / ".env"
-if ENV_PATH.exists():
-    load_dotenv(ENV_PATH)
-else:
-    load_dotenv()
-
+# 내부 모듈 임포트
+from src.audio.extract_audio import extract_audio
 from src.capture.settings import load_capture_settings
 from src.db.pipeline_sync import (
     finalize_preprocess_db_sync,
     prepare_preprocess_db_sync,
     sync_preprocess_artifacts_to_db,
 )
-from src.db.adapters import compute_config_hash
-from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
+from src.pipeline.benchmark import (
+    BenchmarkTimer,
+    get_video_info,
+    print_benchmark_report,
+)
+from src.pipeline.logger import pipeline_logger
 from src.pipeline.stages import run_capture, run_stt, run_stt_from_storage
-from src.audio.extract_audio import extract_audio
+
+# 환경 변수 로딩
+ENV_PATH = ROOT / ".env"
+if ENV_PATH.exists():
+    load_dotenv(ENV_PATH)
+else:
+    load_dotenv()
 
 
 def _sanitize_video_name(stem: str) -> str:
-    """파일명 stem을 안전한 출력 폴더명으로 정규화한다."""
+    """[Purpose] 파일명을 안전한 디렉토리 명으로 변환합니다 (공백 및 특수문자 제거)."""
     value = stem.strip()
     value = re.sub(r"\s+", "_", value)
     value = re.sub(r"[^A-Za-z0-9가-힣._-]+", "_", value)
     value = re.sub(r"_+", "_", value).strip("._-")
     return value[:80] if value else "video"
 
+
+def _validate_and_log_path(path_obj: Path, label: str) -> Path:
+    """
+    [Purpose] 경로가 허용된 디렉토리(data/inputs, data/outputs) 하위에 있는지 검증하고 로깅합니다.
+    [Args]
+    - path_obj (Path): 검증할 경로 객체
+    - label (str): 로깅 시 표시할 라벨
+    """
+    abs_path = path_obj.resolve()
+    # 프로젝트 루트 기준 data/inputs, data/outputs 절대 경로
+    allowed_inputs = (ROOT / "data" / "inputs").resolve()
+    allowed_outputs = (ROOT / "data" / "outputs").resolve()
+    
+    # data/inputs 또는 data/outputs 하위인지 확인 (자신 포함)
+    is_valid = False
+    if abs_path == allowed_inputs or abs_path == allowed_outputs:
+        is_valid = True
+    else:
+        try:
+            # relative_to는 하위 경로일 때만 성공함
+            abs_path.relative_to(allowed_inputs)
+            is_valid = True
+        except ValueError:
+            try:
+                abs_path.relative_to(allowed_outputs)
+                is_valid = True
+            except ValueError:
+                pass
+            
+    if not is_valid:
+        # 절대 경로가 아닌 프로젝트 루트 기준 상대 경로로 표시하여 개인정보 보호
+        try:
+            rel_path = abs_path.relative_to(ROOT)
+        except ValueError:
+            rel_path = abs_path
+            
+        error_msg = f"[Path Error] {label}이 허용된 범위를 벗어났습니다: {rel_path}\n(허용 범위: data/inputs 또는 data/outputs)"
+        print(error_msg)
+        raise RuntimeError(error_msg)
+    
+    # 정상 경로도 상대 경로로 출력
+    try:
+        display_path = abs_path.relative_to(ROOT)
+    except ValueError:
+        display_path = abs_path
+        
+    print(f"[Path Check] {label} verified: {display_path}")
+    return abs_path
+
+
 def _append_benchmark_report(path: Path, report_md: str, pipeline_label: str) -> None:
-    """기존 리포트가 있으면 구분선+타임스탬프로 이어 붙인다."""
+    """[Purpose] 기존 벤치마크 리포트 파일이 있으면 뒤에 내용을 추가합니다."""
     timestamp = datetime.now(timezone.utc).isoformat()
     if path.exists() and path.stat().st_size > 0:
         with path.open("a", encoding="utf-8") as handle:
@@ -90,115 +138,76 @@ def run_preprocess_pipeline(
     capture_threshold: Optional[float] = None,
     capture_dedupe_threshold: Optional[float] = None,
     capture_min_interval: Optional[float] = None,
+    capture_dedup_enabled: bool = True,
     capture_verbose: bool = False,
     limit: Optional[int] = None,
     write_local_json: Optional[bool] = None,
     sync_to_db: Optional[bool] = None,
+    db_table_name: str = "captures",
 ) -> Optional[str]:
-    """STT + Capture를 실행하고 입력 산출물까지만 생성한다."""
-    # CLI 인자로 덮어쓸 수 있는 기본 설정을 불러온다.
+    """
+    [Usage File] main()
+    [Purpose] 오디오 추출, STT, 캡처를 포함한 전체 전처리 과정을 제어합니다.
+    [Connection]
+    - src.pipeline.stages: 개별 단계(run_stt, run_capture 등) 호출
+    - src.db.pipeline_sync: DB 동기화 처리
+    - src.pipeline.benchmark: 실행 통계 기록
+    
+    [Args]
+    - video (str): 입력 비디오 경로
+    - output_base (str): 결과물 저장 루트 경로
+    - parallel (bool): 병렬 처리 엔진 사용 여부
+    - sync_to_db (bool): 결과물을 DB로 자동 전송할지 여부
+    
+    [Returns]
+    - Optional[str]: DB 동기화 성공 시 생성된 video_id, 아니면 None
+    """
+    # 1. 설정 및 경로 초기화
     settings_path = ROOT / "config" / "pipeline" / "settings.yaml"
     if not settings_path.exists():
         raise FileNotFoundError(f"pipeline settings file not found: {settings_path}")
-    settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
-    if not isinstance(settings, dict):
-        raise ValueError("pipeline settings must be a mapping.")
+    
+    pipeline_config = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    
+    video_path_str = video or pipeline_config.get("video", {}).get("preprocess_path")
+    if not video_path_str:
+        raise ValueError("입력 비디오 경로가 지정되지 않았습니다.")
 
-    video_value = video
-    if not video_value or not str(video_value).strip():
-        video_settings = settings.get("video", {})
-        if isinstance(video_settings, dict):
-            video_value = video_settings.get("preprocess_path")
-    if not video_value or not str(video_value).strip():
-        raise ValueError("video path is required (CLI --video or config/pipeline/settings.yaml: video.preprocess_path)")
-
-    # 부분 출력이 생기기 전에 입력 경로를 먼저 확정한다.
-    video_path = Path(str(video_value)).expanduser().resolve()
+    video_path = Path(video_path_str).expanduser().resolve()
+    _validate_and_log_path(video_path, "Input Video")
     if not video_path.exists():
-        raise FileNotFoundError(f"Video file not found: {video_path}")
+        raise FileNotFoundError(f"비디오 파일을 찾을 수 없습니다: {video_path}")
 
-    # 캡처 설정은 config/capture/settings.yaml에서 기본값을 가져온다.
+    # 캡처 설정 보정 (settings.yaml의 기본값 활용)
     capture_settings = load_capture_settings()
-    if capture_threshold is None:
-        capture_threshold = float(capture_settings.sensitivity_diff)
-    if capture_dedupe_threshold is None:
-        capture_dedupe_threshold = float(capture_settings.sensitivity_sim)
-    if capture_min_interval is None:
-        capture_min_interval = float(capture_settings.min_interval)
-
-    db_settings = settings.get("db", {})
-    if not isinstance(db_settings, dict):
-        db_settings = {}
-    preprocess_settings = settings.get("preprocess", {})
-    if not isinstance(preprocess_settings, dict):
-        preprocess_settings = {}
-    if sync_to_db is None:
-        sync_to_db = db_settings.get("sync_to_db_preprocess")
-        if sync_to_db is None:
-            sync_to_db = True
-    if not isinstance(sync_to_db, bool):
-        sync_to_db = True
-    if write_local_json is None:
-        write_local_json = preprocess_settings.get("write_local_json")
-        if write_local_json is None:
-            write_local_json = True
-    if not isinstance(write_local_json, bool):
-        write_local_json = True
-
-    # 이번 비디오 실행에 대한 출력 루트를 만든다.
+    capture_threshold = capture_threshold if capture_threshold is not None else capture_settings.persistence_drop_ratio
+    capture_dedupe_threshold = capture_dedupe_threshold if capture_dedupe_threshold is not None else capture_settings.sensitivity_diff
+    capture_min_interval = capture_min_interval if capture_min_interval is not None else capture_settings.min_interval
+    
+    # 출력 경로 생성 및 검증
     output_base_path = (ROOT / Path(output_base)).resolve()
+    _validate_and_log_path(output_base_path, "Output Base")
+    
     video_name = _sanitize_video_name(video_path.stem)
     video_root = output_base_path / video_name
     video_root.mkdir(parents=True, exist_ok=True)
 
-    # 벤치마크와 로그용 메타데이터를 수집한다.
+    # 벤치마크/로깅 준비
     timer = BenchmarkTimer()
     video_info = get_video_info(video_path)
+    timer.start_total()
 
-    run_meta_path = video_root / "pipeline_run.json"
-    # Preprocessing 관련 config 파일들의 해시 계산
-    preprocess_config_hash = compute_config_hash([
-        ROOT / "config" / "audio" / "settings.yaml",
-        ROOT / "config" / "capture" / "settings.yaml",
-    ])
-
-    run_args = {
-        "pipeline_type": "preprocess",
-        "video": str(video_path),
-        "output_base": str(output_base_path),
-        "stt_backend": stt_backend,
-        "config_hash": preprocess_config_hash,
-        "parallel": parallel,
-        "capture_threshold": capture_threshold,
-        "capture_dedupe_threshold": capture_dedupe_threshold,
-        "capture_min_interval": capture_min_interval,
-        "capture_verbose": capture_verbose,
-        "limit": limit,
-        "write_local_json": write_local_json,
-    }
-    run_meta: Dict[str, Any] = {
-        "video_path": str(video_path),
-        "video_name": video_name,
-        "video_info": video_info,
-        "output_base": str(output_base_path),
-        "video_root": str(video_root),
-        "started_at_utc": datetime.now(timezone.utc).isoformat(),
-        "args": run_args,
-        "durations_sec": {},
-        "benchmark": {},
-        "status": "running",
-    }
-    # 진행 중에도 확인할 수 있도록 메타데이터를 먼저 저장한다.
-    run_meta_path.parent.mkdir(parents=True, exist_ok=True)
-    run_meta_path.write_text(
-        json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-
+    # 2. DB 동기화 컨텍스트 준비
     db_context: Optional[Tuple[Any, str, Optional[str]]] = None
     db_errors: List[str] = []
-    printed_db_errors: set[str] = set()
-    if sync_to_db:
+    run_meta = {
+        "video_path": str(video_path),
+        "video_name": video_name,
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "status": "running"
+    }
+
+    if sync_to_db is not False: # Explicit False가 아니면 시도
         db_context = prepare_preprocess_db_sync(
             video_path=video_path,
             video_root=video_root,
@@ -206,174 +215,79 @@ def run_preprocess_pipeline(
             duration_sec=video_info.get("duration_sec"),
             stt_backend=stt_backend,
         )
-        if db_context:
-            _, _, preprocess_job_id = db_context
-            if preprocess_job_id:
-                run_meta["preprocess_job_id"] = preprocess_job_id
-            print("\nSyncing preprocessing artifacts to Supabase as stages complete...")
 
-    timer.start_total()
+    # 캡처 개수 추적용
     capture_count = 0
+    stt_payload = None
 
-    try:
-        stt_json = video_root / "stt.json"
-        captures_dir = video_root / "captures"
-        manifest_json = video_root / "manifest.json"
-
-        print(f"\nStarting preprocessing (parallel={parallel})...")
-        print("-" * 50)
-
-        stt_elapsed = 0.0
-        capture_elapsed = 0.0
-
-        def _sync_stage(
-            stage: str,
-            *,
-            stt_payload: Optional[Dict[str, Any]] = None,
-            captures_payload: Optional[List[Dict[str, Any]]] = None,
-            audio_path: Optional[Path] = None,
-        ) -> None:
-            if not db_context:
-                return
-            adapter, video_id, preprocess_job_id = db_context
+    # 내부 헬퍼: 각 단계 완료 후 DB 연동 및 공통 로깅
+    def _finalize_stage(stage: str, proc_elapsed: float, **kwargs) -> None:
+        comp_map = {"audio": "Audio", "capture": "Capture", "stt": "STT"}
+        comp_name = comp_map.get(stage, "System")
+        
+        db_elapsed = 0.0
+        if db_context:
+            db_start = time.perf_counter()
+            adapter, video_id, job_id = db_context
             stage_results = sync_preprocess_artifacts_to_db(
                 adapter=adapter,
                 video_id=video_id,
                 video_root=video_root,
                 provider=stt_backend,
-                preprocess_job_id=preprocess_job_id,
-                include_stt=stage == "stt",
-                include_captures=stage == "capture",
-                include_audio=stage == "audio",
-                stt_payload=stt_payload if stage == "stt" else None,
-                captures_payload=captures_payload if stage == "capture" else None,
-                audio_path=audio_path if stage == "audio" else None,
+                preprocess_job_id=job_id,
+                include_stt=(stage == "stt"),
+                include_captures=(stage == "capture"),
+                include_audio=(stage == "audio"),
+                **kwargs
             )
-            saved = stage_results.get("saved", {})
-            errors = stage_results.get("errors", [])
-            if saved:
-                summary = ", ".join(f"{key}={value}" for key, value in saved.items())
-                print(f"[DB] {stage} upload: {summary}")
-            if errors:
-                print(f"[DB] {stage} upload had {len(errors)} errors.")
-                for err in errors:
-                    if err in printed_db_errors:
-                        continue
-                    printed_db_errors.add(err)
-                    print(f"[DB] {stage} error: {err}")
-                db_errors.extend(errors)
-            # audio 업로드 후 storage_key 저장
-            if stage == "audio" and saved.get("audio"):
-                nonlocal audio_storage_key
-                audio_storage_key = stage_results.get("audio_storage_key")
+            db_elapsed = time.perf_counter() - db_start
+            if stage_results.get("errors"):
+                db_errors.extend(stage_results["errors"])
 
-        audio_storage_key: Optional[str] = None
+        # 통합 로깅 포맷 적용
+        res_info = ""
+        if stage == "stt" and "stt_payload" in kwargs:
+            res_info = f" | seg: {len(kwargs['stt_payload'].get('segments', []))}"
+        elif stage == "capture" and "captures_payload" in kwargs:
+            res_info = f" | cap: {len(kwargs['captures_payload'])}"
 
-        if parallel:
-            # 오디오 설정 로드
-            from src.audio.stt_router import load_audio_settings
-            audio_settings = load_audio_settings()
-            extract_settings = audio_settings.get("extract", {})
-            audio_codec = extract_settings.get("codec", "libmp3lame")
-            # 코덱에 따른 확장자 결정
-            codec_ext_map = {"pcm_s16le": ".wav", "flac": ".flac", "libmp3lame": ".mp3"}
-            audio_ext = codec_ext_map.get(audio_codec, ".wav")
+        msg = f"DONE (Task: {proc_elapsed:.1f}s | DB: {db_elapsed:.1f}s{res_info})"
+        pipeline_logger.log(comp_name, msg)
+
+    # 3. 파이프라인 실행 엔진
+    try:
+        pipeline_logger.log("System", f"Starting Preprocessing (Parallel={parallel})")
+        
+        # 병렬 또는 순차 실행을 위한 내부 함수들
+        def handle_audio_stt_chain():
+            # (1) Audio Extract
+            # STT 제공자가 기대하는 기본 포맷인 .wav를 사용하도록 권장 (또는 .mp3)
+            audio_path = video_root / f"{video_name}.mp3"
+            pipeline_logger.log("Audio", "Extracting...")
+            start = time.perf_counter()
+            extract_audio(video_path, output_path=audio_path)
+            elapsed_audio = time.perf_counter() - start
+            timer.record_stage("audio", elapsed_audio)
+            _finalize_stage("audio", elapsed_audio, audio_path=audio_path)
             
-            # 1단계: 오디오 추출 (먼저 실행)
-            audio_path = video_root / f"{video_path.stem}{audio_ext}"
-            print("  Extracting audio...")
-            audio_start = time.perf_counter()
-            extracted_audio = extract_audio(
-                video_path,
-                output_path=audio_path,
-                sample_rate=extract_settings.get("sample_rate", 16000),
-                channels=extract_settings.get("channels", 1),
-                codec=audio_codec,
-                mp3_bitrate=extract_settings.get("mp3_bitrate", "128k"),
-                mono_method=extract_settings.get("mono_method", "auto"),
-            )
-            audio_extract_elapsed = time.perf_counter() - audio_start
-            print(f"  Audio extracted in {format_duration(audio_extract_elapsed)}")
+            # (2) STT Analysis
+            pipeline_logger.log("STT", "Analyzing...")
+            start = time.perf_counter()
+            stt_json = video_root / "stt.json"
             
-            # 2단계: 오디오 Storage 업로드 + 캡처 생성/업로드 (병렬)
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                def upload_audio_to_storage() -> float:
-                    start = time.perf_counter()
-                    _sync_stage("audio", audio_path=extracted_audio)
-                    return time.perf_counter() - start
+            # Note: run_stt 대신 run_stt_only를 사용하여 이미 추출된 오디오를 사용함 (중복 추출 방지)
+            from src.pipeline.stages import run_stt_only
+            payload = run_stt_only(audio_path, stt_json, backend=stt_backend, write_output=write_local_json)
+            
+            elapsed_stt = time.perf_counter() - start
+            timer.record_stage("stt", elapsed_stt)
+            _finalize_stage("stt", elapsed_stt, stt_payload=payload)
+            return payload
 
-                def run_capture_timed() -> Tuple[List[Dict[str, Any]], float]:
-                    start = time.perf_counter()
-                    result = run_capture(
-                        video_path,
-                        output_base_path,
-                        threshold=capture_threshold,
-                        dedupe_threshold=capture_dedupe_threshold,
-                        min_interval=capture_min_interval,
-                        verbose=capture_verbose,
-                        video_name=video_name,
-                        write_manifest=write_local_json,
-                    )
-                    return result, time.perf_counter() - start
-
-                audio_upload_future = executor.submit(upload_audio_to_storage)
-                capture_future = executor.submit(run_capture_timed)
-
-                # 결과 수집
-                audio_upload_elapsed = audio_upload_future.result()
-                capture_result, capture_elapsed = capture_future.result()
-                capture_count = len(capture_result) if capture_result else 0
-                timer.record_stage("capture", capture_elapsed)
-                print(f"  Capture done in {format_duration(capture_elapsed)} (parallel)")
-                _sync_stage("capture", captures_payload=capture_result)
-
-            # 3단계: STT (Storage에서 오디오 다운로드하여 처리)
-            if db_context and audio_storage_key:
-                adapter, video_id, preprocess_job_id = db_context
-                print("  Running STT from Storage...")
-                stt_start = time.perf_counter()
-                stt_payload = run_stt_from_storage(
-                    audio_storage_key=audio_storage_key,
-                    video_id=video_id,
-                    backend=stt_backend,
-                )
-                stt_elapsed = time.perf_counter() - stt_start
-                timer.record_stage("stt", stt_elapsed)
-                print(f"  STT done in {format_duration(stt_elapsed)} (from Storage)")
-                # 로컬 stt.json 저장 (write_local_json 설정에 따라)
-                if write_local_json and stt_payload:
-                    stt_json.write_text(
-                        json.dumps(stt_payload, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                _sync_stage("stt", stt_payload=stt_payload)
-            else:
-                # DB 미설정 시 로컬 STT 실행
-                print("  Running STT locally...")
-                stt_payload, stt_elapsed = timer.time_stage(
-                    "stt",
-                    run_stt,
-                    video_path,
-                    stt_json,
-                    backend=stt_backend,
-                    write_output=write_local_json,
-                )
-                print(f"  STT done in {format_duration(stt_elapsed)} (local)")
-                _sync_stage("stt", stt_payload=stt_payload)
-        else:
-            # 동일한 타이밍 측정을 유지하며 순차 실행한다.
-            stt_payload, stt_elapsed = timer.time_stage(
-                "stt",
-                run_stt,
-                video_path,
-                stt_json,
-                backend=stt_backend,
-                write_output=write_local_json,
-            )
-            _sync_stage("stt", stt_payload=stt_payload)
-            capture_result, capture_elapsed = timer.time_stage(
-                "capture",
-                run_capture,
+        def handle_capture():
+            pipeline_logger.log("Capture", "Extracting...")
+            start = time.perf_counter()
+            results = run_capture(
                 video_path,
                 output_base_path,
                 threshold=capture_threshold,
@@ -381,141 +295,76 @@ def run_preprocess_pipeline(
                 min_interval=capture_min_interval,
                 verbose=capture_verbose,
                 video_name=video_name,
-                write_manifest=write_local_json,
+                write_manifest=write_local_json
             )
-            capture_count = len(capture_result) if capture_result else 0
-            _sync_stage("capture", captures_payload=capture_result)
+            elapsed = time.perf_counter() - start
+            timer.record_stage("capture", elapsed)
+            _finalize_stage("capture", elapsed, captures_payload=results)
+            return results
 
+        if parallel:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                f_audio_stt = executor.submit(handle_audio_stt_chain)
+                f_capture = executor.submit(handle_capture)
+                stt_payload = f_audio_stt.result()
+                capture_results = f_capture.result()
+        else:
+            stt_payload = handle_audio_stt_chain()
+            capture_results = handle_capture()
+
+        capture_count = len(capture_results)
         timer.end_total()
 
-        # 사람이 읽을 수 있는 벤치마크 리포트를 함께 저장한다.
+        # 4. 결과 리포팅
         md_report = print_benchmark_report(
             video_info=video_info,
             timer=timer,
             capture_count=capture_count,
-            segment_count=0,
+            segment_count=len(stt_payload.get("segments", [])) if stt_payload else 0,
             video_path=video_path,
             output_root=video_root,
-            parallel=parallel,
+            parallel=parallel
         )
-        report_path = video_root / "benchmark_report.md"
-        _append_benchmark_report(report_path, md_report, "Preprocess")
+        _append_benchmark_report(video_root / "benchmark_report.md", md_report, "Preprocess")
 
-        run_meta["durations_sec"] = {
-            "stt_sec": round(stt_elapsed, 6),
-            "capture_sec": round(capture_elapsed, 6),
-            "total_sec": round(timer.get_total_elapsed(), 6),
-        }
-        run_meta["benchmark"] = timer.get_report(video_info.get("duration_sec"))
-        run_meta["processing_stats"] = {
-            "capture_count": capture_count,
-        }
-        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
-        run_meta["status"] = "ok"
-        # 선택적 DB 동기화 전에 최종 메타데이터를 저장한다.
-        run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        # 5. DB 동기화 마무리
+        if db_context:
+            adapter, video_id, job_id = db_context
+            finalize_preprocess_db_sync(
+                adapter=adapter,
+                video_id=video_id,
+                preprocess_job_id=job_id,
+                run_meta=run_meta,
+                errors=db_errors
+            )
+            return video_id
 
-        if sync_to_db:
-            if db_context:
-                try:
-                    adapter, video_id, preprocess_job_id = db_context
-                    finalize_preprocess_db_sync(
-                        adapter=adapter,
-                        video_id=video_id,
-                        preprocess_job_id=preprocess_job_id,
-                        run_meta=run_meta,
-                        errors=db_errors,
-                    )
-                except Exception as exc:
-                    db_errors.append(f"finalize: {exc}")
-
-                if db_errors:
-                    print(f"Database sync completed with {len(db_errors)} errors.")
-                    for err in db_errors:
-                        if err in printed_db_errors:
-                            continue
-                        printed_db_errors.add(err)
-                        print(f"[DB] error: {err}")
-                else:
-                    print("Database sync completed.")
-            else:
-                print("Database sync skipped or failed (check logs above).")
-
-        print("\nPreprocessing completed.")
-        print(f"Outputs: {video_root}")
-        print(f"Benchmark: {report_path}")
-        
-        if sync_to_db and db_context:
-            try:
-                _, video_id, _ = db_context
-                return video_id
-            except Exception:
-                pass
+        print(f"\n[Success] Pipeline finished for {video_name}")
         return None
 
     except Exception as exc:
-        # 재발생 전에 실패 메타데이터를 항상 기록한다.
+        pipeline_logger.log("System", f"ERROR: {str(exc)}")
         timer.end_total()
-        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
-        run_meta["status"] = "error"
-        run_meta["error"] = str(exc)
-        run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
-        run_meta_path.write_text(
-            json.dumps(run_meta, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        if sync_to_db and db_context:
-            try:
-                adapter, video_id, preprocess_job_id = db_context
-                db_errors.append(f"pipeline: {exc}")
-                finalize_preprocess_db_sync(
-                    adapter=adapter,
-                    video_id=video_id,
-                    preprocess_job_id=preprocess_job_id,
-                    run_meta=run_meta,
-                    errors=db_errors,
-                )
-            except Exception:
-                pass
-        print(f"\nPreprocessing failed: {exc}")
-        raise
+        raise exc
 
 
 def main() -> None:
-    """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
-    parser = argparse.ArgumentParser(description="Preprocess pipeline (STT + Capture only)")
-    parser.add_argument("--video", default=None, help="Input video file path (or config/pipeline/settings.yaml)")
-    parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
-    parser.add_argument("--stt-backend", choices=["clova"], default="clova", help="STT backend")
-    parser.add_argument(
-        "--parallel",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Run STT and Capture in parallel",
-    )
-    parser.add_argument("--capture-verbose", action="store_true", help="Enable capture logs")
-    parser.add_argument(
-        "--local-json",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Write preprocess JSON artifacts to disk",
-    )
-    parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
-    parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
-    parser.set_defaults(db_sync=None)
+    """[Purpose] CLI 실행을 위한 메인 엔트리포인트입니다."""
+    parser = argparse.ArgumentParser(description="Feature Capture Pipeline - Preprocessor")
+    parser.add_argument("--video", required=True, help="입력 비디오 파일 경로")
+    parser.add_argument("--output-base", default="data/outputs", help="출력 디렉토리 루트")
+    parser.add_argument("--no-parallel", action="store_false", dest="parallel", help="병렬 처리 모드 비활성화")
+    parser.add_argument("--no-db-sync", action="store_false", dest="db_sync", help="Supabase 동기화 건너뛰기")
+    parser.add_argument("--local-json", action="store_true", help="로컬 전용 JSON 아티팩트 생성")
+    
     args = parser.parse_args()
-
+    
     run_preprocess_pipeline(
         video=args.video,
         output_base=args.output_base,
-        stt_backend=args.stt_backend,
         parallel=args.parallel,
-        capture_verbose=args.capture_verbose,
-        write_local_json=args.local_json,
         sync_to_db=args.db_sync,
+        write_local_json=args.local_json
     )
 
 
