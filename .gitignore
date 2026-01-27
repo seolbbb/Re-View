@@ -57,3 +57,8 @@ src/data/output/grid_search
 # capture benchmark
 temp_bench/
 .gemini/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
