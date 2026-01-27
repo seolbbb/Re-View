@@ -37,11 +37,11 @@ src/audio/
 
 ### 1) Clova STT (스키마 v1 출력)
 ```bash
-python src/audio/clova_stt.py --media-path src/data/input/sample.mp4
+python src/audio/clova_stt.py --media-path data/inputs/sample.mp4
 ```
 
 기본 출력:
-- `src/data/output/<입력파일명>/stt.json`
+- `data/outputs/<입력파일명>/stt.json`
 - 형식: `{ "segments": [{ "start_ms", "end_ms", "text", "confidence?" }] }`
 
 옵션 요약:
@@ -62,32 +62,32 @@ from src.audio.stt_router import STTRouter
 
 router = STTRouter()  # STT_PROVIDER 없으면 clova
 # 오디오 파일이 이미 있을 때
-router.transcribe("src/data/input/sample.wav", provider="whisper")
+router.transcribe("data/inputs/sample.wav", provider="whisper")
 
 # 영상 → 오디오 추출 → STT
-router.transcribe_media("src/data/input/sample.mp4", provider="clova", mono_method="auto")
+router.transcribe_media("data/inputs/sample.mp4", provider="clova", mono_method="auto")
 ```
 
 CLI 예시:
 ```bash
 # 영상 입력 + clova
-python src/audio/stt_router.py --media-path src/data/input/sample.mp4 --provider clova
+python src/audio/stt_router.py --media-path data/inputs/sample.mp4 --provider clova
 
 # 오디오 입력 + whisper (추출 스킵)
-python src/audio/stt_router.py --media-path src/data/input/sample.wav --provider whisper --no-extract --model-size base
+python src/audio/stt_router.py --media-path data/inputs/sample.wav --provider whisper --no-extract --model-size base
 ```
 
 ### 3) 오디오 추출
 ```bash
-python src/audio/extract_audio.py --media-path src/data/input/sample.mp4
+python src/audio/extract_audio.py --media-path data/inputs/sample.mp4
 ```
 
 기본 출력:
-- `src/data/input/<입력파일명>.wav`
+- `data/inputs/<입력파일명>.wav`
 모노 옵션:
 - `--mono-method downmix|left|right|phase-fix|auto` (기본: auto, 60초 구간 기준으로 자동 선택)
 
 ### 4) Whisper STT (오디오 입력)
 ```bash
-python src/audio/whisper_stt.py --audio-path src/data/input/sample.wav --model-size base
+python src/audio/whisper_stt.py --audio-path data/inputs/sample.wav --model-size base
 ```

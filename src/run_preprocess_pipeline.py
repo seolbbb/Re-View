@@ -117,7 +117,16 @@ def run_preprocess_pipeline(
     # 부분 출력이 생기기 전에 입력 경로를 먼저 확정한다.
     video_path = Path(str(video_value)).expanduser().resolve()
     if not video_path.exists():
-        raise FileNotFoundError(f"Video file not found: {video_path}")
+        # 입력된 경로에 없으면 data/inputs 폴더를 찾아본다.
+        fallback_inputs = ROOT / "data" / "inputs" / video_value
+        if fallback_inputs.exists():
+            video_path = fallback_inputs.resolve()
+            print(f"[Info] Resolved video path from data/inputs: {video_path}")
+        else:
+             print(f"\n[Error] Video file not found: {video_value}")
+             print(f"Please check if the file exists in 'data/inputs/' directory.")
+             print(f"Standard Input Directory: {ROOT / 'data' / 'inputs'}")
+             raise FileNotFoundError(f"Video file not found: {video_value} (checked data/inputs/)")
 
     # 캡처 설정은 config/capture/settings.yaml에서 기본값을 가져온다.
     capture_settings = load_capture_settings()
@@ -498,8 +507,8 @@ def run_preprocess_pipeline(
         raise
 
 
-def main() -> None:
-    """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
+def get_parser() -> argparse.ArgumentParser:
+    """전처리 파이프라인용 ArgumentParser를 생성해 반환한다."""
     parser = argparse.ArgumentParser(description="Preprocess pipeline (STT + Capture only)")
     parser.add_argument("--video", default=None, help="Input video file path (or config/pipeline/settings.yaml)")
     parser.add_argument("--output-base", default="data/outputs", help="Output base directory")
@@ -531,6 +540,12 @@ def main() -> None:
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
     parser.set_defaults(db_sync=None)
+    return parser
+
+
+def main() -> None:
+    """CLI 인자를 파싱하고 전처리 파이프라인을 실행한다."""
+    parser = get_parser()
     args = parser.parse_args()
 
     run_preprocess_pipeline(

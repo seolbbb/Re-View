@@ -89,7 +89,7 @@ class ClovaSpeechClient:
 
         if write_output:
             if output_path is None:
-                output_path = Path("src/data/output") / media_path.stem / "stt.json"
+                output_path = Path("data/outputs") / media_path.stem / "stt.json"
             else:
                 output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
