@@ -664,6 +664,14 @@ def run_batch_fusion_pipeline(
         f"(group size: ~{batch_size})"
     )
 
+    # total_batches 계산 완료 후 즉시 DB에 업데이트
+    if adapter and processing_job_id:
+        try:
+            adapter.update_processing_job_progress(processing_job_id, 0, total_batches)
+            print(f"  [DB] Initialized total_batch to {total_batches}")
+        except Exception as e:
+            print(f"  [DB] Warning: Failed to initialize total_batch: {e}")
+
     batch_ranges = []
     for i in range(total_batches):
         start_idx = i * batch_size
