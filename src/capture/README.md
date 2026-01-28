@@ -17,8 +17,8 @@
 **입출력**
 - 입력: MP4 비디오 파일
 - 출력:
-  - `data/output/{video}/captures/*.jpg`
-  - `data/output/{video}/manifest.json`
+  - `data/outputs/{video}/captures/*.jpg`
+  - `data/outputs/{video}/manifest.json`
 
 **파이프라인 흐름(요약)**
 1. 프레임 읽기 + 유휴 구간 샘플링

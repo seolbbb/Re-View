@@ -29,7 +29,7 @@ def extract_audio(
         raise FileNotFoundError(f"Media file not found: {media_path}")
 
     ext = CODEC_TO_EXT.get(codec, ".wav")
-    output_path = Path(output_path) if output_path else Path("src/data/input") / f"{media_path.stem}{ext}"
+    output_path = Path(output_path) if output_path else Path("data/outputs") / f"{media_path.stem}{ext}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if mono_method in ("left", "right", "phase-fix", "auto") and channels != 1:
