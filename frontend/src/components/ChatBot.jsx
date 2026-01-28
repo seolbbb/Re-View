@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Sparkles, RotateCcw, Bot, Send, Loader2 } from 'lucide-react';
 import { streamChatMessage } from '../api/chat';
 import { useVideo } from '../context/VideoContext';
+import MarkdownRenderer from './MarkdownRenderer';
 
 function ChatBot({ videoId }) {
     const { chatSessionId, setChatSessionId } = useVideo();
@@ -15,11 +16,14 @@ function ChatBot({ videoId }) {
     ]);
     const [inputValue, setInputValue] = useState('');
     const [sending, setSending] = useState(false);
-    const messagesEndRef = useRef(null);
+    const messagesContainerRef = useRef(null);
     const abortRef = useRef(null);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const container = messagesContainerRef.current;
+        if (container) {
+            container.scrollTop = container.scrollHeight;
+        }
     }, [messages]);
 
     useEffect(() => {
@@ -125,7 +129,7 @@ function ChatBot({ videoId }) {
     };
 
     return (
-        <aside className="w-[360px] hidden lg:flex flex-col border-l border-[var(--border-color)] bg-surface shrink-0 h-full">
+        <aside className="w-[360px] hidden lg:flex flex-col border-l border-[var(--border-color)] bg-surface shrink-0 h-full overflow-hidden">
             {/* Chat Header */}
             <div className="p-4 border-b border-[var(--border-color)] bg-surface z-10 shadow-sm flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -142,7 +146,7 @@ function ChatBot({ videoId }) {
             </div>
 
             {/* Messages Container */}
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
                 {messages.map((msg) => (
                     <div key={msg.id} className={`flex gap-3 ${msg.type === 'user' ? 'flex-row-reverse' : ''}`}>
                         {msg.type === 'bot' ? (
@@ -157,22 +161,25 @@ function ChatBot({ videoId }) {
 
                         <div className={`flex flex-col gap-1 ${msg.type === 'user' ? 'items-end' : ''} max-w-[85%]`}>
                             <div className={`${msg.type === 'bot' ? 'bg-surface-highlight rounded-tl-none border border-[var(--border-color)] text-[var(--text-secondary)]' : 'bg-primary rounded-tr-none text-white'} p-3 rounded-2xl text-sm leading-relaxed shadow-sm`}>
-                                <p className="whitespace-pre-wrap">
-                                    {msg.text}
-                                    {msg.streaming && (
-                                        msg.text ? (
-                                            <span className="inline-block w-2 h-4 bg-primary/70 animate-pulse align-middle ml-1 rounded-sm" />
-                                        ) : (
-                                            <Loader2 className="w-4 h-4 animate-spin text-primary inline-block" />
-                                        )
-                                    )}
-                                </p>
+                                {msg.type === 'bot' ? (
+                                    <div className="chat-markdown overflow-hidden">
+                                        <MarkdownRenderer>{msg.text}</MarkdownRenderer>
+                                        {msg.streaming && (
+                                            msg.text ? (
+                                                <span className="inline-block w-2 h-4 bg-primary/70 animate-pulse align-middle ml-1 rounded-sm" />
+                                            ) : (
+                                                <Loader2 className="w-4 h-4 animate-spin text-primary inline-block" />
+                                            )
+                                        )}
+                                    </div>
+                                ) : (
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                )}
                             </div>
                             <span className={`text-[10px] text-gray-500 ${msg.type === 'user' ? 'pr-1' : 'pl-1'}`}>{msg.timestamp}</span>
                         </div>
                     </div>
                 ))}
-                <div ref={messagesEndRef} />
             </div>
 
             {/* Input Area */}

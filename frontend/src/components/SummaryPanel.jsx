@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StickyNote, RefreshCw, Pencil, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
 import { getVideoSummaries, getVideoStatus, restartProcessing } from '../api/videos';
 import usePolling from '../hooks/usePolling';
+import MarkdownRenderer from './MarkdownRenderer';
 
 function formatMs(ms) {
     if (ms == null) return '--:--';
@@ -223,7 +224,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         );
     };
 
-    const renderBulletText = (b) => {
+    const getBulletText = (b) => {
         if (typeof b === 'string') return b;
         const prefix = b.bullet_id ? `(${b.bullet_id}) ` : '';
         return prefix + (b.claim || b.text || JSON.stringify(b));
@@ -294,7 +295,9 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             )}
                             <ul className={`list-disc list-outside ml-4 text-[var(--text-secondary)] ${isExpanded ? 'text-base space-y-1.5' : 'text-sm space-y-0.5'} leading-relaxed`}>
                                 {bullets.map((b, i) => (
-                                    <li key={i}>{renderBulletText(b)}</li>
+                                    <li key={i} className="markdown-inline">
+                                        <MarkdownRenderer>{getBulletText(b)}</MarkdownRenderer>
+                                    </li>
                                 ))}
                             </ul>
                         </div>
@@ -306,10 +309,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">정의</h5>
                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
                                 {definitions.map((d, i) => (
-                                    <li key={i}>
+                                    <li key={i} className="markdown-inline">
                                         <span className="font-semibold text-[var(--text-primary)]">{d.term}</span>
                                         {': '}
-                                        {d.definition}
+                                        <MarkdownRenderer>{d.definition}</MarkdownRenderer>
                                     </li>
                                 ))}
                             </ul>
@@ -322,7 +325,9 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">해설</h5>
                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
                                 {explanations.map((e, i) => (
-                                    <li key={i}>{e.point || e.text || JSON.stringify(e)}</li>
+                                    <li key={i} className="markdown-inline">
+                                        <MarkdownRenderer>{e.point || e.text || JSON.stringify(e)}</MarkdownRenderer>
+                                    </li>
                                 ))}
                             </ul>
                         </div>
@@ -334,7 +339,9 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">미해결 질문</h5>
                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed italic">
                                 {openQuestions.map((q, i) => (
-                                    <li key={i}>{q.question || q.text || JSON.stringify(q)}</li>
+                                    <li key={i} className="markdown-inline">
+                                        <MarkdownRenderer>{q.question || q.text || JSON.stringify(q)}</MarkdownRenderer>
+                                    </li>
                                 ))}
                             </ul>
                         </div>
