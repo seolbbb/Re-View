@@ -1,13 +1,22 @@
 """처리 파이프라인을 API로 실행하는 FastAPI 래퍼.
 
 사용 방법:
-서버 실행: uvicorn src.process_api:app --port 8080
+
+1. 백엔드 서버 실행
+uvicorn src.process_api:app --port 8080
+
 -> 서버가 실행이 되었으면 아래 예시와 같이 뜸
 INFO:     Started server process [92286]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
 
+2. 프론트엔드 실행
+-> 다른 터미널에서 cd frontend
+-> npm install (첫 실행시)
+-> npm run dev
+
+API 직접 테스트 (백엔드만 사용할 경우):
 다른 터미널을 추가로 열고 아래 요청 예시를 입력, 전처리가 되어 있어야 함
 POST 실행
 요청 예시:
