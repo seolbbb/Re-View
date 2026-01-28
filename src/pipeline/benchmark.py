@@ -245,10 +245,9 @@ def print_benchmark_report(
             display_entries.append((s, info["elapsed_formatted"], info["percentage"], None))
             accounted_elapsed += info["elapsed_sec"]
 
-    # 오버헤드 산출
+    # 오버헤드 산출 (항상 표시하여 전체 시간 구성의 투명성 확보)
     overhead = max(0.0, total_sec - accounted_elapsed)
-    if overhead > 0.01:
-        display_entries.append(("overhead", format_duration(overhead), (overhead / total_sec * 100) if total_sec > 0 else 0, None))
+    display_entries.append(("overhead", format_duration(overhead), (overhead / total_sec * 100) if total_sec > 0 else 0, None))
 
     # 터미널 포맷팅 출력
     width = max(24, max((len(e[0]) for e in display_entries), default=0))

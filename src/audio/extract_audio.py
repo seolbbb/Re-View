@@ -33,7 +33,12 @@ def extract_audio(
     output_path = Path(output_path) if output_path else Path("data/inputs") / f"{media_path.stem}{ext}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    print(f"[Audio] Extracting to: {output_path}")
+    # [Fix] 출력 로그의 절대 경로에서 프로젝트 루트(C:\...\featurecap)를 숨기기 위해 상대 경로 사용
+    try:
+        rel_output = output_path.relative_to(Path.cwd())
+    except ValueError:
+        rel_output = output_path
+    print(f"[Audio] Extracting to: {rel_output}")
 
     if mono_method in ("left", "right", "phase-fix", "auto") and channels != 1:
         raise ValueError("mono-method requires channels=1.")
