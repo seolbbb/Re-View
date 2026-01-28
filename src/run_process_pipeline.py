@@ -475,7 +475,7 @@ def run_processing_pipeline(
     if processing_job_id and adapter_for_job:
         try:
             adapter_for_job.update_processing_job_status(processing_job_id, "VLM_RUNNING")
-            # 초기 배치 진행률은 0으로 설정 (total_batch는 배치 모드에서 나중에 설정됨)
+            # 초기 배치 진행률은 0으로 설정 (total_batch는 run_batch_fusion_pipeline에서 즉시 설정됨)
             adapter_for_job.update_processing_job_progress(processing_job_id, 0, None)
         except Exception as e:
             print(f"[DB] Warning: Failed to update processing_job status: {e}")

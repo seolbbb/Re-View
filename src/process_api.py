@@ -1,13 +1,22 @@
 """처리 파이프라인을 API로 실행하는 FastAPI 래퍼.
 
 사용 방법:
-서버 실행: uvicorn src.process_api:app --host 0.0.0.0 --port 8000
+
+1. 백엔드 서버 실행
+uvicorn src.process_api:app --port 8080
+
 -> 서버가 실행이 되었으면 아래 예시와 같이 뜸
 INFO:     Started server process [92286]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
 
+2. 프론트엔드 실행
+-> 다른 터미널에서 cd frontend
+-> npm install (첫 실행시)
+-> npm run dev
+
+API 직접 테스트 (백엔드만 사용할 경우):
 다른 터미널을 추가로 열고 아래 요청 예시를 입력, 전처리가 되어 있어야 함
 POST 실행
 요청 예시:
@@ -35,17 +44,55 @@ GET 실행
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.db import get_supabase_adapter
 from src.run_process_pipeline import run_processing_pipeline
+from src.services.chat_session_store import ChatSessionStore
 
 
 app = FastAPI(title="Screentime Processing API")
+
+_cors_origins_str = os.getenv(
+    "CORS_ORIGINS", "http://localhost:5173,http://localhost:5174"
+)
+_cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+_chat_sessions = ChatSessionStore(ttl=3600)
+
+
+def _chat_session_cleanup_loop() -> None:
+    while True:
+        time.sleep(300)
+        _chat_sessions.cleanup_expired()
+
+
+threading.Thread(
+    target=_chat_session_cleanup_loop,
+    name="chat-session-cleanup",
+    daemon=True,
+).start()
 
 
 class ProcessRequest(BaseModel):
@@ -303,6 +350,444 @@ def get_video_evidence(
         "stt": stt_rows,
         "vlm": vlm_rows,
     }
+
+
+# =============================================================================
+# 프론트엔드 연동 엔드포인트
+# =============================================================================
+
+INPUT_DIR = Path("data/inputs")
+OUTPUT_DIR = Path("data/outputs")
+
+
+def _sanitize_filename(name: str) -> str:
+    """파일명에서 안전하지 않은 문자를 제거합니다 (ASCII, 숫자, -, . 만 허용)."""
+    # 한글 등 비-ASCII 문자는 _로 치환하여 Storage/FS 호환성 확보
+    return re.sub(r'[^a-zA-Z0-9.\-_]', '_', name)
+
+
+def _ensure_preprocess_job_finalized(adapter, video_id: str) -> None:
+    """preprocessing_job이 RUNNING 상태로 남아있으면 DONE으로 전환합니다."""
+    try:
+        video = adapter.get_video(video_id)
+        if not video:
+            return
+        job_id = video.get("current_preprocess_job_id")
+        if not job_id:
+            return
+        job = adapter.get_preprocessing_job(job_id)
+        if job and job.get("status") == "RUNNING":
+            adapter.update_preprocessing_job_status(job_id, "DONE")
+    except Exception:
+        pass
+
+
+def _update_video_duration(adapter, video_id: str, video_path: str) -> None:
+    """비디오 파일에서 duration_sec를 추출하여 DB에 업데이트합니다."""
+    try:
+        from src.pipeline.benchmark import get_video_info
+        video_info = get_video_info(Path(video_path))
+        duration = video_info.get("duration_sec")
+        if duration is not None:
+            duration = int(float(duration))
+            adapter.client.table("videos").update(
+                {"duration_sec": duration}
+            ).eq("id", video_id).execute()
+    except Exception:
+        pass
+
+
+def _run_full_pipeline(video_path: str, video_id: str) -> None:
+    """전처리 → 처리 파이프라인을 순차 실행합니다 (BackgroundTasks용).
+
+    업로드 엔드포인트에서 이미 videos 레코드를 생성했으므로,
+    existing_video_id를 전달하여 파이프라인 내부에서 중복 생성을 방지한다.
+    """
+    from src.run_preprocess_pipeline import run_preprocess_pipeline
+
+    adapter = get_supabase_adapter()
+    try:
+        # 1. 전처리 (existing_video_id로 기존 레코드 재사용, DB 중복 생성 방지)
+        run_preprocess_pipeline(
+            video=video_path,
+            sync_to_db=True,
+            write_local_json=True,
+            existing_video_id=video_id,
+        )
+        if adapter:
+            _update_video_duration(adapter, video_id, video_path)
+            _ensure_preprocess_job_finalized(adapter, video_id)
+            adapter.update_video_status(video_id, "PREPROCESS_DONE")
+
+        # 2. 처리 파이프라인
+        video_name = Path(video_path).stem
+        run_processing_pipeline(
+            video_name=video_name,
+            video_id=video_id,
+            sync_to_db=True,
+            force_db=True,
+        )
+    except Exception as exc:
+        if adapter:
+            adapter.update_video_status(video_id, "FAILED", error=str(exc))
+
+
+class UploadResponse(BaseModel):
+    video_id: str
+    video_name: str
+    status: str
+
+
+@app.post("/api/videos/upload", response_model=UploadResponse)
+async def upload_video(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+) -> UploadResponse:
+    """비디오 업로드 + 자동 파이프라인 실행."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일명이 없습니다.")
+
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    safe_name = _sanitize_filename(file.filename)
+    save_path = INPUT_DIR / f"{timestamp}_{safe_name}"
+
+    content = await file.read()
+    save_path.write_bytes(content)
+
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video_name = Path(file.filename).stem
+    video = adapter.create_video(
+        name=video_name,
+        original_filename=file.filename,
+    )
+    video_id = video["id"]
+    adapter.update_video_status(video_id, "PREPROCESSING")
+
+    background_tasks.add_task(_run_full_pipeline, str(save_path), video_id)
+
+    return UploadResponse(
+        video_id=video_id,
+        video_name=video_name,
+        status="PREPROCESSING",
+    )
+
+
+# =============================================================================
+# Signed URL 기반 업로드 엔드포인트
+# =============================================================================
+
+
+class UploadInitRequest(BaseModel):
+    filename: str
+    content_type: str = "video/mp4"
+
+
+class UploadInitResponse(BaseModel):
+    video_id: str
+    video_name: str
+    upload_url: str
+    storage_key: str
+
+
+@app.post("/api/videos/upload/init", response_model=UploadInitResponse)
+def init_upload(request: UploadInitRequest):
+    """Signed URL 발급 + 비디오 레코드 생성."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video_name = Path(request.filename).stem
+    safe_name = _sanitize_filename(request.filename)
+    # 임시 ID 없이 레코드 먼저 생성하여 video_id 확보
+    video = adapter.create_video(
+        name=video_name,
+        original_filename=request.filename,
+    )
+    video_id = video["id"]
+
+    storage_key = f"{video_id}/{safe_name}"
+    adapter.update_video_storage_key(video_id, storage_key)
+
+    # Supabase Storage signed upload URL 생성
+    signed = adapter.client.storage.from_("videos").create_signed_upload_url(
+        storage_key
+    )
+    upload_url = signed.get("signed_url") or signed.get("signedURL", "")
+
+    return UploadInitResponse(
+        video_id=video_id,
+        video_name=video_name,
+        upload_url=upload_url,
+        storage_key=storage_key,
+    )
+
+
+class UploadCompleteRequest(BaseModel):
+    video_id: str
+    storage_key: str
+
+
+class UploadCompleteResponse(BaseModel):
+    video_id: str
+    status: str
+
+
+@app.post("/api/videos/upload/complete", response_model=UploadCompleteResponse)
+def complete_upload(
+    request: UploadCompleteRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Storage 업로드 완료 알림 → 파이프라인 실행."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(request.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    adapter.update_video_status(request.video_id, "PREPROCESSING")
+
+    background_tasks.add_task(
+        _run_full_pipeline_from_storage,
+        request.video_id,
+        request.storage_key,
+    )
+
+    return UploadCompleteResponse(
+        video_id=request.video_id,
+        status="PREPROCESSING",
+    )
+
+
+def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
+    """Storage에서 비디오를 다운로드하여 전처리 → 처리 파이프라인을 순차 실행합니다."""
+    from src.run_preprocess_pipeline import run_preprocess_pipeline
+
+    adapter = get_supabase_adapter()
+    tmp_dir = None
+    try:
+        # 1. Storage에서 임시 디렉토리로 다운로드
+        tmp_dir = tempfile.mkdtemp()
+        original_name = Path(storage_key).name
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        tmp_filename = f"{timestamp}_{original_name}"
+        tmp_path = Path(tmp_dir) / tmp_filename
+
+        file_data = adapter.client.storage.from_("videos").download(storage_key)
+        tmp_path.write_bytes(file_data)
+
+        # 2. 전처리
+        run_preprocess_pipeline(
+            video=str(tmp_path),
+            sync_to_db=True,
+            write_local_json=True,
+            existing_video_id=video_id,
+        )
+        if adapter:
+            _update_video_duration(adapter, video_id, str(tmp_path))
+            _ensure_preprocess_job_finalized(adapter, video_id)
+            adapter.update_video_status(video_id, "PREPROCESS_DONE")
+
+        # 3. 처리 파이프라인
+        video_name = tmp_path.stem
+        run_processing_pipeline(
+            video_name=video_name,
+            video_id=video_id,
+            sync_to_db=True,
+            force_db=True,
+        )
+    except Exception as exc:
+        if adapter:
+            adapter.update_video_status(video_id, "FAILED", error=str(exc))
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.get("/api/videos")
+def list_videos() -> Dict[str, Any]:
+    """비디오 목록 조회 (최신순)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    videos = adapter.list_videos()
+    return {"videos": videos}
+
+
+@app.get("/api/videos/{video_id}/stream")
+def stream_video(video_id: str):
+    """비디오 파일 서빙 (Storage signed URL 또는 로컬 fallback)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Storage에 업로드된 비디오가 있으면 signed URL로 리다이렉트
+    storage_key = video.get("video_storage_key")
+    if storage_key:
+        signed_url = adapter.get_signed_url(storage_key, bucket="videos")
+        if signed_url:
+            return RedirectResponse(url=signed_url)
+
+    # Fallback: 로컬 파일시스템에서 제공
+    original_filename = video.get("original_filename", "")
+    if INPUT_DIR.exists():
+        for f in sorted(INPUT_DIR.iterdir(), reverse=True):
+            if f.name.endswith(original_filename) or original_filename in f.name:
+                return FileResponse(
+                    path=str(f),
+                    media_type="video/mp4",
+                    filename=original_filename,
+                )
+
+    raise HTTPException(status_code=404, detail="Video file not found")
+
+
+@app.get("/api/videos/{video_id}/thumbnail")
+def get_video_thumbnail(video_id: str):
+    """비디오 썸네일 이미지 서빙 (captures 버킷 signed URL 또는 로컬 fallback)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # DB에서 첫 번째 캡처의 storage_path 조회
+    try:
+        caps = (
+            adapter.client.table("captures")
+            .select("storage_path")
+            .eq("video_id", video_id)
+            .limit(1)
+            .execute()
+        )
+        if caps.data and caps.data[0].get("storage_path"):
+            signed_url = adapter.get_signed_url(
+                caps.data[0]["storage_path"], bucket="captures"
+            )
+            if signed_url:
+                return RedirectResponse(url=signed_url)
+    except Exception:
+        pass
+
+    # Fallback: 로컬 파일시스템
+    video_name = video.get("name", "")
+    captures_dir = OUTPUT_DIR / video_name / "captures"
+
+    if captures_dir.exists():
+        images = sorted(captures_dir.glob("*.jpg")) + sorted(captures_dir.glob("*.png"))
+        if images:
+            return FileResponse(
+                path=str(images[0]),
+                media_type="image/jpeg",
+            )
+
+    raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+
+class ChatRequest(BaseModel):
+    video_id: str
+    message: str
+    session_id: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+
+
+def _resolve_video_name(video: Dict[str, Any], fallback: str) -> str:
+    for key in ("name", "video_name", "original_filename"):
+        value = video.get(key)
+        if value:
+            return str(value)
+    return fallback
+
+
+def _get_or_create_chat_session(request: ChatRequest):
+    session = None
+    if request.session_id:
+        session = _chat_sessions.get(request.session_id)
+    if session:
+        return session
+
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    video = adapter.get_video(request.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_name = _resolve_video_name(video, request.video_id)
+    initial_state = {
+        "video_id": request.video_id,
+        "video_name": video_name,
+        "chat_mode": "full",
+    }
+    return _chat_sessions.create(
+        request.video_id,
+        video_name,
+        process_api_url="http://localhost:8080",
+        initial_state=initial_state,
+    )
+
+
+def _format_sse_event(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    """LangGraph 기반 챗봇 API (비스트리밍)."""
+    session = _get_or_create_chat_session(request)
+    messages = session.send_message(request.message)
+    response_text = "".join([getattr(msg, "text", "") for msg in messages if msg])
+    return ChatResponse(
+        response=response_text,
+        session_id=session.session_id,
+    )
+
+
+@app.post("/api/chat/stream")
+def chat_stream(request: ChatRequest):
+    """LangGraph 기반 챗봇 API (SSE 스트리밍)."""
+    session = _get_or_create_chat_session(request)
+
+    def event_generator():
+        yield _format_sse_event("session", {"session_id": session.session_id})
+        try:
+            for msg in session.stream_message(request.message):
+                payload = {
+                    "text": getattr(msg, "text", ""),
+                    "is_final": bool(getattr(msg, "is_final", False)),
+                }
+                yield _format_sse_event("message", payload)
+            yield _format_sse_event("done", {"session_id": session.session_id})
+        except Exception as exc:
+            yield _format_sse_event("error", {"error": str(exc)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # =============================================================================

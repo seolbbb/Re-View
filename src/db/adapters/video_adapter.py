@@ -52,15 +52,17 @@ class VideoAdapterMixin:
         original_filename: str,
         duration_sec: Optional[int] = None,
         user_id: Optional[str] = None,
+        video_storage_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """새 비디오 레코드를 생성합니다.
-        
+
         Args:
             name: 비디오 표시 이름 (보통 파일명에서 확장자 제거)
             original_filename: 원본 파일명
             duration_sec: 비디오 길이 (초)
             user_id: 소유자 ID (Optional)
-            
+            video_storage_key: Supabase Storage 내 경로 (Optional)
+
         Returns:
             Dict: 생성된 비디오 레코드 (자동 생성된 id 포함)
         """
@@ -73,14 +75,16 @@ class VideoAdapterMixin:
         }
         if user_id:
             data["user_id"] = user_id
-        
+        if video_storage_key:
+            data["video_storage_key"] = video_storage_key
+
         # 2. videos 테이블에 insert 실행
         result = self.client.table("videos").insert(data).execute()
         video = result.data[0]
-        
+
         # 3. 현재 작업 중인 비디오 ID 캐싱 (인스턴스 상태 관리)
         self._current_video_id = video["id"]
-        
+
         return video
     
     def update_video_status(
@@ -120,6 +124,45 @@ class VideoAdapterMixin:
         result = self.client.table("videos").select("*").eq("id", video_id).execute()
         return result.data[0] if result.data else None
     
+    def list_videos(self) -> list:
+        """전체 비디오 목록을 최신순으로 조회합니다.
+
+        Returns:
+            List[Dict]: 비디오 레코드 리스트 (created_at 내림차순)
+        """
+        try:
+            result = (
+                self.client.table("videos")
+                .select("*")
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception:
+            return []
+
+    def update_video_storage_key(
+        self,
+        video_id: str,
+        storage_key: str,
+    ) -> Dict[str, Any]:
+        """비디오의 Storage 경로를 업데이트합니다.
+
+        Args:
+            video_id: 대상 비디오 ID
+            storage_key: Supabase Storage 내 경로
+
+        Returns:
+            Dict: 업데이트된 비디오 레코드
+        """
+        result = (
+            self.client.table("videos")
+            .update({"video_storage_key": storage_key})
+            .eq("id", video_id)
+            .execute()
+        )
+        return result.data[0] if result.data else {}
+
     # NOTE: pipeline_runs 테이블은 더 이상 사용되지 않습니다.
     # 대신 preprocessing_jobs/processing_jobs 테이블을 사용하세요.
     # 관련 함수는 job_adapter.py에서 제공됩니다.

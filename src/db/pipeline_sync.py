@@ -140,11 +140,15 @@ def prepare_preprocess_db_sync(
     user_id: Optional[str] = None,
     stt_backend: str = "clova",
     table_name: str = "captures",
+    existing_video_id: Optional[str] = None,
 ) -> Optional[Tuple[Any, str, Optional[str]]]:
     """전처리 단계의 부분 업로드를 위한 DB 컨텍스트를 준비한다.
-    
+
     새 ERD 기준으로 preprocessing_jobs 테이블을 사용합니다.
-    
+
+    Args:
+        existing_video_id: 이미 생성된 video 레코드 ID. 제공되면 create_video()를 스킵한다.
+
     Returns:
         Tuple[adapter, video_id, preprocessing_job_id] or None
     """
@@ -160,12 +164,18 @@ def prepare_preprocess_db_sync(
             except (ValueError, TypeError):
                 duration_sec = None
 
-        video_id = None
-        if user_id:
+        video_id = existing_video_id
+        if not video_id and user_id:
             # 동일 파일명의 기존 video 레코드를 재사용한다.
             existing_video = adapter.get_video_by_filename(user_id, video_path.name)
             if existing_video:
                 video_id = existing_video["id"]
+
+        if video_id and duration_sec is not None:
+            # 기존 레코드의 duration_sec를 업데이트한다.
+            adapter.client.table("videos").update(
+                {"duration_sec": duration_sec}
+            ).eq("id", video_id).execute()
 
         if not video_id:
             # 없으면 새로 만들고 이후 단계에서 재사용한다.
