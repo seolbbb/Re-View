@@ -19,7 +19,7 @@ from src.fusion.summarizer import run_summarizer
 from src.fusion.sync_engine import run_sync_engine
 from src.judge.judge import run_judge
 from src.pipeline.benchmark import BenchmarkTimer
-from src.vlm.vlm_engine import OpenRouterVlmExtractor, write_vlm_raw_json
+from src.vlm.vlm_engine import QwenVlmExtractor, write_vlm_raw_json
 from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
 from src.db.stage_uploader import (
     upload_vlm_results_for_batch,
@@ -252,7 +252,7 @@ def _get_sort_key_timestamp(item: Dict[str, Any]) -> int:
     return int(item.get("start_ms", 0))
 
 
-def run_vlm_openrouter(
+def run_vlm_qwen(
     *,
     captures_dir: Path,
     manifest_json: Path,
@@ -263,7 +263,7 @@ def run_vlm_openrouter(
     show_progress: bool,
 ) -> int:
     """이미지 정보를 추출해 vlm.json을 만들고 처리 개수를 반환한다."""
-    extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_base)
+    extractor = QwenVlmExtractor(video_name=video_name, output_root=output_base)
     if batch_size is not None and batch_size < 1:
         raise ValueError("batch_size는 1 이상이어야 합니다.")
 
@@ -361,7 +361,7 @@ def run_vlm_for_batch(
     """배치 범위만 VLM 처리해 batch 단위의 vlm.json을 생성한다."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    extractor = OpenRouterVlmExtractor(video_name=video_name, output_root=output_dir)
+    extractor = QwenVlmExtractor(video_name=video_name, output_root=output_dir)
     if batch_size is not None and batch_size < 1:
         raise ValueError("batch_size는 1 이상이어야 합니다.")
 

@@ -292,7 +292,7 @@
 
 **입력**: `captures/manifest.json` + 이미지 파일
 
-**엔진**: OpenRouter API (`qwen/qwen3-vl-32b-instruct`)
+**엔진**: Qwen (DashScope) API (`qwen3-vl-32b-instruct`)
 
 **구현**: `src/vlm/vlm_engine.py`
 

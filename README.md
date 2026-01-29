@@ -28,7 +28,7 @@ pip install -r requirements.txt
 
 ```bash
 GOOGLE_API_KEY=...          # Gemini (필수)
-OPENROUTER_API_KEY=...      # VLM (Qwen, 필수)
+QWEN_API_KEY_1=...          # VLM (Qwen, 필수)
 CLOVA_SPEECH_URL=...        # STT (Clova 사용 시)
 CLOVA_SPEECH_API_KEY=...    # STT (Clova 사용 시)
 ```

@@ -66,7 +66,7 @@ from src.pipeline.stages import (
     generate_fusion_config,
     run_batch_fusion_pipeline,
     run_fusion_pipeline,
-    run_vlm_openrouter,
+    run_vlm_qwen,
 )
 
 QWEN_BASE_URL_DEFAULT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -578,7 +578,7 @@ def run_processing_pipeline(
             # 단일 모드에서는 VLM 실행 후 Fusion으로 넘어간다.
             vlm_image_count, vlm_elapsed = timer.time_stage(
                 "vlm",
-                run_vlm_openrouter,
+                run_vlm_qwen,
                 captures_dir=captures_dir,
                 manifest_json=manifest_json,
                 video_name=safe_video_name,
