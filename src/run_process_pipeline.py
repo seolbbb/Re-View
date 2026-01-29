@@ -1,8 +1,15 @@
 """
-VLM + Fusion 처리 파이프라인 엔트리포인트 (DB/로컬 입력 사용).
+VLM + Fusion 처리 파이프라인 엔트리포인트 (Qwen 전용).
 
 전처리된 아티팩트(STT, 캡처)를 입력으로 받아 VLM 분석과 Fusion(요약+평가)을 수행합니다.
 로컬 아티팩트가 있으면 우선 사용하고, 없으면 DB에서 다운로드를 시도합니다.
+
+Qwen 환경 변수:
+    QWEN_API_KEY_1    (Required, round-robin 지원)
+    QWEN_API_KEY_2    (Optional)
+    QWEN_API_KEYS     (Optional, comma-separated)
+    QWEN_BASE_URL     (Optional, default: https://dashscope-intl.aliyuncs.com/compatible-mode/v1)
+    QWEN_MODEL_NAME   (Optional, default: qwen3-vl-32b-instruct)
 
 Usage:
     python src/run_process_pipeline.py --video-name sample_video [options]
@@ -29,8 +36,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -60,6 +69,9 @@ from src.pipeline.stages import (
     run_vlm_openrouter,
 )
 
+QWEN_BASE_URL_DEFAULT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+QWEN_MODEL_DEFAULT = "qwen3-vl-32b-instruct"
+
 
 def _sanitize_video_name(stem: str) -> str:
     """파일명 stem을 안전한 출력 폴더명으로 정규화한다."""
@@ -79,6 +91,45 @@ def _append_benchmark_report(path: Path, report_md: str, pipeline_label: str) ->
             handle.write(report_md)
     else:
         path.write_text(report_md, encoding="utf-8")
+
+
+def _apply_qwen_vlm_overrides(repo_root: Path) -> Path:
+    """Qwen 전용 환경/설정 override를 적용한다."""
+    key_candidates = [
+        os.getenv("QWEN_API_KEYS", ""),
+        os.getenv("QWEN_API_KEY_1", ""),
+        os.getenv("QWEN_API_KEY_2", ""),
+        os.getenv("QWEN_API_KEY", ""),
+    ]
+    if not any(candidate.strip() for candidate in key_candidates):
+        raise ValueError("QWEN_API_KEY_1 (or QWEN_API_KEYS/QWEN_API_KEY) 환경변수가 설정되지 않았습니다.")
+
+    base_url = os.getenv("QWEN_BASE_URL", QWEN_BASE_URL_DEFAULT)
+    model_name = os.getenv("QWEN_MODEL_NAME", QWEN_MODEL_DEFAULT)
+
+    os.environ["QWEN_BASE_URL"] = base_url
+
+    settings_path = repo_root / "config" / "vlm" / "settings.yaml"
+    if not settings_path.exists():
+        raise FileNotFoundError(f"VLM settings file not found: {settings_path}")
+
+    payload = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid VLM settings format (must be a map).")
+
+    payload["model_name"] = model_name
+
+    temp_dir = Path(tempfile.gettempdir())
+    temp_path = temp_dir / f"vlm_settings_qwen_{os.getpid()}.yaml"
+    temp_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    from src.vlm import vlm_engine as _vlm_engine
+
+    _vlm_engine.SETTINGS_CONFIG_PATH = temp_path
+    return temp_path
 
 
 def run_processing_pipeline(
@@ -105,6 +156,8 @@ def run_processing_pipeline(
     settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
     if not isinstance(settings, dict):
         raise ValueError("pipeline settings must be a mapping.")
+
+    _apply_qwen_vlm_overrides(ROOT)
 
     video_settings = settings.get("video", {})
     if not isinstance(video_settings, dict):
@@ -475,7 +528,7 @@ def run_processing_pipeline(
     if processing_job_id and adapter_for_job:
         try:
             adapter_for_job.update_processing_job_status(processing_job_id, "VLM_RUNNING")
-            # 초기 배치 진행률은 0으로 설정 (total_batch는 run_batch_fusion_pipeline에서 즉시 설정됨)
+            # 초기 배치 진행률은 0으로 설정 (total_batch는 배치 모드에서 나중에 설정됨)
             adapter_for_job.update_processing_job_progress(processing_job_id, 0, None)
         except Exception as e:
             print(f"[DB] Warning: Failed to update processing_job status: {e}")
@@ -683,7 +736,7 @@ def run_processing_pipeline(
 
 def get_parser() -> argparse.ArgumentParser:
     """처리 파이프라인용 ArgumentParser를 생성해 반환한다."""
-    parser = argparse.ArgumentParser(description="Processing pipeline (VLM + Fusion)")
+    parser = argparse.ArgumentParser(description="Processing pipeline (DashScope VLM + Fusion)")
     parser.add_argument("--video", default=None, help="Input video file path (for unifying with preprocess CLI)")
     parser.add_argument("--video-name", default=None, help="Video name (videos.name)")
     parser.add_argument("--video-id", default=None, help="Video ID (videos.id)")

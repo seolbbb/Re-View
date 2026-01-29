@@ -48,7 +48,7 @@ class SummaryBackend(Protocol):
 
 class ProcessApiBackend:
     def __init__(self, process_api_url: Optional[str] = None) -> None:
-        base = process_api_url or os.environ.get("PROCESS_API_URL") or "http://localhost:8000"
+        base = process_api_url or os.environ.get("PROCESS_API_URL") or "http://localhost:8080"
         self._base_url = base.rstrip("/")
 
     def ensure_summary_exists(self, state: State) -> Dict[str, Any]:
