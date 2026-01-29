@@ -157,6 +157,23 @@ def run_stt(
     )
 
 
+def run_stt_only(
+    audio_path: Path,
+    output_stt_json: Optional[Path],
+    *,
+    backend: str,
+    write_output: bool = True,
+) -> Dict[str, Any]:
+    """이미 추출된 오디오 파일에 대해 음성 인식을 실행한다."""
+    router = STTRouter(provider=backend)
+    return router.transcribe(
+        audio_path,
+        provider=backend,
+        output_path=output_stt_json if write_output else None,
+        write_output=write_output,
+    )
+
+
 def run_stt_from_storage(
     *,
     audio_storage_key: str,
@@ -222,16 +239,17 @@ def run_capture(
     min_interval: float,
     verbose: bool,
     video_name: str,
-    dedup_enabled: bool = True,
+    dedup_enabled: bool = True,  # Kept for interface compatibility, but no longer used
     write_manifest: bool = True,
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
+    # Note: dedup_enabled is ignored - new HybridSlideExtractor always uses pHash+ORB dedup
     metadata = process_single_video_capture(
         str(video_path),
         str(output_base),
         scene_threshold=threshold,
+        dedupe_threshold=dedupe_threshold,
         min_interval=min_interval,
-        dedup_enabled=dedup_enabled,
         write_manifest=write_manifest,
     )
     return metadata

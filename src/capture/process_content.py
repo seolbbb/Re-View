@@ -1,15 +1,24 @@
 """
-캡쳐 단계에서 비디오 1건을 처리해 슬라이드 캡쳐와 manifest.json을 만든다.
-run_preprocess_pipeline에서 호출되며 설정은 config/capture/settings.yaml에서 로드한다.
+[Intent]
+단일 비디오 파일에 대해 캡처 파이프라인(추출, 저장, 매니페스트 생성)을 
+실행하는 고수준 인터페이스 모듈입니다. 
+
+[Usage]
+- run_preprocess_pipeline.py에서 'Capture' 단계 실행 시 메인 프로세스로 호출됩니다.
+- 캡처 설정(settings.py)과 실제 추출 엔진(hybrid_extractor.py)을 연결하는 가교 역할을 합니다.
+
+[Usage Method]
+- process_single_video_capture() 함수를 비디오 경로와 함께 호출하여 
+  해당 비디오의 모든 주요 장면을 이미지로 추출하고 결과를 리스트 형태로 반환받습니다.
 """
 
 import json
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
-from src.capture.settings import get_capture_settings
-from src.capture.tools.hybrid_extractor import HybridSlideExtractor
+from .settings import get_capture_settings
+from .tools.hybrid_extractor import HybridSlideExtractor
 
 
 def process_single_video_capture(
@@ -18,58 +27,61 @@ def process_single_video_capture(
     scene_threshold: Optional[float] = None,
     dedupe_threshold: Optional[float] = None,
     min_interval: Optional[float] = None,
-    dedup_enabled: bool = True,
     write_manifest: bool = True,
-) -> list:
+) -> List[dict]:
     """
-    run_preprocess_pipeline.py에서 호출되는 캡쳐 인터페이스.
-
-    지연 저장 로직으로 슬라이드를 추출한다.
-
-    video_path: 처리할 비디오 파일 경로.
-    output_base: 출력 기본 디렉터리.
-    scene_threshold: 장면 전환 감지 임계값(None이면 설정값 사용).
-    dedupe_threshold: 미사용 파라미터(호환 유지용).
-    min_interval: 최소 캡처 간격(None이면 설정값 사용).
-    dedup_enabled: 중복 제거 활성화 여부 (기본 True).
-    write_manifest: manifest.json 저장 여부.
-
-    반환: 추출된 슬라이드 메타데이터 리스트.
+    [Usage File] run_preprocess_pipeline.py
+    [Purpose] 단일 비디오에 대해 슬라이드 추출 프로세스를 수행하고 결과 메타데이터를 반환합니다.
+    [Connection] HybridSlideExtractor 클래스와 통신하여 실제 연산 수행
+    
+    [Args]
+    - video_path (str): 입력 비디오 절대 경로
+    - output_base (str): 결과 파일이 저장될 부모 디렉토리
+    - scene_threshold (Optional[float]): 슬라이드 전환 민감도 (None일 경우 설정 파일 값 사용)
+    - dedupe_threshold (Optional[float]): 중복 제거 민감도 (현재 로직에서는 Persistence에 통합됨)
+    - min_interval (Optional[float]): 캡처 간 최소 간격
+    - write_manifest (bool): 처리 완료 후 개별 manifest 파일을 생성할지 여부
+    
+    [Returns]
+    - List[dict]: 추출된 모든 슬라이드의 정보 (timestamp, image_path 등)
     """
     settings = get_capture_settings()
-    resolved_scene_threshold = settings.sensitivity_diff if scene_threshold is None else scene_threshold
-    resolved_min_interval = settings.min_interval if min_interval is None else min_interval
-    video_name = Path(video_path).stem
-    output_root = Path(output_base) / video_name
-    captures_dir = output_root / "captures"
+    video_path_obj = Path(video_path)
+    video_name = video_path_obj.stem
+    
+    # 출력 경로 설정: {output_base}/{video_name}/captures
+    video_output_dir = Path(output_base) / video_name
+    captures_dir = video_output_dir / "captures"
     captures_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n[Capture] Processing: {video_name}")
-
+    # 파라미터 결정 (전달된 인자가 없으면 settings.yaml 기본값 사용)
+    resolved_drop_ratio = settings.persistence_drop_ratio if scene_threshold is None else scene_threshold
+    
+    print(f"[Capture] Processing: {video_name}")
+    print(f"   - Config: drop={resolved_drop_ratio}, persist={settings.persistence_threshold}, min_feat={settings.min_orb_features}, dedup(phash={settings.dedup_phash_threshold}, dist={settings.dedup_orb_distance}, sim={settings.dedup_sim_threshold})")
+    
+    # 추출기 초기화
     extractor = HybridSlideExtractor(
-        video_path,
+        video_path=video_path,
         output_dir=str(captures_dir),
-        sensitivity_diff=resolved_scene_threshold,
-        sensitivity_sim=settings.sensitivity_sim,
-        min_interval=resolved_min_interval,
+        persistence_drop_ratio=resolved_drop_ratio,
         sample_interval_sec=settings.sample_interval_sec,
-        buffer_duration_sec=settings.buffer_duration_sec,
-        transition_timeout_sec=settings.transition_timeout_sec,
-        dedup_enabled=dedup_enabled,
+        persistence_threshold=settings.persistence_threshold,
+        min_orb_features=settings.min_orb_features,
+        dedup_phash_threshold=settings.dedup_phash_threshold,
+        dedup_orb_distance=settings.dedup_orb_distance,
+        dedup_sim_threshold=settings.dedup_sim_threshold
     )
 
     start_time = time.time()
-    slides = extractor.process(video_name=video_name)
+    # 실제 추출 프로세스 실행
+    results = extractor.process(video_name=video_name)
     elapsed = time.time() - start_time
 
-    # Assign IDs
-    for idx, slide in enumerate(slides, 1):
-        slide["id"] = f"cap_{idx:03d}"
+    # 개별 비디오별 manifest 파일 저장 (필요 시)
+    if write_manifest and results:
+        manifest_path = video_output_dir / "manifest.json"
+        with manifest_path.open("w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
 
-    if write_manifest:
-        manifest_path = output_root / "manifest.json"
-        with manifest_path.open("w", encoding="utf-8") as handle:
-            json.dump(slides, handle, ensure_ascii=False, indent=2)
-
-    print(f"[Capture] Completed: {len(slides)} slides in {elapsed:.2f}s")
-    return slides
+    return results
