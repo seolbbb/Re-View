@@ -45,7 +45,14 @@ def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[in
 
 
 def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]:
-    """vlm.json을 표준 item 리스트로 정리한다."""
+    """vlm.json을 표준 item 리스트로 정리한다.
+    
+    새 구조 (time_ranges 배열):
+        각 항목이 id, cap_id, extracted_text, time_ranges를 가짐
+    
+    Legacy 구조 (timestamp_ms):
+        각 항목이 timestamp_ms, extracted_text, id를 가짐
+    """
     payload = read_json(path, "vlm.json")
     items = payload.get("items", [])
     if not isinstance(items, list):
@@ -53,12 +60,37 @@ def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]
 
     normalized: List[Dict[str, object]] = []
     for item in items:
-        try:
-            timestamp_ms = int(item["timestamp_ms"])
-            extracted_text = str(item.get("extracted_text", "")).strip()
-        except KeyError as exc:
-            raise ValueError(f"Missing required keys in vlm.json: {item}") from exc
-        normalized.append({"timestamp_ms": timestamp_ms, "extracted_text": extracted_text, "id": item.get("id")})
+        extracted_text = str(item.get("extracted_text", "")).strip()
+        item_id = item.get("id")
+        cap_id = item.get("cap_id")
+        
+        # 새 구조: time_ranges 배열
+        time_ranges = item.get("time_ranges")
+        if time_ranges and isinstance(time_ranges, list):
+            for rng in time_ranges:
+                if not isinstance(rng, dict):
+                    continue
+                start_ms = rng.get("start_ms")
+                if start_ms is not None:
+                    normalized.append({
+                        "timestamp_ms": int(start_ms),
+                        "extracted_text": extracted_text,
+                        "id": item_id,
+                        "cap_id": cap_id,
+                        "time_range": rng  # 세그먼트 생성 시 활용
+                    })
+        # Legacy 구조: timestamp_ms
+        elif "timestamp_ms" in item:
+            try:
+                timestamp_ms = int(item["timestamp_ms"])
+                normalized.append({
+                    "timestamp_ms": timestamp_ms,
+                    "extracted_text": extracted_text,
+                    "id": item_id
+                })
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"Missing required keys in vlm.json: {item}") from exc
+    
     duration_ms = payload.get("duration_ms")
     duration_ms = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
     return sorted(normalized, key=lambda x: x["timestamp_ms"]), duration_ms
