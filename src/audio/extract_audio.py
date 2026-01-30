@@ -84,21 +84,24 @@ def _select_best_mono_method(media_path: Path, *, sample_rate: int, probe_second
     """여러 모노 방식 중 평균 볼륨이 가장 큰 방식을 선택한다."""
     candidates = ["downmix", "left", "right", "phase-fix"]
     volumes: dict[str, float] = {}
+    stats_list = []
     for candidate in candidates:
         volume = _measure_mean_volume(
             media_path, mono_method=candidate, sample_rate=sample_rate, probe_seconds=probe_seconds
         )
         if volume is None:
-            print(f"[STT]] mono-method candidate={candidate} mean_volume=NA")
+            stats_list.append(f"{candidate}=NA")
             continue
         volumes[candidate] = volume
-        print(f"[STT] mono-method candidate={candidate} mean_volume={volume} dB")
+        stats_list.append(f"{candidate}={volume}dB")
+
+    print(f"[Audio] mono-method candidates: {' | '.join(stats_list)}")
 
     if not volumes:
         return "downmix"
 
     best_method = max(volumes, key=volumes.get)
-    print(f"[STT] mono-method auto selected: {best_method} (mean_volume={volumes[best_method]} dB)")
+    print(f"[Audio] mono-method auto selected: {best_method} (max volume)")
     return best_method
 
 
