@@ -118,18 +118,18 @@ def _load_manifest_scores(
         time_ranges = item.get("time_ranges")
         if isinstance(time_ranges, list) and time_ranges:
             for rng in time_ranges:
-                    if isinstance(rng, dict) and "start_ms" in rng:
-                        try:
-                            start_ms = int(rng["start_ms"])
-                            if start_ms not in scores or diff_score > scores[start_ms]:
-                                scores[start_ms] = diff_score
-                        except (TypeError, ValueError):
-                            continue
+                if isinstance(rng, dict) and "start_ms" in rng:
+                    try:
+                        start_ms = int(rng.get("start_ms") or 0)
+                        if start_ms not in scores or diff_score > scores[start_ms]:
+                            scores[start_ms] = diff_score
+                    except (TypeError, ValueError):
+                        continue
 
         # fallback: top-level start_ms
         if "start_ms" in item:
             try:
-                start_ms = int(item["start_ms"])
+                start_ms = int(item.get("start_ms") or 0)
                 if start_ms not in scores or diff_score > scores[start_ms]:
                     scores[start_ms] = diff_score
             except (TypeError, ValueError):

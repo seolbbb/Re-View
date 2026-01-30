@@ -58,6 +58,7 @@ from src.pipeline.stages import (
     run_batch_fusion_pipeline,
     run_fusion_pipeline,
     run_vlm_openrouter,
+    _get_sort_key_timestamp,
 )
 
 
@@ -96,6 +97,8 @@ def run_processing_pipeline(
     force_db: Optional[bool] = None,
     use_db: Optional[bool] = None,
     db_table_name: str = "captures",
+    continuous: bool = False,
+    poll_interval: int = 10,
 ) -> None:
     """DB 또는 로컬 입력을 사용해 VLM + Fusion을 실행한다."""
     # 파이프라인 기본 설정을 읽어 CLI 인자에 적용한다.
@@ -488,39 +491,179 @@ def run_processing_pipeline(
         print("-" * 50)
 
         if batch_mode:
-            # Status 업데이트용 콜백 정의
+            current_adapter = adapter_for_job
+            if continuous and not current_adapter:
+                current_adapter = get_supabase_adapter()
+                if not current_adapter:
+                    raise ValueError("Supabase adapter is required for continuous monitoring.")
+
+            # Status 업데이트용 콜백
             def status_callback(status: str, current: int, total: int) -> None:
-                if processing_job_id and adapter_for_job:
+                if processing_job_id and current_adapter:
                     try:
-                        adapter_for_job.update_processing_job_status(processing_job_id, status)
-                    except Exception as e:
-                        print(f"[DB] Warning: Failed to update status to {status}: {e}")
+                        current_adapter.update_processing_job_status(processing_job_id, status)
+                    except Exception:
+                        pass
+
+            # 초기 데이터 로드
+            pending_captures = []
+            if db_captures_data:
+                pending_captures = sorted(db_captures_data, key=lambda x: _get_sort_key_timestamp(x))
+            elif manifest_json and manifest_json.exists():
+                try:
+                    loaded = json.loads(manifest_json.read_text(encoding="utf-8"))
+                    if isinstance(loaded, list):
+                        pending_captures = sorted(loaded, key=lambda x: _get_sort_key_timestamp(x))
+                except Exception:
+                    pass
             
-            # 배치 모드에서는 VLM+Fusion을 배치 단위로 처리한다.
-            fusion_info = run_batch_fusion_pipeline(
-                video_root=video_root,
-                captures_dir=captures_dir,
-                manifest_json=manifest_json,
-                captures_data=db_captures_data,  # DB에서 가져온 captures 직접 전달
-                stt_json=stt_json,
-                video_name=safe_video_name,
-                batch_size=batch_size,
-                timer=timer,
-                vlm_batch_size=vlm_batch_size,
-                vlm_concurrency=vlm_concurrency,
-                vlm_show_progress=vlm_show_progress,
-                limit=limit,
-                repo_root=ROOT,
-                status_callback=status_callback if processing_job_id else None,
-                # DB 동기화 관련 파라미터 전달
-                processing_job_id=processing_job_id,
-                video_id=video_id,
-                sync_to_db=sync_to_db,
-                adapter=adapter_for_job,
-            )
-            segment_count = fusion_info.get("segment_count", 0)
-            vlm_image_count = capture_count
-            vlm_elapsed = fusion_info["timings"].get("vlm_sec", 0.0)
+            # 처리된 ID 추적 (중복 방지)
+            processed_ids = set()
+            for c in pending_captures:
+                cid = str(c.get("id") or c.get("cap_id") or "")
+                if cid: processed_ids.add(cid)
+
+            next_batch_idx = 0
+            total_segments_acc = 0
+            vlm_elapsed_acc = 0.0
+            
+            print(f"[{'Continuous' if continuous else 'Batch'} Mode] Started processing loop.")
+
+            while True:
+                # 1. 전처리 작업 상태 확인 (Continuous 모드일 때만)
+                preprocess_done = False
+                if continuous and current_adapter and video_id:
+                    try:
+                        # 최신 전처리 작업 상태 조회
+                        pp_res = (
+                             current_adapter.client.table("preprocessing_jobs")
+                            .select("status")
+                            .eq("video_id", video_id)
+                            .order("created_at", desc=True)
+                            .limit(1)
+                            .execute()
+                        )
+                        if pp_res.data and pp_res.data[0]["status"] == "DONE":
+                            preprocess_done = True
+                    except Exception as e:
+                        print(f"[Loop] Warning: Check preprocess status failed: {e}")
+
+                # 2. 대기 중인 캡처 처리
+                while True:
+                    chunk_size = batch_size
+                    # 처리 가능 여부 판단
+                    can_process = False
+                    
+                    if len(pending_captures) >= batch_size:
+                        can_process = True
+                    elif pending_captures:
+                        # 자투리 데이터 처리 조건:
+                        # - Continuous 모드가 아님 (무조건 처리)
+                        # - Continuous 모드인데 전처리가 끝났음 (마지막 자투리)
+                        if not continuous or preprocess_done:
+                            chunk_size = len(pending_captures) # 남은 것 모두
+                            can_process = True
+                    
+                    if not can_process:
+                        break
+                        
+                    # 청크 추출 및 실행
+                    chunk = pending_captures[:chunk_size]
+                    pending_captures = pending_captures[chunk_size:]
+                    
+                    print(f"\n[Loop] Processing batch {next_batch_idx + 1} (Size: {len(chunk)})")
+                    
+                    fusion_info = run_batch_fusion_pipeline(
+                        video_root=video_root,
+                        captures_dir=captures_dir,
+                        captures_data=chunk,
+                        stt_json=stt_json,
+                        video_name=safe_video_name,
+                        batch_size=batch_size, # run_batch 내부 로직용
+                        timer=timer,
+                        vlm_batch_size=vlm_batch_size,
+                        vlm_concurrency=vlm_concurrency,
+                        vlm_show_progress=vlm_show_progress,
+                        limit=limit,
+                        repo_root=ROOT,
+                        status_callback=status_callback if processing_job_id else None,
+                        processing_job_id=processing_job_id,
+                        video_id=video_id,
+                        sync_to_db=sync_to_db,
+                        adapter=current_adapter,
+                        start_batch_index=next_batch_idx,
+                        preserve_files=True,
+                    )
+                    
+                    next_batch_idx += 1
+                    total_segments_acc += fusion_info.get("segment_count", 0)
+                    vlm_elapsed_acc += fusion_info.get("timings", {}).get("vlm_sec", 0.0)
+
+                # 3. 종료 조건 확인 및 폴링
+                if not continuous:
+                    break
+                
+                if preprocess_done and not pending_captures:
+                    print("[Loop] Preprocess DONE and no pending captures. Exiting loop.")
+                    break
+                
+                # 4. 신규 데이터 폴링
+                if current_adapter and video_id:
+                    print(f"[Loop] Sleeping {poll_interval}s... (Pending: {len(pending_captures)})")
+                    time.sleep(poll_interval)
+                    try:
+                        # captures 테이블에서 video_id로 조회
+                        # 최적화: id > last_checked_id 같은 걸 쓰면 좋지만, 여기선 단순히 전체 가져와서 ID로 필터링
+                        # (데이터가 아주 많지 않다고 가정)
+                        # 또는 created_at 기준으로 가져올 수도 있음
+                        caps_res = (
+                            current_adapter.client.table(db_table_name)
+                            .select("id,cap_id,file_name,time_ranges,storage_path")
+                            .eq("video_id", video_id)
+                            .execute()
+                        )
+                        new_items = []
+                        if caps_res.data:
+                            sorted_rows = sorted(caps_res.data, key=lambda x: _get_sort_key_timestamp(x))
+                            for row in sorted_rows:
+                                cid = str(row.get("id") or row.get("cap_id") or "")
+                                if cid and cid not in processed_ids:
+                                    # 새 항목 발견 -> 다운로드 및 추가
+                                    file_name = row.get("file_name")
+                                    storage_path = row.get("storage_path")
+                                    if file_name and storage_path:
+                                        img_path = captures_dir / file_name
+                                        if not img_path.exists():
+                                            # 다운로드
+                                            img_bytes = current_adapter.client.storage.from_("captures").download(storage_path)
+                                            img_path.write_bytes(img_bytes)
+                                    
+                                    # Manifest Item 구성
+                                    m_item = {
+                                        "id": row.get("cap_id") or row.get("id"),
+                                        "file_name": file_name,
+                                        "time_ranges": row.get("time_ranges") or [],
+                                        # 호환성 필드
+                                        "timestamp_ms": _get_sort_key_timestamp(row),
+                                        "start_ms": _get_sort_key_timestamp(row)
+                                    }
+                                    new_items.append(m_item)
+                                    processed_ids.add(cid)
+                        
+                        if new_items:
+                            print(f"[Loop] Found {len(new_items)} new captures.")
+                            pending_captures.extend(new_items)
+                            # 다시 정렬
+                            pending_captures.sort(key=lambda x: _get_sort_key_timestamp(x))
+                            
+                    except Exception as e:
+                        print(f"[Loop] Warning: Fetch new captures failed: {e}")
+
+            # 루프 종료 후 통계 정리
+            segment_count = total_segments_acc
+            vlm_image_count = len(processed_ids)
+            vlm_elapsed = vlm_elapsed_acc
+            fusion_info = {} # 마지막 fusion_info 정보는 의미가 퇴색되므로 초기화 혹은 마지막 값 사용
         else:
             # 단일 모드에서는 VLM 실행 후 Fusion으로 넘어간다.
             vlm_image_count, vlm_elapsed = timer.time_stage(
@@ -699,6 +842,8 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase upload")
     parser.set_defaults(db_sync=None)
     parser.add_argument("--db-table", default="captures", help="DB table name for captures (default: captures)")
+    parser.add_argument("--continuous", dest="continuous", action="store_true", help="Enable continuous monitoring mode")
+    parser.add_argument("--poll-interval", type=int, default=10, help="Poll interval in seconds for continuous mode")
     return parser
 
 
@@ -721,6 +866,8 @@ def main() -> None:
         sync_to_db=args.db_sync,
         force_db=args.force_db,
         db_table_name=args.db_table,
+        continuous=args.continuous,
+        poll_interval=args.poll_interval,
     )
 
 

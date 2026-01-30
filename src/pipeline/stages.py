@@ -241,6 +241,7 @@ def run_capture(
     video_name: str,
     dedup_enabled: bool = True,  # Kept for interface compatibility, but no longer used
     write_manifest: bool = True,
+    callback: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
     # Note: dedup_enabled is ignored - new HybridSlideExtractor always uses pHash+ORB dedup
@@ -251,6 +252,7 @@ def run_capture(
         dedupe_threshold=dedupe_threshold,
         min_interval=min_interval,
         write_manifest=write_manifest,
+        callback=callback,
     )
     return metadata
 
@@ -265,7 +267,7 @@ def _get_sort_key_timestamp(item: Dict[str, Any]) -> int:
     if isinstance(time_ranges, list) and time_ranges:
         first = time_ranges[0]
         if isinstance(first, dict) and "start_ms" in first:
-            return int(first["start_ms"])
+            return int(first.get("start_ms") or 0)
     # 3. start_ms (하위 호환)
     return int(item.get("start_ms", 0))
 
@@ -631,6 +633,9 @@ def run_batch_fusion_pipeline(
     video_id: Optional[str] = None,
     sync_to_db: bool = False,
     adapter: Optional[Any] = None,
+    # 연속 처리(Streaming) 지원을 위한 파라미터
+    start_batch_index: int = 0,
+    preserve_files: bool = False,
 ) -> Dict[str, Any]:
     """배치 단위로 동기화와 요약을 반복 실행한다.
 
@@ -683,7 +688,8 @@ def run_batch_fusion_pipeline(
     )
 
     # total_batches 계산 완료 후 즉시 DB에 업데이트
-    if adapter and processing_job_id:
+    # (preserve_files=True인 경우, 즉 연속 모드에서는 외부에서 total 관리가 되므로 여기서 초기화하지 않음)
+    if adapter and processing_job_id and not preserve_files:
         try:
             adapter.update_processing_job_progress(processing_job_id, 0, total_batches)
             print(f"  [DB] Initialized total_batch to {total_batches}")
@@ -756,12 +762,12 @@ def run_batch_fusion_pipeline(
     previous_context = ""
 
     accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
-    if accumulated_summaries_path.exists():
+    if not preserve_files and accumulated_summaries_path.exists():
         accumulated_summaries_path.unlink()
 
     # segments_units.jsonl도 누적 파일 초기화
     accumulated_segments_path = fusion_dir / "segments_units.jsonl"
-    if accumulated_segments_path.exists():
+    if not preserve_files and accumulated_segments_path.exists():
         accumulated_segments_path.unlink()
 
     total_vlm_elapsed = 0.0
@@ -779,11 +785,14 @@ def run_batch_fusion_pipeline(
             time.sleep(5)
             timer.record_stage("waiting", time.perf_counter() - t0)
 
+        # 실제 배치 번호 (Global Index)
+        current_batch_global_idx = batch_idx + 1 + start_batch_index
+        
         print(f"\n{'-'*50}")
-        print(f"🔄 Pipeline batch {batch_idx + 1}/{total_batches} in progress...")
+        print(f"🔄 Pipeline batch {current_batch_global_idx} (Local: {batch_idx + 1}/{total_batches}) in progress...")
         print(f"   Capture range: {batch_info['start_idx'] + 1} ~ {batch_info['end_idx']}")
 
-        batch_dir = batches_dir / f"batch_{batch_idx + 1}"
+        batch_dir = batches_dir / f"batch_{current_batch_global_idx}"
         batch_dir.mkdir(parents=True, exist_ok=True)
 
         batch_manifest = sorted_manifest[batch_info["start_idx"] : batch_info["end_idx"]]

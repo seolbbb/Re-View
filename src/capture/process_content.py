@@ -15,7 +15,7 @@
 import json
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 
 from .settings import get_capture_settings
 from .tools.hybrid_extractor import HybridSlideExtractor
@@ -28,6 +28,7 @@ def process_single_video_capture(
     dedupe_threshold: Optional[float] = None,
     min_interval: Optional[float] = None,
     write_manifest: bool = True,
+    callback: Optional[Any] = None,
 ) -> List[dict]:
     """
     [Usage File] run_preprocess_pipeline.py
@@ -41,6 +42,7 @@ def process_single_video_capture(
     - dedupe_threshold (Optional[float]): 중복 제거 민감도 (현재 로직에서는 Persistence에 통합됨)
     - min_interval (Optional[float]): 캡처 간 최소 간격
     - write_manifest (bool): 처리 완료 후 개별 manifest 파일을 생성할지 여부
+    - callback (Optional[Callable]): 스트리밍 처리를 위한 콜백 함수
     
     [Returns]
     - List[dict]: 추출된 모든 슬라이드의 정보 (timestamp, image_path 등)
@@ -70,7 +72,8 @@ def process_single_video_capture(
         min_orb_features=settings.min_orb_features,
         dedup_phash_threshold=settings.dedup_phash_threshold,
         dedup_orb_distance=settings.dedup_orb_distance,
-        dedup_sim_threshold=settings.dedup_sim_threshold
+        dedup_sim_threshold=settings.dedup_sim_threshold,
+        callback=callback
     )
 
     start_time = time.time()
