@@ -119,7 +119,7 @@ class BenchmarkTimer:
     def time_stage(self, stage_name: str, func, *args, **kwargs) -> Tuple[Any, float]:
         """함수를 실행하고 경과 시간을 기록한다."""
         print(f"\n{'-' * 50}")
-        print(f"  ⏳ {stage_name}: Starting...", flush=True)
+        print(f"  {stage_name}: Starting...", flush=True)
 
         start = time.perf_counter()
         result = func(*args, **kwargs)
@@ -136,7 +136,7 @@ class BenchmarkTimer:
             }
 
         if stage_name != "waiting":
-            print(f"  ✅ {stage_name}: {format_duration(elapsed)}")
+            print(f"  {stage_name}: {format_duration(elapsed)}")
 
         return result, elapsed
 
@@ -197,10 +197,10 @@ def print_benchmark_report(
     report = timer.get_report(video_info.get("duration_sec"))
 
     print("\n" + "=" * 60)
-    print("📊 BENCHMARK REPORT")
+    print("BENCHMARK REPORT")
     print("=" * 60)
 
-    print(f"\n📹 Video: {video_path.name}")
+    print(f"\nVideo: {video_path.name}")
     if video_info["duration_sec"]:
         print(f"   Duration: {format_duration(video_info['duration_sec'])}")
     if video_info["width"] and video_info["height"]:
@@ -208,114 +208,103 @@ def print_benchmark_report(
     if video_info["file_size_mb"]:
         print(f"   File Size: {video_info['file_size_mb']} MB")
 
-    print("\n📈 Processing Stats:")
-    print(f"   Captures: {capture_count} frames")
-    print(f"   Segments: {segment_count} segments")
-    print(f"   Parallel Mode: {'Enabled' if parallel else 'Disabled'}")
+    # Processing Stats 한줄로 요약
+    stats_line = f"Processing Stats: Captures: {capture_count} | Segments: {segment_count} | Parallel: {'Yes' if parallel else 'No'}"
+    print(f"\n{stats_line}")
 
-    print("\n⏱️  Timing Breakdown:")
-    print("-" * 50)
+    print("\nTiming Breakdown:")
+    print("-" * 65)
 
     stage_order = [
-        "stt",
-        "capture",
-        "vlm",
-        "waiting",
-        "fusion.sync_engine",
-        "fusion.llm_summarizer",
-        "fusion.renderer",
-        "fusion.final_summary",
-        "fusion.judge",
+         "vlm",
+         "waiting",
+         "fusion.sync_engine",
+         "fusion.llm_summarizer",
+         "fusion.renderer",
+         "fusion.final_summary",
+         "fusion.judge",
     ]
 
-    printed_stages = set()
-    skip_stages = set()
-    display_entries: List[Tuple[str, str, float, Optional[str]]] = []
+    # Pre-process stages for display
+    display_lines = []
     accounted_elapsed = 0.0
+    skip_stages = set()
+    printed_stages = set()
+    
+    # 1. Parallel Execution Block (Audio/STT vs Capture)
+    if parallel and "capture" in report["stages"]:
+        # Audio+STT Chain
+        audio_info = report["stages"].get("audio", {"elapsed_sec": 0, "elapsed_formatted": "0.0s"})
+        stt_info = report["stages"].get("stt", {"elapsed_sec": 0, "elapsed_formatted": "0.0s"})
+        
+        chain_elapsed = audio_info["elapsed_sec"] + stt_info["elapsed_sec"]
+        capture_info = report["stages"]["capture"]
+        capture_elapsed = capture_info["elapsed_sec"]
 
+        # Parallel duration is determined by the slower of the two paths
+        parallel_total = max(chain_elapsed, capture_elapsed)
+        parallel_pct = (parallel_total / report["total_elapsed_sec"] * 100) if report["total_elapsed_sec"] > 0 else 0
+
+        display_lines.append(f"   [Parallel Block]                 {format_duration(parallel_total):>9} ({parallel_pct:5.1f}%)")
+        display_lines.append(f"      ├─ Audio + STT Chain            {format_duration(chain_elapsed):>9}")
+        if audio_info["elapsed_sec"] > 0:
+            display_lines.append(f"      │    ├─ Audio                   {audio_info['elapsed_formatted']:>9}")
+        if stt_info["elapsed_sec"] > 0:
+            display_lines.append(f"      │    └─ STT                     {stt_info['elapsed_formatted']:>9}")
+        
+        display_lines.append(f"      └─ Capture                      {capture_info['elapsed_formatted']:>9}")
+        
+        accounted_elapsed += parallel_total
+        skip_stages.update({"audio", "stt", "capture"})
+
+    # 2. Sequential Stages
     has_batch = any(stage.startswith("pipeline_batch_") for stage in report["stages"])
     if has_batch:
         skip_stages.add("vlm")
 
-    if parallel and "stt" in report["stages"] and "capture" in report["stages"]:
-        stt_info = report["stages"]["stt"]
-        capture_info = report["stages"]["capture"]
-        parallel_elapsed = max(stt_info["elapsed_sec"], capture_info["elapsed_sec"])
-        parallel_pct = (
-            parallel_elapsed / report["total_elapsed_sec"] * 100
-            if report["total_elapsed_sec"] > 0
-            else 0.0
-        )
-        details = (
-            f"stt={stt_info['elapsed_formatted']}, "
-            f"capture={capture_info['elapsed_formatted']}"
-        )
-        display_entries.append(
-            (
-                "stt+capture (parallel)",
-                format_duration(parallel_elapsed),
-                parallel_pct,
-                details,
-            )
-        )
-        accounted_elapsed += parallel_elapsed
-        skip_stages.update({"stt", "capture"})
-
     for stage in stage_order:
         if stage in report["stages"] and stage not in skip_stages:
             info = report["stages"][stage]
-            display_entries.append(
-                (stage, info["elapsed_formatted"], info["percentage"], None)
-            )
+            display_lines.append(f"   {stage:<30} {info['elapsed_formatted']:>9} ({info['percentage']:5.1f}%)")
             printed_stages.add(stage)
             accounted_elapsed += info["elapsed_sec"]
 
+    # 3. Remaining Stages
     for stage in report["stages"]:
         if stage in printed_stages or stage in skip_stages:
             continue
         info = report["stages"][stage]
-        display_entries.append(
-            (stage, info["elapsed_formatted"], info["percentage"], None)
-        )
+        # fusion.judge 같은 경우 중복 출력 방지
+        if stage in stage_order: 
+             continue
+        display_lines.append(f"   {stage:<30} {info['elapsed_formatted']:>9} ({info['percentage']:5.1f}%)")
         accounted_elapsed += info["elapsed_sec"]
 
-    total_elapsed_sec = report["total_elapsed_sec"]
-    overhead_elapsed = max(0.0, total_elapsed_sec - accounted_elapsed)
+    # 4. Overhead
+    overhead_elapsed = max(0.0, report["total_elapsed_sec"] - accounted_elapsed)
     if overhead_elapsed > 0.01:
-        overhead_pct = (
-            overhead_elapsed / total_elapsed_sec * 100 if total_elapsed_sec > 0 else 0.0
-        )
-        display_entries.append(
-            (
-                "overhead",
-                format_duration(overhead_elapsed),
-                overhead_pct,
-                None,
-            )
-        )
+        overhead_pct = (overhead_elapsed / report["total_elapsed_sec"] * 100) if report["total_elapsed_sec"] > 0 else 0
+        display_lines.append(f"   {'[Overhead]':<30} {format_duration(overhead_elapsed):>9} ({overhead_pct:5.1f}%)")
 
-    width = max(24, max((len(stage) for stage, _, _, _ in display_entries), default=0))
-    for stage, elapsed_formatted, percentage, details in display_entries:
-        line = f"   {stage:<{width}} {elapsed_formatted:>10s} ({percentage:5.1f}%)"
-        if details:
-            line += f" [{details}]"
+    # Print all lines
+    for line in display_lines:
         print(line)
 
-    print("-" * 50)
-    print(f"   {'TOTAL':<{width}} {report['total_elapsed_formatted']:>10s}")
+    print("-" * 65)
+    print(f"   {'TOTAL':<30} {report['total_elapsed_formatted']:>9}")
+    print("-" * 65)
 
     if "speed_ratio" in report:
-        print(f"\n🚀 Speed Ratio: {report['realtime_factor']} (video length)")
+        print(f"\nSpeed Ratio: {report['realtime_factor']} (video length)")
         target_sec = (video_info.get("duration_sec") or 0) * 0.5
         target_str = format_duration(target_sec)
         video_len_str = format_duration(video_info.get("duration_sec") or 0)
         if report["speed_ratio"] < 0.5:
-            print(f"   ✅ Target met! (under {target_str} for a {video_len_str} video)")
+            print(f"   Target met! (under {target_str} for a {video_len_str} video)")
         else:
-            print(f"   ⚠️  Optimization needed (target: <= {target_str} for a {video_len_str} video)")
+            print(f"   Optimization needed (target: <= {target_str} for a {video_len_str} video)")
 
-    print(f"\n📁 Output: {output_root}")
-    print("=" * 60 + "\n")
+    print("=" * 65 + "\n")
 
     md_lines = [
         "# Pipeline Benchmark Report",

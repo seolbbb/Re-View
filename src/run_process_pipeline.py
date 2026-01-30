@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import re
 import sys
 from datetime import datetime, timezone
@@ -362,16 +363,24 @@ def run_processing_pipeline(
                 manifest_item["start_ms"] = ranges[0].get("start_ms")
                 manifest_item["end_ms"] = ranges[0].get("end_ms")
             
-            manifest_payload.append(manifest_item)
             image_path = captures_dir / file_name
+            
+            # 로컬 파일이 이미 있고 force_db가 아니면 다운로드 스킵 (Manifest에는 추가)
             if image_path.exists() and not force_db:
+                manifest_payload.append(manifest_item)
                 continue
+                
             storage_path = row.get("storage_path")
             if not storage_path:
-                raise ValueError(f"Missing storage_path for capture: {file_name}")
-            # 스토리지에서 캡처 이미지를 다운로드한다.
-            image_bytes = adapter.client.storage.from_("captures").download(storage_path)
-            image_path.write_bytes(image_bytes)
+                print(f"[Warning] Skipping {file_name}: Missing storage_path in DB")
+                continue
+            
+            try:
+                image_bytes = adapter.client.storage.from_("captures").download(storage_path)
+                image_path.write_bytes(image_bytes)
+                manifest_payload.append(manifest_item)
+            except Exception as e:
+                print(f"[Warning] Skipping {file_name}: Download failed ({e})")
 
         manifest_json.write_text(
             json.dumps(manifest_payload, ensure_ascii=False, indent=2),
@@ -527,7 +536,7 @@ def run_processing_pipeline(
             total_segments_acc = 0
             vlm_elapsed_acc = 0.0
             
-            print(f"[{'Continuous' if continuous else 'Batch'} Mode] Started processing loop.")
+            print(f"[{'Continuous' if continuous else 'Batch'} Mode] Started processing loop. DEBUG: batch_size={batch_size}")
 
             while True:
                 # 1. 전처리 작업 상태 확인 (Continuous 모드일 때만)
@@ -543,10 +552,13 @@ def run_processing_pipeline(
                             .limit(1)
                             .execute()
                         )
-                        if pp_res.data and pp_res.data[0]["status"] == "DONE":
+                        # DONE 또는 FAILED일 때도 전처리가 끝난 것으로 간주 (남은 데이터 처리 후 종료)
+                        if pp_res.data and pp_res.data[0]["status"] in ("DONE", "FAILED"):
                             preprocess_done = True
+                            if pp_res.data[0]["status"] == "FAILED":
+                                print("[Pipeline] Preprocessing FAILED (treating as done for remaining items).")
                     except Exception as e:
-                        print(f"[Loop] Warning: Check preprocess status failed: {e}")
+                        print(f"[Pipeline] Warning: Check preprocess status failed: {e}")
 
                 # 2. 대기 중인 캡처 처리
                 while True:
@@ -561,7 +573,7 @@ def run_processing_pipeline(
                         # - Continuous 모드가 아님 (무조건 처리)
                         # - Continuous 모드인데 전처리가 끝났음 (마지막 자투리)
                         if not continuous or preprocess_done:
-                            chunk_size = len(pending_captures) # 남은 것 모두
+                            chunk_size = min(len(pending_captures), batch_size) # 남은 것 중 배치 크기만큼
                             can_process = True
                     
                     if not can_process:
@@ -571,8 +583,15 @@ def run_processing_pipeline(
                     chunk = pending_captures[:chunk_size]
                     pending_captures = pending_captures[chunk_size:]
                     
-                    print(f"\n[Loop] Processing batch {next_batch_idx + 1} (Size: {len(chunk)})")
+                    print(f"\n[Pipeline] Processing batch {next_batch_idx + 1} (Size: {len(chunk)})")
                     
+                    # 다음 청크가 있으면 그 시작 시간을 강제 종료 시간으로 설정 (Clamping)
+                    # 이를 통해 청크 단위로 실행되더라도 시간 범위가 겹치지 않게 함
+                    forced_end_ms = None
+                    if pending_captures:
+                         next_start_item = pending_captures[0]
+                         forced_end_ms = _get_sort_key_timestamp(next_start_item)
+
                     fusion_info = run_batch_fusion_pipeline(
                         video_root=video_root,
                         captures_dir=captures_dir,
@@ -593,6 +612,7 @@ def run_processing_pipeline(
                         adapter=current_adapter,
                         start_batch_index=next_batch_idx,
                         preserve_files=True,
+                        forced_batch_end_ms=forced_end_ms,
                     )
                     
                     next_batch_idx += 1
@@ -604,12 +624,13 @@ def run_processing_pipeline(
                     break
                 
                 if preprocess_done and not pending_captures:
-                    print("[Loop] Preprocess DONE and no pending captures. Exiting loop.")
+                    print("[Pipeline] Preprocessing finished and no pending captures. Exiting loop.")
                     break
                 
                 # 4. 신규 데이터 폴링
                 if current_adapter and video_id:
-                    print(f"[Loop] Sleeping {poll_interval}s... (Pending: {len(pending_captures)})")
+                    print(f"[Pipeline] Waiting for input... (Pending: {len(pending_captures)} < Batch: {batch_size}, Preprocess: {'RUNNING' if not preprocess_done else 'DONE'})")
+                    print(f"           Sleeping {poll_interval}s...")
                     time.sleep(poll_interval)
                     try:
                         # captures 테이블에서 video_id로 조회
@@ -776,13 +797,13 @@ def run_processing_pipeline(
                     print(f"  - {k}: {v} records")
 
                 if errors:
-                    print(f"[DB] ⚠️ Completed with {len(errors)} errors:")
+                    print(f"[DB] Completed with {len(errors)} errors:")
                     for e in errors:
                         print(f"  - {e}")
                 else:
-                    print("[DB] ✅ Processing artifacts uploaded successfully.")
+                    print("[DB] Processing artifacts uploaded successfully.")
             else:
-                print("[DB] ✅ Batch mode: artifacts already uploaded during pipeline execution.")
+                print("[DB] Batch mode: artifacts already uploaded during pipeline execution.")
 
         # processing_job 상태를 DONE으로 업데이트
         if processing_job_id and adapter_for_job:
@@ -834,6 +855,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-mode", dest="batch_mode", action="store_true", help="Enable batch mode")
     parser.add_argument("--no-batch-mode", dest="batch_mode", action="store_false", help="Disable batch mode")
     parser.set_defaults(batch_mode=None)
+    parser.add_argument("--batch-size", type=int, default=None, help="Processing size per batch (default: 10)")
     parser.add_argument("--limit", type=int, default=None, help="Limit segments")
     parser.add_argument("--force-db", dest="force_db", action="store_true", help="Force DB download even if local exists")
     parser.add_argument("--no-force-db", dest="force_db", action="store_false", help="Disable DB download")
@@ -862,6 +884,7 @@ def main() -> None:
         video_id=args.video_id,
         output_base=args.output_base,
         batch_mode=args.batch_mode,
+        batch_size=args.batch_size,
         limit=args.limit,
         sync_to_db=args.db_sync,
         force_db=args.force_db,
