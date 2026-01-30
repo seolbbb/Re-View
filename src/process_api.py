@@ -20,7 +20,7 @@ API 직접 테스트 (백엔드만 사용할 경우):
 다른 터미널을 추가로 열고 아래 요청 예시를 입력, 전처리가 되어 있어야 함
 POST 실행
 요청 예시:
-  curl -X POST http://localhost:8000/process \\
+  curl -X POST http://localhost:8080/process \\
     -H "Content-Type: application/json" \\
     -d '{"video_name":"diffusion","force_db":true}'
 
@@ -30,15 +30,15 @@ db 설정하기 어렵다 -> force_db true 빼고 실행하면 로컬에 저장�
 
 GET 실행
 서버 체크:
-    curl http://localhost:8000/health
+    curl http://localhost:8080/health
 마지막 실행 로그:
-    curl http://localhost:8000/runs/diffusion
+    curl http://localhost:8080/runs/diffusion
 비디오 상태:
-    curl http://localhost:8000/videos/{video_id}/status
+    curl http://localhost:8080/videos/{video_id}/status
 처리 진행률:
-    curl http://localhost:8000/videos/{video_id}/progress
+    curl http://localhost:8080/videos/{video_id}/progress
 최신 요약:
-    curl http://localhost:8000/videos/{video_id}/summary
+    curl http://localhost:8080/videos/{video_id}/summary
 """
 
 from __future__ import annotations

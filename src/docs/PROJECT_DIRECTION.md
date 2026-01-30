@@ -34,7 +34,7 @@ Git에 올라가지 않으며, 에이전트(Antigravity)가 작업을 진행할 
 
 ### Phase 2: 시각 정보 추출 (VLM Processing)
 
-- **Engine**: **OpenRouter API** (`qwen/qwen3-vl-32b-instruct`)
+- **Engine**: **Qwen (DashScope) API** (`qwen3-vl-32b-instruct`)
 - **Implementation**: `src/vlm/vlm_engine.py`
 - **Process**:
   1. Phase 1에서 생성된 이미지 경로 리스트를 받아옴.

@@ -103,7 +103,7 @@ Re:View/
 │   │   └── tools/hybrid_extractor.py # dHash+ORB+RANSAC 엔진
 │   │
 │   ├── vlm/                        # Vision Language Model
-│   │   └── vlm_engine.py           # OpenRouter(Qwen) 클라이언트
+│   │   └── vlm_engine.py           # Qwen(DashScope) 클라이언트
 │   │
 │   ├── fusion/                     # 데이터 병합 및 요약
 │   │   ├── sync_engine.py          # Time-based Aligning

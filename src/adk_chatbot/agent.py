@@ -25,7 +25,7 @@ def select_chat_mode(tool_context: ToolContext, mode: str) -> Dict[str, Any]:
 
 
 def _process_api_base() -> str:
-    return os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
+    return os.environ.get("PROCESS_API_URL", "http://localhost:8080").rstrip("/")
 
 
 def _call_process_api(method: str, path: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:

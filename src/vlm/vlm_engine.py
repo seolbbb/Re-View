@@ -1,6 +1,6 @@
 """
-VLM 추출 엔진과 OpenRouter 연동 로직
-오류 처리 helper는 src/vlm/openrouter_errors.py에 분리되어 있다.
+VLM 추출 엔진과 Qwen(DashScope) 연동 로직
+오류 처리 helper는 src/vlm/qwen_errors.py에 분리되어 있다.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import yaml
 
-from src.vlm.openrouter_errors import (
+from src.vlm.qwen_errors import (
     extract_error_code,
-    format_openrouter_error,
+    format_qwen_error,
     format_service_unavailable_message,
     is_service_unavailable_error,
 )
@@ -31,9 +31,11 @@ SETTINGS_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "vlm" / 
 
 BATCH_SECTION_RE = re.compile(r"^##\s*Image\s+(\d+)\s*$", re.MULTILINE)
 DEFAULT_PROMPT_VERSION = "vlm_v1.1"
-DEFAULT_MODEL_NAME = "qwen/qwen3-vl-32b-instruct"
-DEFAULT_KEY_ENV = "OPENROUTER_API_KEY"
-KEY_LIST_ENV = "OPENROUTER_API_KEYS"
+DEFAULT_MODEL_NAME = "qwen3-vl-32b-instruct"
+DEFAULT_KEY_ENV = "QWEN_API_KEY"
+KEY_LIST_ENV = "QWEN_API_KEYS"
+BASE_URL_ENV = "QWEN_BASE_URL"
+DEFAULT_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
 
 def load_prompt_bundle(
@@ -72,8 +74,8 @@ def load_vlm_settings(*, settings_path: Optional[Path] = None) -> Dict[str, Any]
     return payload
 
 
-def _load_openrouter_keys() -> List[str]:
-    """환경변수에서 OpenRouter API 키 목록을 구성한다."""
+def _load_qwen_keys() -> List[str]:
+    """환경변수에서 Qwen API 키 목록을 구성한다."""
     keys: List[str] = []
     list_env = os.getenv(KEY_LIST_ENV, "")
     if list_env:
@@ -100,8 +102,8 @@ def _load_openrouter_keys() -> List[str]:
     return deduped
 
 
-class OpenRouterVlmExtractor:
-    """OpenRouter 기반 VLM으로 이미지 텍스트를 추출한다."""
+class QwenVlmExtractor:
+    """Qwen(DashScope) 기반 VLM으로 이미지 텍스트를 추출한다."""
 
     def __init__(
         self,
@@ -117,13 +119,13 @@ class OpenRouterVlmExtractor:
         else:
             load_dotenv()
 
-        self.api_keys = _load_openrouter_keys()
+        self.api_keys = _load_qwen_keys()
         if not self.api_keys:
             raise ValueError(
-                "OPENROUTER_API_KEY (single) or OPENROUTER_API_KEYS (multiple) must be set."
+                "QWEN_API_KEY (single) or QWEN_API_KEYS (multiple) must be set."
             )
 
-        self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        self.base_url = os.getenv(BASE_URL_ENV, DEFAULT_BASE_URL)
         settings = load_vlm_settings(settings_path=settings_path)
         model_name = settings.get("model_name", DEFAULT_MODEL_NAME)
         if not isinstance(model_name, str) or not model_name.strip():
@@ -213,7 +215,7 @@ class OpenRouterVlmExtractor:
         request_params: Dict[str, Any],
         show_progress: bool,
     ) -> str:
-        """OpenRouter 요청을 실행하고 응답 텍스트를 반환한다.
+        """Qwen API 요청을 실행하고 응답 텍스트를 반환한다.
 
         - 여러 API 키가 있으면 순서대로 시도한다.
         - show_progress가 켜져 있으면 현재 키 인덱스와 실패 전환을 로그로 남긴다.
@@ -227,7 +229,7 @@ class OpenRouterVlmExtractor:
         # 1. 설정된 모든 API 키를 순회하며 요청 시도 (Round-robin/Failover)
         for idx, client in enumerate(self.clients, start=1):
             if show_progress:
-                print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
+                print(f"[VLM] API key {idx}/{total_keys}: {label}", flush=True)
             try:
                 # 2. 실제 API 호출
                 completion = client.chat.completions.create(
@@ -241,7 +243,7 @@ class OpenRouterVlmExtractor:
                 if idx < total_keys:
                     if show_progress:
                         print(
-                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            f"[VLM] API key {idx} failed, trying next key",
                             flush=True,
                         )
                     continue
@@ -253,11 +255,11 @@ class OpenRouterVlmExtractor:
             # 5. 응답 에러 필드 확인
             error = getattr(completion, "error", None)
             if error:
-                last_error = RuntimeError(format_openrouter_error(error))
+                last_error = RuntimeError(format_qwen_error(error))
                 if idx < total_keys:
                     if show_progress:
                         print(
-                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            f"[VLM] API key {idx} failed, trying next key",
                             flush=True,
                         )
                     continue
@@ -273,12 +275,12 @@ class OpenRouterVlmExtractor:
             # 6. 빈 응답 처리
             if not completion or not completion.choices:
                 last_error = RuntimeError(
-                    f"OpenRouter API returned empty response for {label}: {completion}"
+                    f"Qwen API returned empty response for {label}: {completion}"
                 )
                 if idx < total_keys:
                     if show_progress:
                         print(
-                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            f"[VLM] API key {idx} failed, trying next key",
                             flush=True,
                         )
                     continue
@@ -289,7 +291,7 @@ class OpenRouterVlmExtractor:
 
         if last_error:
             raise last_error
-        raise RuntimeError(f"OpenRouter API returned empty response for {label}: none")
+        raise RuntimeError(f"Qwen API returned empty response for {label}: none")
 
     def _build_result(self, image_path: str, content: str) -> Dict[str, Any]:
         """Convert VLM response to vlm_raw.json format result."""
