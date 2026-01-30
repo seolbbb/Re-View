@@ -15,10 +15,9 @@ def build_fusion_vlm_payload(
     """manifest와 vlm_raw를 join해 fusion 입력 구조를 만든다.
 
     동작 방식:
-    1. manifest.json에서 (timestamp_ms, file_name) 쌍을 추출해 시간순 정렬.
-    2. vlm_raw.json에서 file_name(이미지 파일명)을 키로 하여 추출 텍스트를 매핑.
-    3. manifest의 file_name으로 vlm_raw의 텍스트를 찾아 타임스탬프와 결합.
-    4. 매칭되지 않는 이미지가 있으면 에러 발생.
+    1. manifest.json에서 각 이미지(file_name)별로 time_ranges를 그룹화.
+    2. vlm_raw.json에서 file_name을 키로 하여 추출 텍스트를 매핑.
+    3. 이미지별로 1개의 항목을 생성하고 time_ranges 배열을 포함.
 
     Args:
         manifest_payload: manifest.json 로드 결과 (List[Dict])
@@ -29,8 +28,15 @@ def build_fusion_vlm_payload(
         Example:
             {
                 "items": [
-                    {"timestamp_ms": 1000, "extracted_text": "Slide 1 Content..."},
-                    {"timestamp_ms": 2000, "extracted_text": "Slide 2 Content..."},
+                    {
+                        "id": "vlm_001",
+                        "cap_id": "cap_001",
+                        "extracted_text": "Slide 1 Content...",
+                        "time_ranges": [
+                            {"start_ms": 0, "end_ms": 84960},
+                            {"start_ms": 90931, "end_ms": 94145}
+                        ]
+                    },
                     ...
                 ]
             }
@@ -38,11 +44,13 @@ def build_fusion_vlm_payload(
     Raises:
         ValueError: 입력 형식이 잘못되었거나, manifest의 파일이 vlm_raw에 없을 때.
     """
-    # 1. Manifest 검증 및 엔트리 추출 (Flattening 1:N time ranges)
+    # 1. Manifest 검증 및 이미지별 time_ranges 그룹화
     if not isinstance(manifest_payload, list):
         raise ValueError("Invalid manifest.json format (must be a list).")
 
-    manifest_entries: List[Dict[str, Any]] = []
+    # 이미지별로 time_ranges를 그룹화 (순서 유지)
+    image_time_ranges: Dict[str, Dict[str, Any]] = {}
+    
     for item in manifest_payload:
         if not isinstance(item, dict):
             continue
@@ -51,38 +59,48 @@ def build_fusion_vlm_payload(
         if not file_name:
             continue
 
-        entry_id = item.get("id")
+        cap_id = item.get("id")
         
-        # New Schema: time_ranges
+        if file_name not in image_time_ranges:
+            image_time_ranges[file_name] = {
+                "cap_id": cap_id,
+                "file_name": file_name,
+                "time_ranges": [],
+                "first_start_ms": float('inf'),  # 정렬용
+            }
+        
+        # time_ranges 배열 추출
         time_ranges = item.get("time_ranges")
         if time_ranges and isinstance(time_ranges, list):
             for rng in time_ranges:
                 if not isinstance(rng, dict):
                     continue
                 start_ms = rng.get("start_ms")
-                if start_ms is not None:
-                    manifest_entries.append({
-                        "timestamp_ms": int(start_ms),
-                        "file_name": file_name,
-                        "id": entry_id
+                end_ms = rng.get("end_ms")
+                if start_ms is not None and end_ms is not None:
+                    image_time_ranges[file_name]["time_ranges"].append({
+                        "start_ms": int(start_ms),
+                        "end_ms": int(end_ms)
                     })
-        # Fallback for old schema (start_ms)
+                    # 정렬 기준: 첫 번째 시작 시간
+                    if int(start_ms) < image_time_ranges[file_name]["first_start_ms"]:
+                        image_time_ranges[file_name]["first_start_ms"] = int(start_ms)
+        # Fallback for old schema (start_ms, end_ms)
         elif "start_ms" in item:
             try:
                 start_ms = int(item["start_ms"])
-                manifest_entries.append({
-                    "timestamp_ms": start_ms, 
-                    "file_name": file_name, 
-                    "id": entry_id
+                end_ms = int(item.get("end_ms", start_ms))
+                image_time_ranges[file_name]["time_ranges"].append({
+                    "start_ms": start_ms,
+                    "end_ms": end_ms
                 })
+                if start_ms < image_time_ranges[file_name]["first_start_ms"]:
+                    image_time_ranges[file_name]["first_start_ms"] = start_ms
             except (ValueError, TypeError):
                 continue
 
-    if not manifest_entries:
+    if not image_time_ranges:
         raise ValueError("No valid entries found in manifest.json (checked 'time_ranges' and 'start_ms').")
-    
-    # 타임스탬프 기준 오름차순 정렬 (Fusion은 시간 순서 처리가 필수)
-    manifest_entries.sort(key=lambda x: (int(x["timestamp_ms"]), str(x["file_name"])))
 
     # 2. VLM Raw 결과 매핑 (Key: 파일명 -> Value: 추출 텍스트)
     if not isinstance(vlm_raw_payload, list):
@@ -109,27 +127,38 @@ def build_fusion_vlm_payload(
                     parts.append(text.strip())
         
         # 파일명만 추출하여 키로 사용 (경로 제외)
-        # 예: data/captures/slide_001.jpg -> slide_001.jpg
         image_text[Path(image_path).name] = "\n\n".join(parts).strip()
 
     if not image_text:
         raise ValueError("No valid image_path found in vlm_raw.json.")
 
-    # 3. Join (Manifest + VLM Raw)
+    # 3. Join (Manifest + VLM Raw) - 이미지별로 1개 항목 생성
     missing: List[str] = []
     items: List[Dict[str, Any]] = []
     
-    for entry in manifest_entries:
-        ts = int(entry["timestamp_ms"])
-        file_name = str(entry["file_name"])
+    # 첫 번째 시작 시간 기준 정렬
+    sorted_images = sorted(
+        image_time_ranges.values(),
+        key=lambda x: x["first_start_ms"]
+    )
+    
+    for idx, img_data in enumerate(sorted_images, start=1):
+        file_name = img_data["file_name"]
         
         # Manifest에는 있는데 VLM 결과가 없으면 에러 (누락 방지)
         if file_name not in image_text:
             missing.append(file_name)
             continue
+        
+        # time_ranges 정렬 (start_ms 기준)
+        sorted_ranges = sorted(img_data["time_ranges"], key=lambda x: x["start_ms"])
             
-        entry_id = entry.get("id")
-        items.append({"timestamp_ms": ts, "extracted_text": image_text[file_name], "id": entry_id})
+        items.append({
+            "id": f"vlm_{idx:03d}",
+            "cap_id": img_data["cap_id"],
+            "extracted_text": image_text[file_name],
+            "time_ranges": sorted_ranges
+        })
 
     if missing:
         preview = ", ".join(missing[:10])

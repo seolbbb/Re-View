@@ -228,6 +228,18 @@ class OpenRouterVlmExtractor:
         for idx, client in enumerate(self.clients, start=1):
             if show_progress:
                 print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
+                # [User Request] Detailed Logging
+                print(f"[VLM] Request for {label}:", flush=True)
+                # messages[0]은 system, messages[1]은 user라 가정 (vlm_engine 로직상)
+                if len(messages) >= 2:
+                    user_content = messages[1].get("content", "")
+                    if isinstance(user_content, list):
+                        # 텍스트 파트만 출력 (이미지 데이터는 방대하므로 제외)
+                        text_only = [p.get("text") for p in user_content if p.get("type") == "text"]
+                        print(f"      Prompt: {text_only}", flush=True)
+                    else:
+                        print(f"      Prompt: {user_content[:200]}...", flush=True)
+
             try:
                 # 2. 실제 API 호출
                 completion = client.chat.completions.create(
@@ -285,7 +297,10 @@ class OpenRouterVlmExtractor:
                 raise last_error
             
             # 7. 성공 시 결과 반환
-            return completion.choices[0].message.content or ""
+            content = completion.choices[0].message.content or ""
+            if show_progress:
+                 print(f"[VLM] Response for {label}:\n{content[:500]}...", flush=True)
+            return content
 
         if last_error:
             raise last_error
