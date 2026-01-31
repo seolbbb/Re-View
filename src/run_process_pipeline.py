@@ -197,53 +197,74 @@ def run_processing_pipeline(
         input_source = "db"
         input_reason = "local artifacts missing"
 
-    # DB에서 가져온 경우 duration 정보를 보존한다.
+        # DB에서 가져온 경우 duration 정보를 보존한다.
     db_duration = None
     db_captures_data = None  # DB에서 가져온 captures 데이터 (sync_engine에서 직접 사용)
     if force_db:
         use_db = True
+    
     if force_db or not local_ready:
         if not use_db:
             raise ValueError("DB usage is disabled and local artifacts are missing.")
-        print(f"[Input] Using Supabase artifacts ({input_reason}).")
-        # Supabase 설정이 없으면 DB 모드를 사용할 수 없다.
+        
         adapter = get_supabase_adapter()
         if not adapter:
             raise ValueError("Supabase adapter not configured. Check SUPABASE_URL/SUPABASE_KEY.")
 
-        # video_id가 없으면 name으로 최신 레코드를 찾는다.
+        print(f"[Input] Using Supabase artifacts ({input_reason}).")
+
         video_row = None
-        if video_id:
-            result = (
-                adapter.client.table("videos")
-                .select("id,name,original_filename,duration_sec")
-                .eq("id", video_id)
-                .limit(1)
-                .execute()
-            )
-            rows = result.data or []
-            video_row = rows[0] if rows else None
-        else:
-            for candidate in [video_name, safe_video_name]:
-                if not candidate:
-                    continue
+        # Continuous 모드일 경우 비디오 레코드가 생성될 때까지 대기한다.
+        # 전처리가 오래 걸릴 수 있으므로 타임아웃을 넉넉하게 설정 (1시간)
+        # 10s * 360 = 3600s = 1h
+        max_retries = 360 if continuous else 1
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            # video_id가 없으면 name으로 최신 레코드를 찾는다.
+            if video_id:
                 result = (
                     adapter.client.table("videos")
                     .select("id,name,original_filename,duration_sec")
-                    .eq("name", candidate)
-                    .order("created_at", desc=True)
+                    .eq("id", video_id)
                     .limit(1)
                     .execute()
                 )
                 rows = result.data or []
-                if rows:
-                    video_row = rows[0]
-                    break
+                video_row = rows[0] if rows else None
+            else:
+                for candidate in [video_name, safe_video_name]:
+                    if not candidate:
+                        continue
+                    result = (
+                        adapter.client.table("videos")
+                        .select("id,name,original_filename,duration_sec")
+                        .eq("name", candidate)
+                        .order("created_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    rows = result.data or []
+                    if rows:
+                        video_row = rows[0]
+                        break
+            
+            if video_row:
+                break
+                
+            if continuous:
+                if retry_count == 0:
+                    ts = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{ts}] [Input] Video '{video_name}' not found in DB. Waiting for Preprocessor to create record...")
+                time.sleep(poll_interval)
+                retry_count += 1
+            else:
+                break
 
         # DB에 레코드가 없으면 진행할 수 없다.
         if not video_row:
             target = video_id or video_name
-            raise ValueError(f"Video not found in DB: {target}")
+            raise ValueError(f"Video not found in DB (after {retry_count} checks): {target}")
 
         video_id = video_row["id"]
         if not safe_video_name:
@@ -272,22 +293,39 @@ def run_processing_pipeline(
         if preprocess_rows:
             latest_preprocess_job_id = preprocess_rows[0].get("id")
 
-        # STT 결과를 우선 최신 전처리 작업 기준으로 가져온다.
-        stt_query = adapter.client.table("stt_results").select("*").eq("video_id", video_id)
-        if latest_preprocess_job_id:
-            stt_query = stt_query.eq("preprocess_job_id", latest_preprocess_job_id)
-        stt_rows = stt_query.execute().data or []
-        if not stt_rows and latest_preprocess_job_id:
-            stt_rows = (
-                adapter.client.table("stt_results")
-                .select("*")
-                .eq("video_id", video_id)
-                .execute()
-                .data
-                or []
-            )
+        # STT 결과가 생성될 때까지 대기한다 (Continuous 모드일 경우)
+        stt_rows = []
+        retry_count_stt = 0
+        while retry_count_stt < max_retries:
+            stt_query = adapter.client.table("stt_results").select("*").eq("video_id", video_id)
+            if latest_preprocess_job_id:
+                stt_query = stt_query.eq("preprocess_job_id", latest_preprocess_job_id)
+            stt_rows = stt_query.execute().data or []
+            
+            if not stt_rows and latest_preprocess_job_id:
+                stt_rows = (
+                    adapter.client.table("stt_results")
+                    .select("*")
+                    .eq("video_id", video_id)
+                    .execute()
+                    .data
+                    or []
+                )
+            
+            if stt_rows:
+                break
+                
+            if continuous:
+                if retry_count_stt == 0:
+                    ts = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{ts}] [Input] STT results not found in DB. Waiting for Preprocessor to finish STT...")
+                time.sleep(poll_interval)
+                retry_count_stt += 1
+            else:
+                break
+
         if not stt_rows:
-            raise ValueError("stt_results not found in DB.")
+            raise ValueError(f"stt_results not found in DB (after {retry_count_stt} checks).")
 
         # DB 스키마 형태에 맞춰 STT 세그먼트 리스트를 구성한다.
         stt_segments: list = []
@@ -629,8 +667,9 @@ def run_processing_pipeline(
                 
                 # 4. 신규 데이터 폴링
                 if current_adapter and video_id:
-                    print(f"[Pipeline] Waiting for input... (Pending: {len(pending_captures)} < Batch: {batch_size}, Preprocess: {'RUNNING' if not preprocess_done else 'DONE'})")
-                    print(f"           Sleeping {poll_interval}s...")
+                    ts = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{ts}] [Pipeline] Waiting for input... (Pending: {len(pending_captures)} < Batch: {batch_size}, Preprocess: {'RUNNING' if not preprocess_done else 'DONE'})")
+                    # print(f"           Sleeping {poll_interval}s...") # 간결한 로그를 위해 생략 혹은 필요한 경우 활성화
                     time.sleep(poll_interval)
                     try:
                         # captures 테이블에서 video_id로 조회

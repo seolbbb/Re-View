@@ -19,20 +19,26 @@ import time
 import subprocess
 import signal
 from pathlib import Path
-from typing import Optional
+from datetime import datetime
 
 # 프로젝트 루트 경로 설정
 ROOT = Path(__file__).resolve().parents[1]
 
+def log(message: str):
+    """현재 시간과 함께 메시지를 출력합니다."""
+    timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+    print(f"[{timestamp}] {message}")
+    sys.stdout.flush()
+
 def run_command_async(command: list[str], log_prefix: str) -> subprocess.Popen:
     """비동기 서브프로세스 실행"""
-    print(f"[{log_prefix}] Starting: {' '.join(command)}")
+    log(f"[{log_prefix}] Starting: {' '.join(command)}")
     return subprocess.Popen(
         command,
         cwd=str(ROOT),
         # stdout/stderr를 현재 터미널로 흘려보냄 (실시간 로그 확인용)
         # 별도 파이프로 잡으면 실시간 출력이 어려울 수 있음
-        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        creationflags=0
     )
 
 def main():
@@ -43,19 +49,17 @@ def main():
 
     video_path = Path(args.video).resolve()
     if not video_path.exists():
-        print(f"Video not found: {video_path}")
+        log(f"Video not found: {video_path}")
         sys.exit(1)
 
-    # 비디오 이름 추론 (run_preprocess_pipeline과 동일한 로직)
-    # 실제 로직은 _sanitize_video_name을 쓰지만 여기선 stem으로 근사
+    # 비디오 이름 추론
     video_name = video_path.stem
-    # 특수문자 처리는 실제 파이프라인 내부 로직에 맡김 (DB 매칭은 name 기준)
     
     print("=" * 60)
-    print(f"Re:View Pipeline Demo: {video_name}")
+    log(f"Re:View Pipeline Demo: {video_name}")
     print("=" * 60)
-    print("1. Starting 'Processing Pipeline' in Continuous Mode (Waiting for data...)")
-    print("2. Starting 'Preprocessing Pipeline' (Extracting data...)")
+    log("1. Starting 'Processing Pipeline' in Continuous Mode (Waiting for data...)")
+    log("2. Starting 'Preprocessing Pipeline' (Extracting data...)")
     print("-" * 60)
 
     # 1. Processing Pipeline 실행 (Consumer)
@@ -71,13 +75,7 @@ def main():
         "--db-sync"
     ]
     
-    # 윈도우에서는 새 콘솔 창을 띄워서 로그가 섞이지 않게 하는 게 보기 좋을 수 있음
-    # 하지만 사용자는 "터미널에서 보여주는" 것을 원했으므로, 
-    # 여기서는 Process는 새 창에, Preprocess는 현재 창에 띄우거나
-    # 혹은 둘 다 현재 창에 띄우되 Process를 먼저 띄워 'Waiting' 로그를 보게 함.
-    
     # 여기서는 'Process'를 먼저 실행해두고 (Background), 'Preprocess'를 실행함.
-    
     proc_process = subprocess.Popen(
         process_cmd,
         cwd=str(ROOT),
@@ -101,33 +99,33 @@ def main():
         shell=False
     )
 
-    print(f"\n[Demo] Both pipelines are running.")
-    print(f"   - Preprocessor PID: {proc_preprocess.pid}")
-    print(f"   - Processor PID:    {proc_process.pid}")
+    log(f"[Demo] Both pipelines are running.")
+    log(f"   - Preprocessor PID: {proc_preprocess.pid}")
+    log(f"   - Processor PID:    {proc_process.pid}")
     print("=" * 60)
 
     try:
         # Preprocess가 끝날 때까지 대기
         proc_preprocess.wait()
-        print(f"\n[Demo] Preprocessing finished with exit code {proc_preprocess.returncode}")
+        log(f"[Demo] Preprocessing finished with exit code {proc_preprocess.returncode}")
         
         if proc_preprocess.returncode != 0:
-            print("❌ Preprocessing failed. Terminating processor.")
+            log("❌ Preprocessing failed. Terminating processor.")
             proc_process.terminate()
             sys.exit(1)
 
-        print("[Demo] Waiting for Processor to finish (it should auto-terminate)...")
+        log("[Demo] Waiting for Processor to finish (it should auto-terminate)...")
         # Preprocess가 끝나고 DB status가 DONE이 되면 Processor도 Loop를 탈출하고 종료해야 함
         proc_process.wait()
-        print(f"[Demo] Processing finished with exit code {proc_process.returncode}")
+        log(f"[Demo] Processing finished with exit code {proc_process.returncode}")
 
     except KeyboardInterrupt:
-        print("\n[Demo] Interrupted by user. Terminating subprocesses...")
+        log("\n[Demo] Interrupted by user. Terminating subprocesses...")
         proc_preprocess.terminate()
         proc_process.terminate()
         sys.exit(1)
 
-    print("\n[Demo] All pipelines finished.")
+    log("[Demo] All pipelines finished.")
 
 if __name__ == "__main__":
     main()

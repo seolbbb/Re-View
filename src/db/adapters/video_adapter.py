@@ -33,10 +33,12 @@ class VideoAdapterMixin:
         """
         try:
             # supabase-py 클라이언트를 통해 videos 테이블 조회
-            result = self.client.table("videos").select("*") \
-                .eq("user_id", user_id) \
-                .eq("original_filename", original_filename) \
-                .execute()
+            query = self.client.table("videos").select("*").eq("original_filename", original_filename)
+            
+            if user_id:
+                query = query.eq("user_id", user_id)
+                
+            result = query.execute()
             
             # 조회 결과가 있으면 첫 번째 레코드 반환
             if result.data:

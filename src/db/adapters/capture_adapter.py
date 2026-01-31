@@ -103,7 +103,7 @@ class CaptureAdapterMixin:
         self.client.storage.from_(bucket).upload(
             path=storage_path,
             file=file_data,
-            file_options={"content-type": "image/jpeg"}
+            file_options={"content-type": "image/jpeg", "upsert": "true"}
         )
         
         # 2. Private 버킷 접근을 위한 Signed URL 생성

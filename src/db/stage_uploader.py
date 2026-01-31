@@ -209,11 +209,18 @@ def upload_vlm_results_for_batch(
     if not vlm_items:
         return 0
 
-    vlm_rows = adapter.insert_vlm_results(
-        video_id,
-        vlm_items,
-        processing_job_id=processing_job_id,
-    )
+    try:
+        vlm_rows = adapter.insert_vlm_results(
+            video_id,
+            vlm_items,
+            processing_job_id=processing_job_id,
+        )
+    except Exception as e:
+        import traceback
+        with open("error_db.log", "w", encoding="utf-8") as f:
+            f.write(f"[DB] ERROR in upload_vlm_results_for_batch: {e}\n")
+            traceback.print_exc(file=f)
+        raise e
 
     return len(vlm_rows)
 
@@ -252,11 +259,18 @@ def upload_segments_for_batch(
     if not segments:
         return segment_map
 
-    saved_segments = adapter.save_segments(
-        video_id,
-        segments,
-        processing_job_id=processing_job_id,
-    )
+    try:
+        saved_segments = adapter.save_segments(
+            video_id,
+            segments,
+            processing_job_id=processing_job_id,
+        )
+    except Exception as e:
+        import traceback
+        with open("error_db.log", "a", encoding="utf-8") as f:
+            f.write(f"[DB] ERROR in upload_segments_for_batch: {e}\n")
+            traceback.print_exc(file=f)
+        raise e
 
     for seg in saved_segments:
         idx = seg.get("segment_index")
@@ -301,13 +315,20 @@ def upload_summaries_for_batch(
     if not summaries:
         return 0
 
-    saved_summaries = adapter.save_summaries(
-        video_id,
-        summaries,
-        segment_map=segment_map,
-        processing_job_id=processing_job_id,
-        batch_index=batch_index,
-    )
+    try:
+        saved_summaries = adapter.save_summaries(
+            video_id,
+            summaries,
+            segment_map=segment_map,
+            processing_job_id=processing_job_id,
+            batch_index=batch_index,
+        )
+    except Exception as e:
+        import traceback
+        with open("error_db.log", "a", encoding="utf-8") as f:
+            f.write(f"[DB] ERROR in upload_summaries_for_batch: {e}\n")
+            traceback.print_exc(file=f)
+        raise e
 
     return len(saved_summaries)
 
@@ -316,7 +337,7 @@ def upload_judge_result(
     adapter: "SupabaseAdapter",
     video_id: str,
     processing_job_id: str,
-    judge_result: Dict[str, Any],
+    judge_result: Union[Dict[str, Any], Path, str],
     batch_idx: int,
 ) -> Optional[Dict[str, Any]]:
     """Judge 결과를 DB에 업로드한다.
@@ -325,12 +346,26 @@ def upload_judge_result(
         adapter: Supabase 어댑터
         video_id: 비디오 ID
         processing_job_id: 처리 작업 ID
-        judge_result: judge 실행 결과
+        judge_result: judge 실행 결과 (Dict) 또는 파일 경로 (Path/str)
         batch_idx: 배치 인덱스 (1-indexed)
 
     Returns:
         저장된 judge 레코드 (또는 None)
     """
+    # Path나 str이면 파일에서 로드
+    if isinstance(judge_result, (Path, str)):
+        path_obj = Path(judge_result)
+        if not path_obj.exists():
+            return None
+        try:
+            judge_result = json.loads(path_obj.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[DB] Error loading judge JSON: {e}")
+            return None
+
+    if not isinstance(judge_result, dict):
+        return None
+
     report = judge_result.get("report", {})
     final_score = float(report.get("scores_avg", {}).get("final", 0.0))
 

@@ -266,6 +266,11 @@ def run_preprocess_pipeline(
             if db_context:
                 db_start = time.perf_counter()
                 adapter, video_id, preprocess_job_id = db_context
+                
+                # [Fix] Capture 중복 업로드 방지
+                # 스트리밍으로 이미 업로드된 경우(skip_db_capture=True), 배치 업로드는 수행하지 않음
+                do_capture_sync = (stage == "capture" and not kwargs.get("skip_db_capture", False))
+                
                 stage_results = sync_preprocess_artifacts_to_db(
                     adapter=adapter,
                     video_id=video_id,
@@ -273,7 +278,7 @@ def run_preprocess_pipeline(
                     provider=stt_backend,
                     preprocess_job_id=preprocess_job_id,
                     include_stt=(stage == "stt"),
-                    include_captures=(stage == "capture"),
+                    include_captures=do_capture_sync,
                     include_audio=(stage == "audio"),
                     **kwargs,
                     table_name=db_table_name,
@@ -391,10 +396,10 @@ def run_preprocess_pipeline(
             elapsed = time.perf_counter() - start
             capture_elapsed = elapsed
             timer.record_stage("capture", elapsed)
-            # 스트리밍으로 이미 업로드했으므로 최종 단계에서는 로컬 파일 동기화만 하거나 생략 가능
-            # 하지만 안전을 위해 최종 상태를 다시 덮어쓸 수도 있음.
-            # 중복 부하가 크지 않다면 덮어쓰기 유지 (최종 일관성 보장)
-            _finalize_stage("capture", elapsed, captures_payload=results)
+            
+            # [Fix] 스트리밍으로 이미 업로드했으므로 최종 단계에서는 로컬 파일 동기화만 하거나 생략한다.
+            # 중복 저장을 막기 위해 skip_db_capture=True 전달
+            _finalize_stage("capture", elapsed, captures_payload=results, skip_db_capture=True)
             return results
 
         pipeline_logger.log("System", f"Starting Preprocessing (Parallel={parallel})")

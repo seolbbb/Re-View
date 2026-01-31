@@ -924,7 +924,6 @@ def run_batch_fusion_pipeline(
                     video_id,
                     processing_job_id,
                     batch_dir / "vlm.json",
-                    current_batch_global_idx,
                 )
                 status_map["DB"] = "DONE"
             except Exception:
@@ -1097,9 +1096,20 @@ def run_batch_fusion_pipeline(
         # DB Upload (Fusion)
         if adapter and processing_job_id and sync_to_db:
             try:
+                segment_map = {}
+                batch_units_path = batch_dir / "fusion" / "segments_units.jsonl"
+                if batch_units_path.exists():
+                    segment_map = upload_segments_for_batch(
+                        adapter,
+                        video_id,
+                        processing_job_id,
+                        batch_units_path,
+                        offset=cumulative_segment_count - new_segment_count,
+                    )
+
                 if batch_summaries_path.exists():
                      upload_summaries_for_batch(
-                        adapter, video_id, processing_job_id, batch_summaries_path, current_batch_global_idx
+                        adapter, video_id, processing_job_id, batch_summaries_path, segment_map, batch_index=current_batch_global_idx
                      )
                 upload_judge_result(
                     adapter, video_id, processing_job_id, batch_dir / "judge.json", current_batch_global_idx

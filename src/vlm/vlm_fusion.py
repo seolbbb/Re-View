@@ -59,7 +59,7 @@ def build_fusion_vlm_payload(
         if not file_name:
             continue
 
-        cap_id = item.get("id")
+        cap_id = item.get("cap_id") or item.get("id")
         
         if file_name not in image_time_ranges:
             image_time_ranges[file_name] = {
@@ -154,7 +154,7 @@ def build_fusion_vlm_payload(
         sorted_ranges = sorted(img_data["time_ranges"], key=lambda x: x["start_ms"])
             
         items.append({
-            "id": f"vlm_{idx:03d}",
+            "id": img_data["cap_id"],
             "cap_id": img_data["cap_id"],
             "extracted_text": image_text[file_name],
             "time_ranges": sorted_ranges

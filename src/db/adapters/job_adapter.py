@@ -334,37 +334,74 @@ class JobAdapterMixin:
         if not vlm_results:
             return []
 
-        # capture_id가 없는 항목이 있으면 timestamp_ms로 매핑 테이블 생성
-        needs_lookup = any(not item.get("capture_id") and item.get("timestamp_ms") is not None for item in vlm_results)
-        capture_map = {}
+        if not vlm_results:
+            return []
 
-        if needs_lookup:
-            # cap_id를 기준으로 mapping 테이블 생성 (start_ms 컬럼이 더 이상 존재하지 않음)
-            captures = self.client.table("captures").select("id,cap_id").eq("video_id", video_id).execute()
-            if captures.data:
-                for cap in captures.data:
-                    cid = cap.get("cap_id")
-                    if cid:
-                        capture_map[cid] = cap["id"]
+        # DB captures 조회하여 매핑 테이블 생성 (cap_id <-> uuid)
+        # 1. capture_id(UUID)를 찾기 위한 매핑 (Source ID -> UUID)
+        # 2. cap_id(Text)를 찾기 위한 매핑 (UUID -> Source ID)
+        capture_map_to_uuid = {}
+        capture_map_to_text = {}
+
+        captures = self.client.table("captures").select("id,cap_id").eq("video_id", video_id).execute()
+        if captures.data:
+            for cap in captures.data:
+                uuid = cap.get("id")
+                text_id = cap.get("cap_id")
+                if uuid:
+                    capture_map_to_text[uuid] = text_id
+                if text_id:
+                    capture_map_to_uuid[text_id] = uuid
 
         records = []
         for vlm in vlm_results:
-            # vlm.json의 id 필드 -> cap_id
-            cap_id = vlm.get("id") or vlm.get("cap_id")
+            # vlm.json 구조: {"id": "vlm_001", "cap_id": "...", "time_ranges": [...], "extracted_text": ...}
             
-            # DB의 capture_id (FK) 조회
+            source_val = vlm.get("cap_id")
             db_capture_id = vlm.get("capture_id")
-            if not db_capture_id and cap_id in capture_map:
-                db_capture_id = capture_map[cap_id]
+            final_cap_id_text = None
 
+            # Case A: 입력된 cap_id가 UUID 형태인 경우 (예: DIFFUSION_6)
+            if source_val and len(str(source_val)) == 36 and "-" in str(source_val):
+                if source_val in capture_map_to_text:
+                    # 유효한(현재 DB에 존재하는) UUID인 경우
+                    db_capture_id = source_val
+                    final_cap_id_text = capture_map_to_text.get(source_val)
+                else:
+                    # DB에 없는(오래된) UUID인 경우 -> vlm_id로 추론 시도
+                    # vlm_001 -> cap_001
+                    vlm_item_id = vlm.get("id")
+                    if vlm_item_id and vlm_item_id.startswith("vlm_"):
+                        inferred_cap_id = vlm_item_id.replace("vlm_", "cap_")
+                        if inferred_cap_id in capture_map_to_uuid:
+                            db_capture_id = capture_map_to_uuid[inferred_cap_id]
+                            final_cap_id_text = inferred_cap_id
+            
+            # Case B: 입력된 cap_id가 cap_001 형태인 경우 (예: sample2)
+            elif source_val:
+                final_cap_id_text = source_val
+                db_capture_id = capture_map_to_uuid.get(source_val)
+            
+            # Case C: 이미 capture_id가 명시된 경우
+            if vlm.get("capture_id"):
+                 db_capture_id = vlm.get("capture_id")
+                 if db_capture_id in capture_map_to_text:
+                     final_cap_id_text = capture_map_to_text[db_capture_id]
+
+            # 2. time_ranges 처리
+            time_ranges = vlm.get("time_ranges")
+            
+            # 레거시 timestamp_ms 지원 (time_ranges가 없으면 생성)
             timestamp_ms = vlm.get("timestamp_ms")
+            if not time_ranges and timestamp_ms is not None:
+                time_ranges = [{"start_ms": timestamp_ms, "end_ms": timestamp_ms + 1000}]
 
             records.append({
                 "video_id": video_id,
                 "processing_job_id": processing_job_id,
-                "capture_id": db_capture_id,
-                "cap_id": cap_id,  # vlm.json의 id 필드
-                "timestamp_ms": timestamp_ms,
+                "capture_id": db_capture_id, # UUID (Foreign Key)
+                "cap_id": final_cap_id_text or source_val, # Logical ID (Text)
+                "time_ranges": time_ranges, 
                 "extracted_text": vlm.get("extracted_text"),
             })
 
