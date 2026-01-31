@@ -51,7 +51,11 @@ def build_fusion_vlm_payload(
         if not file_name:
             continue
 
-        entry_id = item.get("id")
+        # DB captures 테이블은 cap_id 컬럼에 cap_001 형식 저장, id는 UUID (PK)
+        # 로컬 manifest.json은 id 필드에 cap_001 형식 저장
+        # 따라서 cap_id 우선, 없으면 id 사용 (하위 호환성 유지)
+        entry_id = item.get("cap_id") or item.get("id")
+
         
         # New Schema: time_ranges
         time_ranges = item.get("time_ranges")
