@@ -15,6 +15,13 @@ if TYPE_CHECKING:
     from .supabase_adapter import SupabaseAdapter
 
 
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 # =============================================================================
 # Fallback 함수들 - 로컬 파일 우선, 없으면 DB에서 조회
 # =============================================================================
@@ -415,7 +422,7 @@ def upsert_final_summary_results(
     # 디버그: results_dir 확인
     if not results_dir.exists():
         result_info["errors"].append(f"results_dir not found: {results_dir}")
-        print(f"  [DB] Warning: results_dir not found: {results_dir}")
+        print(f"{_get_timestamp()}   [DB] Warning: results_dir not found: {results_dir}")
 
     # 각 포맷별로 파일 확인 및 업로드
     found_any = False
@@ -433,13 +440,13 @@ def upsert_final_summary_results(
                     status="DONE",
                 )
                 result_info["saved"][fmt] = upsert_result.get("id")
-                print(f"  [DB] summary_results ({fmt}) uploaded: {upsert_result.get('id')}")
+                print(f"{_get_timestamp()}   [DB] summary_results ({fmt}) uploaded: {upsert_result.get('id')}")
             except Exception as e:
                 result_info["errors"].append(f"{fmt}: {str(e)}")
 
     if not found_any:
         result_info["errors"].append(f"No summary files found in {results_dir}")
-        print(f"  [DB] Warning: No summary files found in {results_dir}")
+        print(f"{_get_timestamp()}   [DB] Warning: No summary files found in {results_dir}")
 
     # 3. processing_job 상태를 DONE으로 업데이트
     try:

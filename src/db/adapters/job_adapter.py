@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 def compute_config_hash(config_paths: List[Path]) -> str:
     """설정 파일들의 해시를 계산합니다.
 
@@ -170,7 +177,7 @@ class JobAdapterMixin:
                 "current_processing_job_id": job["id"],
                 "status": "PROCESSING",  # PREPROCESS_DONE -> PROCESSING
             }).eq("id", video_id).execute()
-            print(f"[DB] Updated videos.status to PROCESSING for video_id: {video_id}")
+            print(f"{_get_timestamp()} [DB] Updated videos.status to PROCESSING for video_id: {video_id}")
 
         return job
     
