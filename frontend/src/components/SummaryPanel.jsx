@@ -87,7 +87,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     }, []);
 
     // SSE 스트리밍 (polling 대신 사용)
-    useVideoStatusStream(videoId, {
+    const { reconnect } = useVideoStatusStream(videoId, {
         enabled: !!videoId,
         onStatus: handleStatus,
         onSummaries: handleSummaries,
@@ -182,6 +182,8 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                 prevBatchRef.current = -1;
                 staleFlagRef.current = false;
                 setStreamKey(k => k + 1);
+                // SSE 연결 재시작 (done 이벤트로 종료된 연결 복구)
+                reconnect();
             } catch (err) {
                 setErrorMessage(`재시작 실패: ${err.message || '알 수 없는 오류'}`);
             } finally {
