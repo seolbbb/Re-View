@@ -38,7 +38,7 @@ def build_fusion_vlm_payload(
     Raises:
         ValueError: 입력 형식이 잘못되었거나, manifest의 파일이 vlm_raw에 없을 때.
     """
-    # 1. Manifest 검증 및 엔트리 추출 (Flattening 1:N time ranges)
+    # 1. Manifest 검증 및 엔트리 추출 (이미지당 하나의 항목, time_ranges 포함)
     if not isinstance(manifest_payload, list):
         raise ValueError("Invalid manifest.json format (must be a list).")
 
@@ -57,25 +57,30 @@ def build_fusion_vlm_payload(
         entry_id = item.get("cap_id") or item.get("id")
 
         
-        # New Schema: time_ranges
+        # New Schema: time_ranges (Flattening 없이 그대로 전달)
         time_ranges = item.get("time_ranges")
         if time_ranges and isinstance(time_ranges, list):
+            # time_ranges에서 첫 번째 start_ms를 정렬 기준으로 사용
+            first_start_ms = None
             for rng in time_ranges:
-                if not isinstance(rng, dict):
-                    continue
-                start_ms = rng.get("start_ms")
-                if start_ms is not None:
-                    manifest_entries.append({
-                        "timestamp_ms": int(start_ms),
-                        "file_name": file_name,
-                        "id": entry_id
-                    })
+                if isinstance(rng, dict) and rng.get("start_ms") is not None:
+                    first_start_ms = int(rng.get("start_ms"))
+                    break
+            if first_start_ms is not None:
+                manifest_entries.append({
+                    "time_ranges": time_ranges,
+                    "timestamp_ms": first_start_ms,  # 정렬용
+                    "file_name": file_name,
+                    "id": entry_id
+                })
         # Fallback for old schema (start_ms)
         elif "start_ms" in item:
             try:
                 start_ms = int(item["start_ms"])
+                end_ms = int(item.get("end_ms", start_ms))
                 manifest_entries.append({
-                    "timestamp_ms": start_ms, 
+                    "time_ranges": [{"start_ms": start_ms, "end_ms": end_ms}],
+                    "timestamp_ms": start_ms,  # 정렬용
                     "file_name": file_name, 
                     "id": entry_id
                 })
@@ -124,7 +129,6 @@ def build_fusion_vlm_payload(
     items: List[Dict[str, Any]] = []
     
     for entry in manifest_entries:
-        ts = int(entry["timestamp_ms"])
         file_name = str(entry["file_name"])
         
         # Manifest에는 있는데 VLM 결과가 없으면 에러 (누락 방지)
@@ -133,7 +137,14 @@ def build_fusion_vlm_payload(
             continue
             
         entry_id = entry.get("id")
-        items.append({"timestamp_ms": ts, "extracted_text": image_text[file_name], "id": entry_id})
+        time_ranges = entry.get("time_ranges")
+        timestamp_ms = entry.get("timestamp_ms")  # 하위 호환성을 위해 유지
+        items.append({
+            "time_ranges": time_ranges,
+            "timestamp_ms": timestamp_ms,  # 하위 호환성
+            "extracted_text": image_text[file_name], 
+            "id": entry_id
+        })
 
     if missing:
         preview = ", ".join(missing[:10])

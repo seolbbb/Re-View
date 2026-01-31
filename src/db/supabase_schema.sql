@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS vlm_results (
     processing_job_id UUID REFERENCES processing_jobs(id) ON DELETE SET NULL,
     capture_id UUID REFERENCES captures(id) ON DELETE SET NULL,
     cap_id TEXT,  -- vlm.json의 id 필드 (e.g., "cap_00001")
-    timestamp_ms INTEGER,  -- vlm.json의 timestamp_ms 필드
+    time_ranges JSONB,  -- captures과 동일한 시간 범위 스키마 [{start_ms, end_ms}, ...]
     extracted_text TEXT,  -- vlm.json의 extracted_text 필드
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -408,8 +408,13 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'cap_id') THEN
         ALTER TABLE vlm_results ADD COLUMN cap_id TEXT;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'timestamp_ms') THEN
-        ALTER TABLE vlm_results ADD COLUMN timestamp_ms INTEGER;
+    -- timestamp_ms -> time_ranges 마이그레이션 (Issue #141)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'time_ranges') THEN
+        ALTER TABLE vlm_results ADD COLUMN time_ranges JSONB;
+    END IF;
+    -- 기존 timestamp_ms 컬럼 삭제
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'timestamp_ms') THEN
+        ALTER TABLE vlm_results DROP COLUMN timestamp_ms;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vlm_results' AND column_name = 'extracted_text') THEN
         ALTER TABLE vlm_results ADD COLUMN extracted_text TEXT;
