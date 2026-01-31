@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from textwrap import dedent
 
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 import yaml
 
 from .config import ConfigBundle
@@ -771,7 +778,7 @@ def run_batch_summarizer(
                 for segment in segments:
                     segment_id = int(segment.get("segment_id"))
                     if verbose:
-                        print(f"      - [Summarizer] Processed segment {segment_id}", flush=True)
+                        print(f"{_get_timestamp()}       - [Summarizer] Processed segment {segment_id}", flush=True)
                     summary = summary_map[segment_id]
                     record = {
                         "run_id": segment.get("run_id"),

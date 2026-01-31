@@ -12,6 +12,14 @@ from .config import ConfigBundle
 
 logger = logging.getLogger(__name__)
 
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 # [TEST] Safety imports for fix
 from google.genai.types import SafetySetting, HarmCategory, HarmBlockThreshold
 
@@ -220,7 +228,7 @@ def run_with_retries(
         while True:
             if verbose:
                 label = f" (Key {idx}/{total_clients})" if total_clients > 1 else ""
-                print(f"      [{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
+                print(f"{_get_timestamp()}       [{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
             try:
                 return generate_content(
                     client_bundle,
@@ -267,9 +275,9 @@ def run_with_retries(
                 prefix = f"[{context}] " if context else ""
                 if simplified_msg:
                     if verbose:
-                        print(f"      [{context}] Failed: {simplified_msg}. Retrying in {sleep_for}s...", flush=True)
+                        print(f"{_get_timestamp()}       [{context}] Failed: {simplified_msg}. Retrying in {sleep_for}s...", flush=True)
                     else:
-                        print(f"⚠️ [{context}] Retry {attempt+1}/{max_retries}: {simplified_msg}", flush=True)
+                        print(f"{_get_timestamp()} ⚠️ [{context}] Retry {attempt+1}/{max_retries}: {simplified_msg}", flush=True)
                 
                 time.sleep(sleep_for)
                 attempt += 1
