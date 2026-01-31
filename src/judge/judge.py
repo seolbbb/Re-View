@@ -19,6 +19,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
 from src.fusion.config import ConfigBundle
 from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_token_usage
 from src.fusion.gemini import init_gemini_client, run_with_retries
@@ -163,7 +169,7 @@ def _evaluate_batch(
                     raise ValueError("LLM response item is not an object.")
                 seg_id = int(item.get("segment_id"))
                 if verbose:
-                    print(f"      - [Judge] Evaluated segment {seg_id}", flush=True)
+                    print(f"{_get_timestamp()}       - [Judge] Evaluated segment {seg_id}", flush=True)
                 results[seg_id] = item
             last_error = None
             break
