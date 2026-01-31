@@ -169,12 +169,26 @@ class OpenRouterVlmExtractor:
         return self.output_root / self.video_name / "vlm_raw.json"
 
     def _build_image_part(self, image_path: str) -> dict:
-        """이미지 파일을 data URL 형태로 변환한다."""
+        """이미지 파일을 Data URL 또는 Remote URL 형태로 변환한다."""
+        # 1. Remote URL 처리
+        if image_path.lower().startswith(("http://", "https://")):
+            return {"type": "image_url", "image_url": {"url": image_path}}
+
+        # 2. Local File 처리
         if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Image not found: {image_path}")
+            # [User Request] 절대 경로가 너무 길어 프로젝트 루트 기준 상대 경로로 표시
+            rel_path = image_path
+            try:
+                # 현재 작업 디렉토리(프로젝트 루트) 기준 상대 경로 시도
+                rel_path = os.path.relpath(image_path)
+            except Exception:
+                pass
+            raise FileNotFoundError(f"Image not found: {rel_path}")
+        
         mime_type, _ = mimetypes.guess_type(image_path)
         if not mime_type:
             mime_type = "image/jpeg"
+            
         with open(image_path, "rb") as image_file:
             encoded = base64.b64encode(image_file.read()).decode("ascii")
         url = f"data:{mime_type};base64,{encoded}"
@@ -228,17 +242,10 @@ class OpenRouterVlmExtractor:
         for idx, client in enumerate(self.clients, start=1):
             if show_progress:
                 print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
-                # [User Request] Detailed Logging
+            if show_progress:
+                print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
+                # [User Request] Simple Logging
                 print(f"[VLM] Request for {label}:", flush=True)
-                # messages[0]은 system, messages[1]은 user라 가정 (vlm_engine 로직상)
-                if len(messages) >= 2:
-                    user_content = messages[1].get("content", "")
-                    if isinstance(user_content, list):
-                        # 텍스트 파트만 출력 (이미지 데이터는 방대하므로 제외)
-                        text_only = [p.get("text") for p in user_content if p.get("type") == "text"]
-                        print(f"      Prompt: {text_only}", flush=True)
-                    else:
-                        print(f"      Prompt: {user_content[:200]}...", flush=True)
 
             try:
                 # 2. 실제 API 호출
@@ -298,8 +305,6 @@ class OpenRouterVlmExtractor:
             
             # 7. 성공 시 결과 반환
             content = completion.choices[0].message.content or ""
-            if show_progress:
-                 print(f"[VLM] Response for {label}:\n{content[:500]}...", flush=True)
             return content
 
         if last_error:
