@@ -49,6 +49,39 @@ _PARTIAL_NOT_READY = "Partial summary chatbot is not implemented yet."
 _NEED_REASONING_MODE_MESSAGE = "응답 모드를 선택해 주세요. (flash 또는 thinking)"
 
 
+def _load_google_api_keys() -> List[str]:
+    keys: List[str] = []
+    primary = os.getenv("GOOGLE_API_KEY")
+    if primary:
+        keys.append(primary)
+    suffix_items: List[Tuple[str, str]] = []
+    for name, value in os.environ.items():
+        if name.startswith("GOOGLE_API_KEY_") and value:
+            suffix_items.append((name, value))
+
+    def _sort_key(item: Tuple[str, str]) -> Tuple[int, object]:
+        suffix = item[0].split("GOOGLE_API_KEY_", 1)[1]
+        try:
+            return (0, int(suffix))
+        except ValueError:
+            return (1, suffix)
+
+    suffix_items.sort(key=_sort_key)
+    for _, value in suffix_items:
+        if value not in keys:
+            keys.append(value)
+    return keys
+
+
+def _select_google_api_key(keys: List[str]) -> Optional[str]:
+    if not keys:
+        return None
+    if len(keys) == 1:
+        return keys[0]
+    index = int(time.time()) % len(keys)
+    return keys[index]
+
+
 def _get_trace_logger() -> logging.Logger:
     global _TRACE_LOGGER
     if _TRACE_LOGGER:
@@ -254,7 +287,8 @@ def _generate_router_choice(prompt: str) -> str:
     except ImportError as exc:
         raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
 
-    client = genai.Client()
+    api_key = _select_google_api_key(_load_google_api_keys())
+    client = genai.Client(api_key=api_key) if api_key else genai.Client()
     config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=16)
     response = client.models.generate_content(
         model=_DECISION_MODEL,
@@ -665,6 +699,7 @@ def _normalize_summary_sufficiency(value: str) -> str:
 def _decide_summary_sufficiency(state: ChatState) -> Dict[str, Any]:
     """요약만으로 충분한지 판단해 summary_decision을 반환한다."""
     reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
+    _trace("node.decide_summary", reasoning_mode=reasoning_mode)
     if reasoning_mode == "thinking":
         _trace("summary.decide", decision="need_evidence", reason="thinking_mode")
         return {"summary_decision": "need_evidence"}
@@ -726,6 +761,7 @@ def _route_after_enrich_decision(state: ChatState) -> str:
 
 def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     """summary의 source_refs를 기반으로 STT/VLM evidence를 조회해 병합한다."""
+    _trace("node.enrich_evidence")
     records = state.get("answer_records") or []
     stt_ids, cap_ids = _collect_source_ref_ids(records)
     if not stt_ids and not cap_ids:
@@ -765,7 +801,8 @@ def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
     except ImportError as exc:
         raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
 
-    client = genai.Client()
+    api_key = _select_google_api_key(_load_google_api_keys())
+    client = genai.Client(api_key=api_key) if api_key else genai.Client()
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
@@ -807,7 +844,8 @@ def _generate_with_genai_stream(prompt: str) -> Any:
     except ImportError as exc:
         raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
 
-    client = genai.Client()
+    api_key = _select_google_api_key(_load_google_api_keys())
+    client = genai.Client(api_key=api_key) if api_key else genai.Client()
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
@@ -919,102 +957,13 @@ def _build_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
 
     graph: Any = StateGraph(ChatState)
     graph.add_node("parse_input", _parse_input)
-    graph.add_node("mode_select", lambda state: _handle_mode_select(state, backend))
-    graph.add_node("reasoning_select", _handle_reasoning_select)
-    graph.add_node("need_mode", lambda _: {"response": _NEED_MODE_MESSAGE})
-    graph.add_node("partial", lambda state: _handle_partial(state, backend))
-    graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
-    graph.add_node("generate_answer", _generate_answer)
-
-    graph.set_entry_point("parse_input")
-    if router_mode == "llm":
-        graph.add_node("route_with_llm", _route_with_llm)
-        graph.add_edge("parse_input", "route_with_llm")
-        graph.add_conditional_edges(
-            "route_with_llm",
-            lambda state: state.get("next_step") or "need_mode",
-            {
-                "mode_select": "mode_select",
-                "reasoning_select": "reasoning_select",
-                "partial": "partial",
-                "full": "prepare_full",
-                "need_mode": "need_mode",
-            },
-        )
-    else:
-        graph.add_conditional_edges(
-            "parse_input",
-            _route_after_parse,
-            {
-                "mode_select": "mode_select",
-                "reasoning_select": "reasoning_select",
-                "partial": "partial",
-                "full": "prepare_full",
-                "need_mode": "need_mode",
-            },
-        )
-    graph.add_conditional_edges(
-        "prepare_full",
-        _route_after_prepare,
-        {
-            "respond": END,
-            "llm": "generate_answer",
-        },
-    )
-    graph.add_edge("mode_select", END)
-    graph.add_edge("reasoning_select", END)
-    graph.add_edge("need_mode", END)
-    graph.add_edge("partial", END)
-    graph.add_edge("generate_answer", END)
-    return graph.compile()
-
-
-def _build_agent_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
-    """에이전트형 그래프를 구성한다 (요약 판단 → RAG → evidence → 답변)."""
-    if _LANGGRAPH_IMPORT_ERROR:
-        raise RuntimeError(
-            "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
-        ) from _LANGGRAPH_IMPORT_ERROR
-
-    graph: Any = StateGraph(ChatState)
-    graph.add_node("parse_input", _parse_input)
-    graph.add_node("mode_select", lambda state: _handle_mode_select(state, backend))
-    graph.add_node("reasoning_select", _handle_reasoning_select)
-    graph.add_node("need_mode", lambda _: {"response": _NEED_MODE_MESSAGE})
-    graph.add_node("partial", lambda state: _handle_partial(state, backend))
     graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
     graph.add_node("decide_summary", _decide_summary_sufficiency)
     graph.add_node("enrich_evidence", lambda state: _enrich_with_db_evidence(state, backend))
     graph.add_node("generate_answer", _generate_answer)
 
     graph.set_entry_point("parse_input")
-    if router_mode == "llm":
-        graph.add_node("route_with_llm", _route_with_llm)
-        graph.add_edge("parse_input", "route_with_llm")
-        graph.add_conditional_edges(
-            "route_with_llm",
-            lambda state: state.get("next_step") or "need_mode",
-            {
-                "mode_select": "mode_select",
-                "reasoning_select": "reasoning_select",
-                "partial": "partial",
-                "full": "prepare_full",
-                "need_mode": "need_mode",
-            },
-        )
-    else:
-        graph.add_conditional_edges(
-            "parse_input",
-            _route_after_parse,
-            {
-                "mode_select": "mode_select",
-                "reasoning_select": "reasoning_select",
-                "partial": "partial",
-                "full": "prepare_full",
-                "need_mode": "need_mode",
-            },
-        )
-
+    graph.add_edge("parse_input", "prepare_full")
     graph.add_conditional_edges(
         "prepare_full",
         _route_after_prepare,
@@ -1032,10 +981,43 @@ def _build_agent_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
         },
     )
     graph.add_edge("enrich_evidence", "generate_answer")
-    graph.add_edge("mode_select", END)
-    graph.add_edge("reasoning_select", END)
-    graph.add_edge("need_mode", END)
-    graph.add_edge("partial", END)
+    graph.add_edge("generate_answer", END)
+    return graph.compile()
+
+
+def _build_agent_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
+    """full 전용 최소 그래프를 구성한다 (parse → 요약 준비 → 답변)."""
+    if _LANGGRAPH_IMPORT_ERROR:
+        raise RuntimeError(
+            "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
+        ) from _LANGGRAPH_IMPORT_ERROR
+
+    graph: Any = StateGraph(ChatState)
+    graph.add_node("parse_input", _parse_input)
+    graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
+    graph.add_node("decide_summary", _decide_summary_sufficiency)
+    graph.add_node("enrich_evidence", lambda state: _enrich_with_db_evidence(state, backend))
+    graph.add_node("generate_answer", _generate_answer)
+
+    graph.set_entry_point("parse_input")
+    graph.add_edge("parse_input", "prepare_full")
+    graph.add_conditional_edges(
+        "prepare_full",
+        _route_after_prepare,
+        {
+            "respond": END,
+            "llm": "decide_summary",
+        },
+    )
+    graph.add_conditional_edges(
+        "decide_summary",
+        _route_after_summary_sufficiency,
+        {
+            "need_evidence": "enrich_evidence",
+            "answer": "generate_answer",
+        },
+    )
+    graph.add_edge("enrich_evidence", "generate_answer")
     graph.add_edge("generate_answer", END)
     return graph.compile()
 
