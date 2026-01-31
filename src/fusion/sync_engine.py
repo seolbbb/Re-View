@@ -456,7 +456,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
             )
 
             stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
-            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str) and (u["unit_id"].startswith("vlm_") or u["unit_id"].startswith("cap_"))]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
 
             segments_units_handle.write(
                 json.dumps(
@@ -609,9 +609,11 @@ def run_batch_sync_engine(
                 unit["end_ms"] = int(unit["end_ms"]) + start_ms
 
             # VLM 아이템 선택 (조정된 시간 기준)
+            # manifest_scores도 배치 상대 시간으로 조정하여 전달
+            adjusted_scores = {int(k) - start_ms: v for k, v in manifest_scores.items() if start_ms <= int(k) < end_ms}
             selected_vlm_items = _select_vlm_items(
                 adjusted_vlm_items,
-                {},  # manifest_scores는 원래 시간 기준이라 사용 안 함
+                adjusted_scores,
                 segment.start_ms,
                 segment.end_ms,
                 max_visual_items,
@@ -626,7 +628,7 @@ def run_batch_sync_engine(
                 unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
 
             stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
-            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str) and (u["unit_id"].startswith("vlm_") or u["unit_id"].startswith("cap_"))]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
 
             record = {
                 "run_id": run_id,

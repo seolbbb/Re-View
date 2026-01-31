@@ -1,7 +1,8 @@
 """비디오 및 파이프라인 실행 관리 어댑터 모듈."""
 
-from __future__ import annotations
-
+import os
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 
@@ -164,6 +165,51 @@ class VideoAdapterMixin:
             .execute()
         )
         return result.data[0] if result.data else {}
+
+    def upload_video(
+        self,
+        video_id: str,
+        video_path: Path,
+        bucket: str = "videos",
+    ) -> Dict[str, Any]:
+        """비디오 원본 파일을 Supabase Storage에 업로드하고 DB를 업데이트합니다.
+
+        Args:
+            video_id: 대상 비디오 UUID
+            video_path: 업로드할 로컬 비디오 파일 경로
+            bucket: 타겟 Storage 버킷 이름 (기본값: 'videos')
+
+        Returns:
+            Dict: 업로드 결과 및 업데이트된 스토리지 키
+        """
+        if not video_path.exists():
+             raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        file_name = video_path.name
+        # 스토리지 경로 구조: {video_id}/{filename}
+        storage_path = f"{video_id}/{file_name}"
+        
+        mime_type, _ = mimetypes.guess_type(str(video_path))
+        if not mime_type:
+            mime_type = "video/mp4"
+
+        # 1. Storage에 파일 업로드
+        with open(video_path, "rb") as f:
+            # 큰 파일일 수 있으므로 그대로 넘김 (supabase-py가 내부에서 처리)
+            self.client.storage.from_(bucket).upload(
+                path=storage_path,
+                file=f,
+                file_options={"content-type": mime_type, "upsert": "true"}
+            )
+        
+        # 2. DB 업데이트
+        updated_video = self.update_video_storage_key(video_id, storage_path)
+        
+        return {
+            "video_id": video_id,
+            "storage_path": storage_path,
+            "updated_video": updated_video
+        }
 
     # NOTE: pipeline_runs 테이블은 더 이상 사용되지 않습니다.
     # 대신 preprocessing_jobs/processing_jobs 테이블을 사용하세요.

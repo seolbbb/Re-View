@@ -407,6 +407,11 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
 
     adapter = get_supabase_adapter()
     try:
+        print("\n" + "=" * 60)
+        print(f"  Re:View API Pipeline: {video_id}")
+        print("=" * 60)
+        print(f"1. Starting 'Preprocessing'...")
+        
         # 1. 전처리 (existing_video_id로 기존 레코드 재사용, DB 중복 생성 방지)
         run_preprocess_pipeline(
             video=video_path,
@@ -419,6 +424,7 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
             _ensure_preprocess_job_finalized(adapter, video_id)
             adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
+        print(f"\n2. Starting 'Processing'...")
         # 2. 처리 파이프라인
         video_name = Path(video_path).stem
         run_processing_pipeline(
@@ -466,6 +472,13 @@ async def upload_video(
         original_filename=file.filename,
     )
     video_id = video["id"]
+    
+    # [User Request] Video 원본 업로드 (video_storage_key 채우기)
+    try:
+        adapter.upload_video(video_id, save_path)
+    except Exception as e:
+        print(f"[API] Warning: Video upload failed but continuing preprocess: {e}")
+
     adapter.update_video_status(video_id, "PREPROCESSING")
 
     background_tasks.add_task(_run_full_pipeline, str(save_path), video_id)
@@ -572,6 +585,10 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
     adapter = get_supabase_adapter()
     tmp_dir = None
     try:
+        print("\n" + "=" * 60)
+        print(f"  Re:View API Pipeline (Storage): {video_id}")
+        print("=" * 60)
+        
         # 1. Storage에서 임시 디렉토리로 다운로드
         tmp_dir = tempfile.mkdtemp()
         original_name = Path(storage_key).name
@@ -582,6 +599,7 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         file_data = adapter.client.storage.from_("videos").download(storage_key)
         tmp_path.write_bytes(file_data)
 
+        print(f"\n1. Starting 'Preprocessing'...")
         # 2. 전처리
         run_preprocess_pipeline(
             video=str(tmp_path),
@@ -591,9 +609,10 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         )
         if adapter:
             _update_video_duration(adapter, video_id, str(tmp_path))
-            _ensure_preprocess_job_finalized(adapter, video_id)
+            _ensure_preprocess_job_finalized(adapter, video_id) # Added this line
             adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
+        print(f"\n2. Starting 'Processing'...") # Added print header
         # 3. 처리 파이프라인
         video_name = tmp_path.stem
         run_processing_pipeline(

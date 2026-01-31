@@ -25,6 +25,7 @@ Examples:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -123,11 +124,15 @@ def run_preprocess_pipeline(
         fallback_inputs = ROOT / "data" / "inputs" / video_value
         if fallback_inputs.exists():
             video_path = fallback_inputs.resolve()
-            print(f"[Info] Resolved video path from data/inputs: {video_path}")
+            # [User Request] 로컬 절대 경로 제거
+            rel_video_path = os.path.relpath(video_path, ROOT)
+            print(f"[Info] Resolved video path from data/inputs: {rel_video_path}")
         else:
              print(f"\n[Error] Video file not found: {video_value}")
              print(f"Please check if the file exists in 'data/inputs/' directory.")
-             print(f"Standard Input Directory: {ROOT / 'data' / 'inputs'}")
+             # [User Request] 로컬 절대 경로 제거
+             rel_input_dir = os.path.relpath(ROOT / 'data' / 'inputs', ROOT)
+             print(f"Standard Input Directory: {rel_input_dir}")
              raise FileNotFoundError(f"Video file not found: {video_value} (checked data/inputs/)")
 
     # 캡처 설정은 config/capture/settings.yaml에서 기본값을 가져온다.
@@ -258,7 +263,7 @@ def run_preprocess_pipeline(
             **kwargs: Any,
         ) -> None:
             """통합 로깅 및 DB 동기화 헬퍼."""
-            comp_map = {"audio": "Audio", "capture": "Capture", "stt": "STT"}
+            comp_map = {"audio": "Audio", "capture": "Capture", "stt": "STT", "video": "Video"}
             comp_name = comp_map.get(stage, "System")
 
             db_elapsed = 0.0
@@ -280,6 +285,8 @@ def run_preprocess_pipeline(
                     include_stt=(stage == "stt"),
                     include_captures=do_capture_sync,
                     include_audio=(stage == "audio"),
+                    include_video=(stage == "video"),
+                    video_path=video_path,
                     **kwargs,
                     table_name=db_table_name,
                 )
@@ -403,7 +410,10 @@ def run_preprocess_pipeline(
             return results
 
         pipeline_logger.log("System", f"Starting Preprocessing (Parallel={parallel})")
-
+        
+        # [User Request] Video 원본 업로드 (video_storage_key 채우기)
+        _finalize_stage("video", 0.0)
+ 
         if parallel:
             import concurrent.futures
             from concurrent.futures import ThreadPoolExecutor
@@ -500,8 +510,11 @@ def run_preprocess_pipeline(
                 print("Database sync skipped or failed (check logs above).")
 
         print("\nPreprocessing completed.")
-        print(f"Outputs: {video_root}")
-        print(f"Benchmark: {report_path}")
+        # [User Request] 로컬 경로를 상대 경로로 표시
+        rel_video_root = os.path.relpath(video_root, ROOT)
+        rel_report_path = os.path.relpath(report_path, ROOT)
+        print(f"Outputs: {rel_video_root}")
+        print(f"Benchmark: {rel_report_path}")
         
         if sync_to_db and db_context:
             try:
@@ -571,6 +584,7 @@ def get_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
+    parser.add_argument("--video-id", dest="existing_video_id", help="Existing video UUID (to avoid re-creating)")
     parser.set_defaults(db_sync=None)
     return parser
 

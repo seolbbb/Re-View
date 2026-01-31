@@ -228,8 +228,10 @@ def sync_preprocess_artifacts_to_db(
     include_stt: bool,
     include_captures: bool,
     include_audio: bool = True,
+    include_video: bool = True,
     stt_payload: Optional[Any] = None,
     captures_payload: Optional[List[Dict[str, Any]]] = None,
+    video_path: Optional[Path] = None,
     audio_path: Optional[Path] = None,
     table_name: str = "captures",
 ) -> Dict[str, Any]:
@@ -239,7 +241,17 @@ def sync_preprocess_artifacts_to_db(
     """
     results: Dict[str, Any] = {"saved": {}, "errors": []}
 
-    # 1. Audio 업로드 (가장 먼저 - 파일 크기가 클 수 있음)
+    # 1. Video 업로드 (Optional)
+    if include_video and video_path and video_path.exists():
+        try:
+            print(f"[DB] Uploading original video: {video_path.name}...")
+            upload_result = adapter.upload_video(video_id, video_path)
+            results["saved"]["video_file"] = 1
+            results["video_storage_key"] = upload_result.get("storage_path")
+        except Exception as e:
+            results["errors"].append(f"video_upload: {str(e)}")
+
+    # 2. Audio 업로드 (가장 먼저 - 파일 크기가 클 수 있음)
     if include_audio:
         try:
             # 오디오 파일 경로 찾기

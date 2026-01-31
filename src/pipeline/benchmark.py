@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
+
+# 프로젝트 루트 경로 (src/pipeline/benchmark.py -> src/pipeline -> src -> root)
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def format_duration(seconds: float) -> str:
@@ -303,6 +307,14 @@ def print_benchmark_report(
             print(f"   Target met! (under {target_str} for a {video_len_str} video)")
         else:
             print(f"   Optimization needed (target: <= {target_str} for a {video_len_str} video)")
+
+    # [User Request] 로컬 경로를 상대 경로로 표시
+    try:
+        # ROOT 기준 상대 경로로 통일
+        rel_output = os.path.relpath(output_root, ROOT)
+    except Exception:
+        rel_output = str(output_root)
+    print(f"\nOutput: {rel_output}")
 
     print("=" * 65 + "\n")
 
