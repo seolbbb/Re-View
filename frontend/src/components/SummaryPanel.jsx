@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StickyNote, RefreshCw, Pencil, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
-import { getVideoSummaries, getVideoStatus, restartProcessing } from '../api/videos';
-import usePolling from '../hooks/usePolling';
+import { getVideoSummaries, restartProcessing } from '../api/videos';
+import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import MarkdownRenderer from './MarkdownRenderer';
 
 function formatMs(ms) {
@@ -20,42 +20,15 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     const prevCountRef = useRef(0);
     const [errorMessage, setErrorMessage] = useState(null);
     const [isRestarting, setIsRestarting] = useState(false);
-    const [pollingKey, setPollingKey] = useState(0);
+    const [streamKey, setStreamKey] = useState(0);
     const prevBatchRef = useRef(-1);
     const staleFlagRef = useRef(false);
 
     // 비디오 상태 확인: 처리 중인지 판단
     const isProcessing = videoStatus && !['DONE', 'FAILED'].includes((videoStatus).toUpperCase());
 
-    const fetchStatus = useCallback(() => {
-        if (!videoId) return Promise.resolve(null);
-        return getVideoStatus(videoId);
-    }, [videoId, pollingKey]);
-
-    const fetchSummaries = useCallback(() => {
-        if (!videoId) return Promise.resolve(null);
-        return getVideoSummaries(videoId);
-    }, [videoId, pollingKey]);
-
-    // 상태 폴링: DONE/FAILED까지
-    const { data: statusData } = usePolling(fetchStatus, {
-        interval: 3000,
-        enabled: !!videoId,
-        until: useCallback((d) => {
-            if (!d) return false;
-            const vs = (d.video_status || '').toUpperCase();
-            return vs === 'DONE' || vs === 'FAILED';
-        }, []),
-    });
-
-    // 요약 폴링: 처리 중일 때만 (배치 완료될 때마다 새 데이터 반영)
-    const { data: summaryData } = usePolling(fetchSummaries, {
-        interval: 4000,
-        enabled: !!videoId && isProcessing,
-    });
-
-    // 상태 데이터 반영
-    useEffect(() => {
+    // SSE 상태 콜백: 상태 데이터 반영
+    const handleStatus = useCallback((statusData) => {
         if (!statusData) return;
         setVideoStatus(statusData.video_status);
         setErrorMessage(statusData.error_message || null);
@@ -94,7 +67,32 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                 stage: jobStatus,
             });
         }
-    }, [statusData]);
+    }, []);
+
+    // SSE 요약 콜백: 새 배치가 추가되면 자동 업데이트
+    const handleSummaries = useCallback((summaryData) => {
+        if (!summaryData?.items) return;
+        const newItems = summaryData.items;
+        if (newItems.length !== prevCountRef.current) {
+            setItems(newItems);
+            prevCountRef.current = newItems.length;
+        }
+    }, []);
+
+    // SSE 완료 콜백
+    const handleDone = useCallback((data) => {
+        if (data?.video_status) {
+            setVideoStatus(data.video_status);
+        }
+    }, []);
+
+    // SSE 스트리밍 (polling 대신 사용)
+    useVideoStatusStream(videoId, {
+        enabled: !!videoId,
+        onStatus: handleStatus,
+        onSummaries: handleSummaries,
+        onDone: handleDone,
+    });
 
     // 초기 요약 로드
     useEffect(() => {
@@ -108,17 +106,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
             })
             .catch(() => { })
             .finally(() => setInitialLoading(false));
-    }, [videoId]);
-
-    // 폴링 결과 반영 (새 배치가 추가되면 자동 업데이트)
-    useEffect(() => {
-        if (!summaryData?.items) return;
-        const newItems = summaryData.items;
-        if (newItems.length !== prevCountRef.current) {
-            setItems(newItems);
-            prevCountRef.current = newItems.length;
-        }
-    }, [summaryData]);
+    }, [videoId, streamKey]);
 
     // 처리 완료 시 최종 요약 한 번 더 로드
     useEffect(() => {
@@ -193,7 +181,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                 setProgressInfo({ current: 0, total: 0, percent: 0, stage: '' });
                 prevBatchRef.current = -1;
                 staleFlagRef.current = false;
-                setPollingKey(k => k + 1);
+                setStreamKey(k => k + 1);
             } catch (err) {
                 setErrorMessage(`재시작 실패: ${err.message || '알 수 없는 오류'}`);
             } finally {

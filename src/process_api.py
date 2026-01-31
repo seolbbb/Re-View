@@ -148,24 +148,18 @@ def process_pipeline(request: ProcessRequest, background_tasks: BackgroundTasks)
 # =============================================================================
 
 
-@app.get("/videos/{video_id}/status")
-def get_video_status(video_id: str) -> Dict[str, Any]:
-    """비디오 상태 및 현재 작업 정보 조회."""
-    adapter = get_supabase_adapter()
-    if not adapter:
-        raise HTTPException(status_code=503, detail="Database not configured")
-    
-    # 비디오 정보 조회
+def _build_status_payload(adapter, video_id: str) -> Dict[str, Any]:
+    """비디오 상태 페이로드를 생성합니다 (SSE/REST 공용)."""
     video = adapter.get_video(video_id)
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-    
+        return None
+
     result = {
         "video_id": video_id,
         "video_status": video.get("status"),
         "error_message": video.get("error_message"),
     }
-    
+
     # 전처리 작업 정보
     preprocess_job_id = video.get("current_preprocess_job_id")
     if preprocess_job_id:
@@ -177,7 +171,7 @@ def get_video_status(video_id: str) -> Dict[str, Any]:
                 "started_at": preprocess_job.get("started_at"),
                 "ended_at": preprocess_job.get("ended_at"),
             }
-    
+
     # 처리 작업 정보
     processing_job_id = video.get("current_processing_job_id")
     if processing_job_id:
@@ -191,8 +185,115 @@ def get_video_status(video_id: str) -> Dict[str, Any]:
                 "started_at": processing_job.get("started_at"),
                 "ended_at": processing_job.get("ended_at"),
             }
-    
+
     return result
+
+
+def _build_summaries_payload(adapter, video_id: str) -> Dict[str, Any]:
+    """요약 페이로드를 생성합니다 (SSE/REST 공용)."""
+    rows = adapter.get_summaries(video_id)
+
+    items = []
+    for r in rows:
+        seg_info = r.get("segments") or {}
+        items.append({
+            "summary_id": r.get("id"),
+            "segment_id": r.get("segment_id"),
+            "segment_index": seg_info.get("segment_index"),
+            "start_ms": seg_info.get("start_ms"),
+            "end_ms": seg_info.get("end_ms"),
+            "summary": r.get("summary"),
+            "created_at": r.get("created_at"),
+        })
+
+    items.sort(key=lambda x: x.get("segment_index") or 0)
+
+    return {
+        "video_id": video_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@app.get("/videos/{video_id}/status")
+def get_video_status(video_id: str) -> Dict[str, Any]:
+    """비디오 상태 및 현재 작업 정보 조회."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    result = _build_status_payload(adapter, video_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return result
+
+
+@app.get("/videos/{video_id}/status/stream")
+def stream_video_status(video_id: str):
+    """비디오 상태 및 요약을 SSE로 스트리밍합니다.
+
+    이벤트 타입:
+    - status: 상태 변경 시 (video_status, processing_job, error_message)
+    - summaries: 새 요약 추가 시 (count, items)
+    - done: 처리 완료/실패 시
+    """
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    # 초기 비디오 존재 확인
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    def event_generator():
+        last_status_json = None
+        last_summary_count = 0
+
+        while True:
+            # 상태 조회
+            status_data = _build_status_payload(adapter, video_id)
+            if status_data is None:
+                yield _format_sse_event("error", {"error": "Video not found"})
+                break
+
+            # 상태 변경 시에만 이벤트 발생
+            status_json = json.dumps(status_data, sort_keys=True, default=str)
+            if status_json != last_status_json:
+                yield _format_sse_event("status", status_data)
+                last_status_json = status_json
+
+            # 현재 상태 확인
+            current_status = (status_data.get("video_status") or "").upper()
+
+            # 처리 중일 때만 요약 체크
+            if current_status not in ("DONE", "FAILED"):
+                summaries = _build_summaries_payload(adapter, video_id)
+                if summaries["count"] > last_summary_count:
+                    yield _format_sse_event("summaries", summaries)
+                    last_summary_count = summaries["count"]
+
+            # 완료/실패 시 done 이벤트 후 종료
+            if current_status in ("DONE", "FAILED"):
+                # 최종 요약 전송
+                final_summaries = _build_summaries_payload(adapter, video_id)
+                if final_summaries["count"] > last_summary_count:
+                    yield _format_sse_event("summaries", final_summaries)
+                yield _format_sse_event("done", {"video_status": current_status})
+                break
+
+            time.sleep(1)  # 1초 간격 DB 체크
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/videos/{video_id}/progress")
@@ -292,36 +393,12 @@ def get_video_summaries(video_id: str) -> Dict[str, Any]:
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
-    
+
     video = adapter.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-        
-    # summaries 테이블 조회 (segments 조인됨)
-    rows = adapter.get_summaries(video_id)
-    
-    # 응답 포맷 구성
-    items = []
-    for r in rows:
-        seg_info = r.get("segments") or {}
-        items.append({
-            "summary_id": r.get("id"),
-            "segment_id": r.get("segment_id"),
-            "segment_index": seg_info.get("segment_index"),
-            "start_ms": seg_info.get("start_ms"),
-            "end_ms": seg_info.get("end_ms"),
-            "summary": r.get("summary"),  # JSONB
-            "created_at": r.get("created_at"),
-        })
-        
-    # segment_index 기준 정렬
-    items.sort(key=lambda x: x.get("segment_index") or 0)
-    
-    return {
-        "video_id": video_id,
-        "count": len(items),
-        "items": items,
-    }
+
+    return _build_summaries_payload(adapter, video_id)
 
 
 @app.get("/videos/{video_id}/evidence")
