@@ -325,7 +325,7 @@ class JobAdapterMixin:
         Args:
             video_id: 비디오 ID
             vlm_results: VLM 결과 리스트
-                [{"id": "cap_001", "timestamp_ms": 1000, "extracted_text": "..."}, ...]
+                [{"id": "cap_001", "time_ranges": [...], "extracted_text": "..."}, ...]
             processing_job_id: 처리 작업 ID
 
         Returns:
@@ -334,12 +334,12 @@ class JobAdapterMixin:
         if not vlm_results:
             return []
 
-        # capture_id가 없는 항목이 있으면 timestamp_ms로 매핑 테이블 생성
-        needs_lookup = any(not item.get("capture_id") and item.get("timestamp_ms") is not None for item in vlm_results)
+        # capture_id가 없는 항목이 있으면 cap_id로 매핑 테이블 생성
+        needs_lookup = any(not item.get("capture_id") for item in vlm_results)
         capture_map = {}
 
         if needs_lookup:
-            # cap_id를 기준으로 mapping 테이블 생성 (start_ms 컬럼이 더 이상 존재하지 않음)
+            # cap_id를 기준으로 mapping 테이블 생성
             captures = self.client.table("captures").select("id,cap_id").eq("video_id", video_id).execute()
             if captures.data:
                 for cap in captures.data:
@@ -357,14 +357,15 @@ class JobAdapterMixin:
             if not db_capture_id and cap_id in capture_map:
                 db_capture_id = capture_map[cap_id]
 
-            timestamp_ms = vlm.get("timestamp_ms")
+            # time_ranges 사용 (captures와 동일한 스키마)
+            time_ranges = vlm.get("time_ranges")
 
             records.append({
                 "video_id": video_id,
                 "processing_job_id": processing_job_id,
                 "capture_id": db_capture_id,
                 "cap_id": cap_id,  # vlm.json의 id 필드
-                "timestamp_ms": timestamp_ms,
+                "time_ranges": time_ranges,
                 "extracted_text": vlm.get("extracted_text"),
             })
 
