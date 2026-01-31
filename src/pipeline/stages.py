@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import os
 import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
 
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
@@ -259,6 +262,13 @@ def run_capture(
     return metadata
 
 
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 def _get_sort_key_timestamp(item: Dict[str, Any]) -> int:
     """manifest 아이템에서 정렬용 타임스탬프(첫 등장 시간)를 추출한다."""
     # 1. timestamp_ms (레거시/공통)
@@ -379,6 +389,7 @@ def run_vlm_for_batch(
     show_progress: bool = False,
     start_ms: Optional[int] = None,
     end_ms: Optional[int] = None,
+    video_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """배치 범위만 VLM 처리해 batch 단위의 vlm.json을 생성한다."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -412,6 +423,12 @@ def run_vlm_for_batch(
         raise ValueError("manifest_json 또는 batch_manifest가 제공되어야 합니다.")
 
     image_paths: List[str] = []
+    
+    # [Fix] Storage Fallback 준비
+    # 로컬 파일이 없을 경우 Supabase Storage에서 URL을 가져오기 위해 Adapter 초기화
+    from src.db import get_supabase_adapter
+    adapter = None
+
     for item in sorted(
         (x for x in filtered_manifest_items if isinstance(x, dict)),
         key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
@@ -419,7 +436,37 @@ def run_vlm_for_batch(
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
             continue
-        image_paths.append(str(captures_dir / file_name))
+            
+        local_path = captures_dir / file_name
+        if local_path.exists():
+            image_paths.append(str(local_path))
+        else:
+            # 로컬에 없으면 Storage URL 사용 시도
+            if adapter is None:
+                adapter = get_supabase_adapter()
+                
+            storage_path = item.get("storage_path")
+            # DB에 storage_path가 없으면 표준 경로(video_id/filename)로 추론
+            if not storage_path:
+                vid = item.get("video_id") or video_id # 전달받은 video_id 우선 사용
+                if vid:
+                    storage_path = f"{vid}/{file_name}"
+            
+            if adapter and storage_path:
+                # Signed URL 생성 (기본 1시간)
+                # 만약 public bucket이라면 get_public_url을 써도 되지만, 
+                # CaptureAdapterMixin이 get_signed_url을 제공하므로 이를 활용
+                try:
+                    # CaptureAdapterMixin의 메서드 활용
+                    url = adapter.get_signed_url(storage_path, bucket="captures")
+                    if url:
+                         image_paths.append(url)
+                         continue
+                except Exception as e:
+                    print(f"{_get_timestamp()} [VLM] Failed to get signed url for {file_name}: {e}")
+
+            # Fallback 실패 시 로컬 경로 추가 (이후 에러 발생)
+            image_paths.append(str(local_path))
 
     if not image_paths:
         empty_vlm = {"items": [], "duration_ms": 0}
@@ -464,13 +511,13 @@ def run_vlm_for_batch(
              existing_data = json.loads(vlm_json_path.read_text(encoding="utf-8"))
              if existing_data.get("items"):
                  if show_progress:
-                     print(f"[VLM] reuse: Found existing vlm.json with {len(existing_data['items'])} items. Skipping inference.", flush=True)
+                     print(f"{_get_timestamp()} [VLM] reuse: Found existing vlm.json with {len(existing_data['items'])} items. Skipping inference.", flush=True)
                      # [User Request] Show reused items count/info
                      for i, item in enumerate(existing_data['items'][:3], start=1):
                          label = item.get('label', 'N/A')
-                         print(f"      - Reused Item {i}: {label}...", flush=True)
+                         print(f"{_get_timestamp()}       - Reused Item {i}: {label}...", flush=True)
                      if len(existing_data['items']) > 3:
-                         print(f"      - ... and {len(existing_data['items']) - 3} more items.", flush=True)
+                         print(f"{_get_timestamp()}       - ... and {len(existing_data['items']) - 3} more items.", flush=True)
 
                  return {
                     "vlm_raw_json": str(raw_path) if raw_path.exists() else "",
@@ -479,7 +526,7 @@ def run_vlm_for_batch(
                  }
         except Exception as e:
             if show_progress:
-                print(f"[VLM] reuse check failed: {e}", flush=True)
+                print(f"{_get_timestamp()} [VLM] reuse check failed: {e}", flush=True)
 
     results = extractor.extract_features(
         image_paths,
@@ -739,7 +786,7 @@ def run_batch_fusion_pipeline(
                 total_batches += 1
 
     print(
-        f"\nPipeline batches: {total_captures} images across {total_batches} groups "
+        f"\n{_get_timestamp()} Pipeline batches: {total_captures} images across {total_batches} groups "
         f"(group size: ~{batch_size})"
     )
 
@@ -748,9 +795,9 @@ def run_batch_fusion_pipeline(
     if adapter and processing_job_id and not preserve_files:
         try:
             adapter.update_processing_job_progress(processing_job_id, 0, total_batches)
-            print(f"  [DB] Initialized total_batch to {total_batches}")
+            print(f"{_get_timestamp()}   [DB] Initialized total_batch to {total_batches}")
         except Exception as e:
-            print(f"[DB] Warning: Failed to initialize total_batch: {e}")
+            print(f"{_get_timestamp()} [DB] Warning: Failed to initialize total_batch: {e}")
 
     batch_ranges = []
     for i in range(total_batches):
@@ -849,7 +896,7 @@ def run_batch_fusion_pipeline(
     first_batch = True
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
-            print("\nWaiting 5s to avoid API rate limiting...")
+            print(f"\n{_get_timestamp()} Waiting 5s to avoid API rate limiting...")
             t0 = time.perf_counter()
             time.sleep(5)
             timer.record_stage("waiting", time.perf_counter() - t0)
@@ -883,7 +930,7 @@ def run_batch_fusion_pipeline(
             # 여기서는 verbose 로그와 섞일 때 가독성을 위해 \r 대신 일반 출력을 선택하거나, 
             # 상태 변경 시에만 줄바꿈을 하도록 유도.
             # 하지만 사용자가 "전부 로깅"을 원했으므로 \r을 제거하고 매번 새로운 줄에 출력하도록 함.
-            print(f"Batch {current_batch_global_idx}: {seg_info}{' '.join(msg)}", flush=True)
+            print(f"{_get_timestamp()} Batch {current_batch_global_idx}: {seg_info}{' '.join(msg)}", flush=True)
 
         _print_status()
 
@@ -907,6 +954,7 @@ def run_batch_fusion_pipeline(
                 batch_size=vlm_batch_size,
                 concurrency=vlm_concurrency,
                 show_progress=True, 
+                video_id=video_id,
             )
             batch_vlm_elapsed = time.perf_counter() - t_vlm
         
@@ -1123,6 +1171,45 @@ def run_batch_fusion_pipeline(
     # 전체 VLM 시간을 합산하여 'vlm' 단계로 기록 (리포트용)
     timer.record_stage("vlm", total_vlm_elapsed)
     fusion_info["timings"]["vlm_sec"] = total_vlm_elapsed
+
+    # [Standardization] 배치별 vlm.json 및 stt.json을 루트로 통합/복제 (단일 모드 호환성)
+    root_vlm_path = video_root / "vlm.json"
+    all_vlm_items = []
+    # batches 폴더 내의 각 배치에서 vlm.json의 items를 수집
+    batches_dir = video_root / "batches"
+    if batches_dir.exists():
+        for batch_dir in sorted(batches_dir.iterdir()):
+            if not batch_dir.is_dir():
+                continue
+            batch_vlm_path = batch_dir / "vlm.json"
+            if batch_vlm_path.exists():
+                try:
+                    b_data = json.loads(batch_vlm_path.read_text(encoding="utf-8"))
+                    items = b_data.get("items", [])
+                    if items:
+                        all_vlm_items.extend(items)
+                except Exception as e:
+                    print(f"[Warning] Failed to read {batch_vlm_path}: {e}")
+    
+    if all_vlm_items:
+        # 시간순 정렬
+        all_vlm_items.sort(key=lambda x: int(x.get("timestamp_ms", 0)))
+        write_json(root_vlm_path, {"items": all_vlm_items})
+        print(f"  [Standardization] Consolidated {len(all_vlm_items)} VLM items to {root_vlm_path.relative_to(ROOT)}")
+
+    # stt.json이 루트에 없으면 (일반적으로는 이미 존재함) 검색해서 복제 또는 링크
+    root_stt_path = video_root / "stt.json"
+    if not root_stt_path.exists():
+        # 혹시 batches 내부에 있는지 확인 (보통은 루트에 있음)
+        for batch_dir in sorted(batches_dir.iterdir()):
+            if not batch_dir.is_dir():
+                continue
+            batch_stt_path = batch_dir / "stt.json"
+            if batch_stt_path.exists():
+                import shutil
+                shutil.copy2(batch_stt_path, root_stt_path)
+                print(f"  [Standardization] Copied stt.json to {root_stt_path.relative_to(ROOT)}")
+                break
 
     fusion_info["segment_count"] = cumulative_segment_count
 
