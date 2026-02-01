@@ -128,7 +128,7 @@ def build_fusion_vlm_payload(
     missing: List[str] = []
     items: List[Dict[str, Any]] = []
     
-    for entry in manifest_entries:
+    for idx, entry in enumerate(manifest_entries):
         file_name = str(entry["file_name"])
         
         # Manifest에는 있는데 VLM 결과가 없으면 에러 (누락 방지)
@@ -136,14 +136,23 @@ def build_fusion_vlm_payload(
             missing.append(file_name)
             continue
             
-        entry_id = entry.get("id")
+        cap_id = entry.get("id")
+        
+        # ID Refactoring: cap_xxx -> vlm_xxx
+        if cap_id and str(cap_id).startswith("cap_"):
+            vlm_id = str(cap_id).replace("cap_", "vlm_")
+        else:
+            vlm_id = f"vlm_{idx:03d}"
+
         time_ranges = entry.get("time_ranges")
         timestamp_ms = entry.get("timestamp_ms")  # 하위 호환성을 위해 유지
+        
         items.append({
-            "time_ranges": time_ranges,
-            "timestamp_ms": timestamp_ms,  # 하위 호환성
+            "id": vlm_id,
+            "cap_id": cap_id,
             "extracted_text": image_text[file_name], 
-            "id": entry_id
+            "time_ranges": time_ranges,
+            "timestamp_ms": timestamp_ms,
         })
 
     if missing:
