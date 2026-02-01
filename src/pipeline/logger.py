@@ -102,7 +102,7 @@ class ColumnLogger:
             if line_parts:
                 final_line = "    ".join(line_parts)
                 # 현재 시간을 맨 앞에 추가
-                timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                timestamp = datetime.now().strftime('%Y-%m-%d | %H:%M:%S.%f')[:-3]
                 print(f"[{timestamp}] {final_line}")
                 sys.stdout.flush()
 
