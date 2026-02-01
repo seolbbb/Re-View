@@ -15,7 +15,7 @@
 import json
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 
 from .settings import get_capture_settings
 from .tools.hybrid_extractor import HybridSlideExtractor
@@ -28,6 +28,7 @@ def process_single_video_capture(
     dedupe_threshold: Optional[float] = None,
     min_interval: Optional[float] = None,
     write_manifest: bool = True,
+    callback: Optional[Any] = None,
 ) -> List[dict]:
     """
     [Usage File] run_preprocess_pipeline.py
@@ -41,6 +42,7 @@ def process_single_video_capture(
     - dedupe_threshold (Optional[float]): 중복 제거 민감도 (현재 로직에서는 Persistence에 통합됨)
     - min_interval (Optional[float]): 캡처 간 최소 간격
     - write_manifest (bool): 처리 완료 후 개별 manifest 파일을 생성할지 여부
+    - callback (Optional[Callable]): 스트리밍 처리를 위한 콜백 함수
     
     [Returns]
     - List[dict]: 추출된 모든 슬라이드의 정보 (timestamp, image_path 등)
@@ -57,7 +59,9 @@ def process_single_video_capture(
     # 파라미터 결정 (전달된 인자가 없으면 settings.yaml 기본값 사용)
     resolved_drop_ratio = settings.persistence_drop_ratio if scene_threshold is None else scene_threshold
     
-    print(f"[Capture] Processing: {video_name}")
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y-%m-%d | %H:%M:%S.%f')[:-3]
+    print(f"[{timestamp}] [Capture] Processing: {video_name}")
     print(f"   - Config: drop={resolved_drop_ratio}, persist={settings.persistence_threshold}, min_feat={settings.min_orb_features}, dedup(phash={settings.dedup_phash_threshold}, dist={settings.dedup_orb_distance}, sim={settings.dedup_sim_threshold})")
     
     # 추출기 초기화
@@ -70,7 +74,8 @@ def process_single_video_capture(
         min_orb_features=settings.min_orb_features,
         dedup_phash_threshold=settings.dedup_phash_threshold,
         dedup_orb_distance=settings.dedup_orb_distance,
-        dedup_sim_threshold=settings.dedup_sim_threshold
+        dedup_sim_threshold=settings.dedup_sim_threshold,
+        callback=callback
     )
 
     start_time = time.time()

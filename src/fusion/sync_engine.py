@@ -45,7 +45,14 @@ def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[in
 
 
 def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]:
-    """vlm.json을 표준 item 리스트로 정리한다."""
+    """vlm.json을 표준 item 리스트로 정리한다.
+    
+    새 구조 (time_ranges 배열):
+        각 항목이 id, cap_id, extracted_text, time_ranges를 가짐
+    
+    Legacy 구조 (timestamp_ms):
+        각 항목이 timestamp_ms, extracted_text, id를 가짐
+    """
     payload = read_json(path, "vlm.json")
     items = payload.get("items", [])
     if not isinstance(items, list):
@@ -53,12 +60,37 @@ def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]
 
     normalized: List[Dict[str, object]] = []
     for item in items:
-        try:
-            timestamp_ms = int(item["timestamp_ms"])
-            extracted_text = str(item.get("extracted_text", "")).strip()
-        except KeyError as exc:
-            raise ValueError(f"Missing required keys in vlm.json: {item}") from exc
-        normalized.append({"timestamp_ms": timestamp_ms, "extracted_text": extracted_text, "id": item.get("id")})
+        extracted_text = str(item.get("extracted_text", "")).strip()
+        item_id = item.get("id")
+        cap_id = item.get("cap_id")
+        
+        # 새 구조: time_ranges 배열
+        time_ranges = item.get("time_ranges")
+        if time_ranges and isinstance(time_ranges, list):
+            for rng in time_ranges:
+                if not isinstance(rng, dict):
+                    continue
+                start_ms = rng.get("start_ms")
+                if start_ms is not None:
+                    normalized.append({
+                        "timestamp_ms": int(start_ms),
+                        "extracted_text": extracted_text,
+                        "id": item_id,
+                        "cap_id": cap_id,
+                        "time_range": rng  # 세그먼트 생성 시 활용
+                    })
+        # Legacy 구조: timestamp_ms
+        elif "timestamp_ms" in item:
+            try:
+                timestamp_ms = int(item["timestamp_ms"])
+                normalized.append({
+                    "timestamp_ms": timestamp_ms,
+                    "extracted_text": extracted_text,
+                    "id": item_id
+                })
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"Missing required keys in vlm.json: {item}") from exc
+    
     duration_ms = payload.get("duration_ms")
     duration_ms = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
     return sorted(normalized, key=lambda x: x["timestamp_ms"]), duration_ms
@@ -118,18 +150,18 @@ def _load_manifest_scores(
         time_ranges = item.get("time_ranges")
         if isinstance(time_ranges, list) and time_ranges:
             for rng in time_ranges:
-                    if isinstance(rng, dict) and "start_ms" in rng:
-                        try:
-                            start_ms = int(rng["start_ms"])
-                            if start_ms not in scores or diff_score > scores[start_ms]:
-                                scores[start_ms] = diff_score
-                        except (TypeError, ValueError):
-                            continue
+                if isinstance(rng, dict) and "start_ms" in rng:
+                    try:
+                        start_ms = int(rng.get("start_ms") or 0)
+                        if start_ms not in scores or diff_score > scores[start_ms]:
+                            scores[start_ms] = diff_score
+                    except (TypeError, ValueError):
+                        continue
 
         # fallback: top-level start_ms
         if "start_ms" in item:
             try:
-                start_ms = int(item["start_ms"])
+                start_ms = int(item.get("start_ms") or 0)
                 if start_ms not in scores or diff_score > scores[start_ms]:
                     scores[start_ms] = diff_score
             except (TypeError, ValueError):
@@ -317,13 +349,13 @@ def _extract_visual_units(
             kept_lines.append(text)
             deduped_lines.append(text)
         if kept_lines:
-            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines, "id": item.get("id")})
+            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines, "id": item.get("id"), "cap_id": item.get("cap_id")})
 
     visual_units: List[Dict[str, object]] = []
     for idx, item in enumerate(item_buffers, start=1):
         visual_units.append(
             {
-                "unit_id": item.get("id") or f"v{idx}",
+                "unit_id": item.get("cap_id") or item.get("id") or f"v{idx}",
                 "timestamp_ms": int(item["timestamp_ms"]),
                 "text": "\n".join(item["lines"]),
             }
@@ -424,7 +456,7 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
             )
 
             stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
-            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str) and (u["unit_id"].startswith("vlm_") or u["unit_id"].startswith("cap_"))]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
 
             segments_units_handle.write(
                 json.dumps(
@@ -459,6 +491,7 @@ def run_batch_sync_engine(
     time_range: Tuple[int, int],
     sync_config: Dict[str, object],
     segment_id_offset: int = 0,
+    run_id_override: Optional[str] = None,
 ) -> Dict[str, object]:
     """배치 단위로 Sync를 실행합니다.
 
@@ -554,8 +587,11 @@ def run_batch_sync_engine(
 
     refined_segments = sorted(refined_segments, key=lambda x: (x.start_ms, x.end_ms))
 
-    # run_id 생성
-    run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
+    # run_id 생성 (override가 있으면 우선 사용)
+    if run_id_override:
+        run_id = run_id_override
+    else:
+        run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
 
     # 출력 디렉토리 생성
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -577,9 +613,11 @@ def run_batch_sync_engine(
                 unit["end_ms"] = int(unit["end_ms"]) + start_ms
 
             # VLM 아이템 선택 (조정된 시간 기준)
+            # manifest_scores도 배치 상대 시간으로 조정하여 전달
+            adjusted_scores = {int(k) - start_ms: v for k, v in manifest_scores.items() if start_ms <= int(k) < end_ms}
             selected_vlm_items = _select_vlm_items(
                 adjusted_vlm_items,
-                {},  # manifest_scores는 원래 시간 기준이라 사용 안 함
+                adjusted_scores,
                 segment.start_ms,
                 segment.end_ms,
                 max_visual_items,
@@ -594,7 +632,7 @@ def run_batch_sync_engine(
                 unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
 
             stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
-            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str) and (u["unit_id"].startswith("vlm_") or u["unit_id"].startswith("cap_"))]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
 
             record = {
                 "run_id": run_id,
