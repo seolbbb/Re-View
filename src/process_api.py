@@ -778,6 +778,7 @@ class ChatRequest(BaseModel):
     video_id: str
     message: str
     session_id: Optional[str] = None
+    reasoning_mode: Optional[str] = None  # "flash" or "thinking"
 
 
 class ChatResponse(BaseModel):
@@ -798,6 +799,9 @@ def _get_or_create_chat_session(request: ChatRequest):
     if request.session_id:
         session = _chat_sessions.get(request.session_id)
     if session:
+        # Update reasoning_mode if provided in request
+        if request.reasoning_mode and request.reasoning_mode in ("flash", "thinking"):
+            session._state["reasoning_mode"] = request.reasoning_mode
         return session
 
     adapter = get_supabase_adapter()
@@ -814,6 +818,10 @@ def _get_or_create_chat_session(request: ChatRequest):
         "video_name": video_name,
         "chat_mode": "full",
     }
+    # Set reasoning_mode if provided
+    if request.reasoning_mode and request.reasoning_mode in ("flash", "thinking"):
+        initial_state["reasoning_mode"] = request.reasoning_mode
+
     return _chat_sessions.create(
         request.video_id,
         video_name,
