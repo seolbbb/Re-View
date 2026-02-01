@@ -349,13 +349,13 @@ def _extract_visual_units(
             kept_lines.append(text)
             deduped_lines.append(text)
         if kept_lines:
-            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines, "id": item.get("id")})
+            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines, "id": item.get("id"), "cap_id": item.get("cap_id")})
 
     visual_units: List[Dict[str, object]] = []
     for idx, item in enumerate(item_buffers, start=1):
         visual_units.append(
             {
-                "unit_id": item.get("id") or f"v{idx}",
+                "unit_id": item.get("cap_id") or item.get("id") or f"v{idx}",
                 "timestamp_ms": int(item["timestamp_ms"]),
                 "text": "\n".join(item["lines"]),
             }
@@ -491,6 +491,7 @@ def run_batch_sync_engine(
     time_range: Tuple[int, int],
     sync_config: Dict[str, object],
     segment_id_offset: int = 0,
+    run_id_override: Optional[str] = None,
 ) -> Dict[str, object]:
     """배치 단위로 Sync를 실행합니다.
 
@@ -586,8 +587,11 @@ def run_batch_sync_engine(
 
     refined_segments = sorted(refined_segments, key=lambda x: (x.start_ms, x.end_ms))
 
-    # run_id 생성
-    run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
+    # run_id 생성 (override가 있으면 우선 사용)
+    if run_id_override:
+        run_id = run_id_override
+    else:
+        run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
 
     # 출력 디렉토리 생성
     output_dir.mkdir(parents=True, exist_ok=True)
