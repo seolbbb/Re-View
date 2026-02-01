@@ -192,7 +192,7 @@ class ContentAdapterMixin:
 
         query = (
             self.client.table("vlm_results")
-            .select("cap_id, extracted_text, timestamp_ms")
+            .select("cap_id, extracted_text, time_ranges")
             .eq("video_id", video_id)
         )
         if len(cleaned) == 1:

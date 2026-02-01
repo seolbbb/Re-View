@@ -68,10 +68,10 @@ def build_fusion_vlm_payload(
                 "time_ranges": [],
                 "first_start_ms": float('inf'),  # 정렬용
             }
-        
-        # time_ranges 배열 추출
         time_ranges = item.get("time_ranges")
         if time_ranges and isinstance(time_ranges, list):
+            # time_ranges에서 첫 번째 start_ms를 정렬 기준으로 사용
+            first_start_ms = None
             for rng in time_ranges:
                 if not isinstance(rng, dict):
                     continue
@@ -85,7 +85,6 @@ def build_fusion_vlm_payload(
                     # 정렬 기준: 첫 번째 시작 시간
                     if int(start_ms) < image_time_ranges[file_name]["first_start_ms"]:
                         image_time_ranges[file_name]["first_start_ms"] = int(start_ms)
-        # Fallback for old schema (start_ms, end_ms)
         elif "start_ms" in item:
             try:
                 start_ms = int(item["start_ms"])
@@ -163,7 +162,8 @@ def build_fusion_vlm_payload(
             "id": vlm_id,
             "cap_id": img_data["cap_id"],
             "extracted_text": image_text[file_name],
-            "time_ranges": sorted_ranges
+            "time_ranges": sorted_ranges,
+            "timestamp_ms": img_data["first_start_ms"]
         })
 
     if missing:

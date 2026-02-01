@@ -23,7 +23,7 @@
   - `src/capture/process_content.py`: 캡쳐 실행 엔트리(슬라이드 캡쳐 + manifest 생성)
   - `src/capture/tools/hybrid_extractor.py`: 슬라이드 전환 감지/중복 제거 핵심 알고리즘
 - VLM: `src/vlm/`
-  - `src/vlm/vlm_engine.py`: OpenRouter VLM 호출 + 결과 수집
+- `src/vlm/vlm_engine.py`: Qwen VLM 호출 + 결과 수집
   - `src/vlm/vlm_fusion.py`: vlm_raw.json → vlm.json 변환
 - Fusion: `src/fusion/`
   - `src/fusion/sync_engine.py`: STT/VLM 동기화 + 세그먼트 생성
@@ -147,12 +147,12 @@ video.mp4
 프로젝트 루트 `.env`를 읽습니다. 필요한 값만 설정하세요.
 
 ```env
-# OpenRouter (VLM)
-OPENROUTER_API_KEYS=key1,key2
+# Qwen (VLM)
+QWEN_API_KEYS=key1,key2
 # 또는
-OPENROUTER_API_KEY_1=key1
-OPENROUTER_API_KEY_2=key2
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+QWEN_API_KEY_1=key1
+QWEN_API_KEY_2=key2
+QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
 # Gemini Developer API (Summarizer/Judge)
 GOOGLE_API_KEYS=key1,key2

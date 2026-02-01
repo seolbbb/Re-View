@@ -332,7 +332,7 @@ class JobAdapterMixin:
         Args:
             video_id: 비디오 ID
             vlm_results: VLM 결과 리스트
-                [{"id": "cap_001", "timestamp_ms": 1000, "extracted_text": "..."}, ...]
+                [{"id": "cap_001", "time_ranges": [...], "extracted_text": "..."}, ...]
             processing_job_id: 처리 작업 ID
 
         Returns:

@@ -1,4 +1,4 @@
-"""OpenRouter 오류 파싱과 메시지 정리를 담당한다."""
+"""Qwen 오류 파싱과 메시지 정리를 담당한다."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _extract_provider_name(message: str) -> Optional[str]:
 
 
 def _extract_provider_from_error(error: Any) -> Optional[str]:
-    """OpenRouter error metadata에서 provider_name을 추출한다."""
+    """Qwen error metadata에서 provider_name을 추출한다."""
     if not isinstance(error, dict):
         return None
     metadata = error.get("metadata")
@@ -78,8 +78,8 @@ def format_service_unavailable_message(
     )
 
 
-def format_openrouter_error(error: Any) -> str:
-    """OpenRouter 오류 payload를 사용자 메시지로 정리한다."""
+def format_qwen_error(error: Any) -> str:
+    """Qwen 오류 payload를 사용자 메시지로 정리한다."""
     if isinstance(error, dict):
         message = str(error.get("message", ""))
         code = error.get("code")
@@ -91,12 +91,12 @@ def format_openrouter_error(error: Any) -> str:
             parts.append(f"code={code}")
         if provider:
             parts.append(f"provider={provider}")
-        return "OpenRouter error: " + ", ".join(parts) if parts else "OpenRouter error"
-    return f"OpenRouter error: {error}"
+        return "Qwen error: " + ", ".join(parts) if parts else "Qwen error"
+    return f"Qwen error: {error}"
 
 
 def extract_error_code(error: Any) -> Optional[int]:
-    """OpenRouter error dict에서 code 값을 추출한다."""
+    """Qwen error dict에서 code 값을 추출한다."""
     if isinstance(error, dict):
         code = error.get("code")
         if isinstance(code, int):
