@@ -46,7 +46,8 @@ class HybridSlideExtractor:
         min_orb_features: int = 50,
         dedup_phash_threshold: int = 12,
         dedup_orb_distance: int = 60,
-        dedup_sim_threshold: float = 0.5
+        dedup_sim_threshold: float = 0.5,
+        callback: Optional[Any] = None
     ):
         """
         [Usage File] src/capture/process_content.py
@@ -59,6 +60,7 @@ class HybridSlideExtractor:
         - sample_interval_sec (float): 프레임 분석 간격 (기본 0.5초)
         - persistence_threshold (int): 특징점이 유효한 요소로 인정받기 위한 최소 지속 횟수
         - min_orb_features (int): 유의미한 슬라이드로 판단하기 위한 최소 특징점 개수
+        - callback (Optional[Callable[[str, Dict[str, Any]], None]]): 변경 사항 발생 시 호출될 콜백 (event_type, slide_data)
         """
         self.video_path = video_path
         self.output_dir = output_dir
@@ -69,6 +71,7 @@ class HybridSlideExtractor:
         self.dedup_phash_threshold = dedup_phash_threshold
         self.dedup_orb_distance = dedup_orb_distance
         self.dedup_sim_threshold = dedup_sim_threshold
+        self.callback = callback
         
         # 특징점 추출 엔진 설정 (ORB: 빠른 속도와 적절한 성능 제공)
         self.orb = cv2.ORB_create(nfeatures=1500)
@@ -283,6 +286,9 @@ class HybridSlideExtractor:
             # 예: DIFFUSION_6_002
             fname_stem = Path(dup_slide['file_name']).stem
             pipeline_logger.log("Capture", f"Grouped: {fname_stem}")
+            
+            if self.callback:
+                self.callback("update", dup_slide)
             return
 
         # === Case B: 신규 슬라이드 ===
@@ -310,6 +316,9 @@ class HybridSlideExtractor:
         # 예: DIFFUSION_6_003
         fname_stem = Path(filename).stem
         pipeline_logger.log("Capture", f"Saved: {fname_stem}")
+
+        if self.callback:
+            self.callback("new", new_slide)
 
     def process(self, video_name: str = "video") -> List[dict]:
         """
@@ -421,5 +430,7 @@ class HybridSlideExtractor:
                 "time_ranges": merged_ranges
             })
             
-        print(f"[Capture] Completed. Total Unique Slides: {len(final_manifest)}")
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d | %H:%M:%S.%f')[:-3]
+        print(f"[{timestamp}] [Capture] Completed. Total Unique Slides: {len(final_manifest)}")
         return final_manifest
