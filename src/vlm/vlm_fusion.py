@@ -153,8 +153,14 @@ def build_fusion_vlm_payload(
         # time_ranges 정렬 (start_ms 기준)
         sorted_ranges = sorted(img_data["time_ranges"], key=lambda x: x["start_ms"])
             
+        vlm_id = img_data["cap_id"]
+        if vlm_id.startswith("cap_"):
+            vlm_id = vlm_id.replace("cap_", "vlm_")
+        else:
+            vlm_id = f"vlm_{idx:03d}"
+            
         items.append({
-            "id": img_data["cap_id"],
+            "id": vlm_id,
             "cap_id": img_data["cap_id"],
             "extracted_text": image_text[file_name],
             "time_ranges": sorted_ranges
