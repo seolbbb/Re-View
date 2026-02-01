@@ -883,6 +883,25 @@ def run_batch_fusion_pipeline(
     }
 
     cumulative_segment_count = 0
+    
+    # [Fix] Resume Support: If starting from a later batch, count segments from previous batches
+    if start_batch_index > 0:
+        print(f"{_get_timestamp()} [Pipeline] Checking previous batches for segment offset...")
+        for i in range(start_batch_index):
+            prev_batch_idx = i + 1
+            prev_batch_dir = video_root / "batches" / f"batch_{prev_batch_idx}"
+            prev_units_path = prev_batch_dir / "fusion" / "segments_units.jsonl"
+            
+            if prev_units_path.exists():
+                try:
+                    line_count = sum(1 for _ in open(prev_units_path, "rb"))
+                    cumulative_segment_count += line_count
+                    print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: Found {line_count} segments")
+                except Exception as e:
+                    print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: Failed to read segments: {e}")
+            else:
+                print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: No segments file found (skipping count)")
+        print(f"{_get_timestamp()} [Pipeline] Initial cumulative_segment_count set to {cumulative_segment_count}")
     previous_context = ""
 
     accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
