@@ -81,6 +81,11 @@ def load_genai() -> Any:
     return genai
 
 
+def _get_single_api_key(env_base: str) -> Optional[str]:
+    keys = _load_gemini_keys([env_base])
+    return keys[0] if keys else None
+
+
 def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
     """fusion config 기준으로 Gemini 클라이언트를 생성한다."""
     genai = load_genai()
@@ -111,7 +116,7 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
         if llm_cfg.vertex_ai.auth_mode == "adc":
             client = genai.Client(vertexai=True, project=project, location=location)
         else:
-            api_key = os.getenv(llm_cfg.vertex_ai.api_key_env)
+            api_key = _get_single_api_key(llm_cfg.vertex_ai.api_key_env)
             if not api_key:
                 raise ValueError("API key for Vertex AI express_api_key mode is missing.")
             client = genai.Client(
