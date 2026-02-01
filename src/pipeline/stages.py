@@ -1186,7 +1186,7 @@ def run_batch_fusion_pipeline(
                         video_id,
                         processing_job_id,
                         batch_units_path,
-                        offset=cumulative_segment_count - new_segment_count,
+                        offset=cumulative_segment_count - current_batch_segments_count,
                     )
 
                 if batch_summaries_path.exists():
@@ -1196,8 +1196,8 @@ def run_batch_fusion_pipeline(
                 upload_judge_result(
                     adapter, video_id, processing_job_id, batch_dir / "judge.json", current_batch_global_idx
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[DB] Error uploading batch fusion results: {e}")
 
     # [END of Batch Loop]
 
