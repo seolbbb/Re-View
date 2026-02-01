@@ -641,7 +641,7 @@ def run_summarizer(
                     config.raw.llm_gemini.timeout_sec,
                     config.raw.llm_gemini.max_retries,
                     config.raw.llm_gemini.backoff_sec,
-                    context="Summarizer",
+                    context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
                 )
         if last_error:
             raise RuntimeError(f"LLM JSON/Validation failed: {last_error}")
@@ -660,6 +660,7 @@ def run_batch_summarizer(
     feedback_map: Optional[Dict[int, str]] = None,
     status_callback: Optional[Callable[[int], None]] = None,
     verbose: bool = False,
+    batch_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """배치별 세그먼트 요약을 생성합니다.
 
@@ -750,7 +751,7 @@ def run_batch_summarizer(
             config.raw.llm_gemini.timeout_sec,
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
-            context="Summarizer",
+            context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
             verbose=verbose,
         )
         total_tokens += tokens
@@ -778,7 +779,8 @@ def run_batch_summarizer(
                 for segment in segments:
                     segment_id = int(segment.get("segment_id"))
                     if verbose:
-                        print(f"{_get_timestamp()}       - [Summarizer] Processed segment {segment_id}", flush=True)
+                        prefix = f"{batch_label}: " if batch_label else "      "
+                        print(f"{_get_timestamp()} {prefix}- [Summarizer] Processed segment {segment_id}", flush=True)
                     summary = summary_map[segment_id]
                     record = {
                         "run_id": segment.get("run_id"),
