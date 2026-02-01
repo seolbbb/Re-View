@@ -160,6 +160,10 @@ def get_supabase_adapter() -> Optional[SupabaseAdapter]:
     if not url or not key:
         return None
     
+    # Ensure URL has trailing slash to avoid storage client issues
+    if not url.endswith("/"):
+        url += "/"
+    
     try:
         return SupabaseAdapter(url, key)
     except ImportError:
