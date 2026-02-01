@@ -1,11 +1,10 @@
 import { post, BASE_URL, ApiError } from './client';
 
-export function sendChatMessage({ videoId, message, sessionId, reasoningMode }) {
+export function sendChatMessage({ videoId, message, sessionId }) {
   return post('/api/chat', {
     video_id: videoId,
     message,
     session_id: sessionId || undefined,
-    reasoning_mode: reasoningMode || undefined,
   });
 }
 
@@ -13,7 +12,6 @@ export function streamChatMessage({
   videoId,
   message,
   sessionId,
-  reasoningMode,
   onChunk,
   onSessionId,
   onDone,
@@ -79,7 +77,6 @@ export function streamChatMessage({
           video_id: videoId,
           message,
           session_id: sessionId || undefined,
-          reasoning_mode: reasoningMode || undefined,
         }),
         signal: controller.signal,
       });

@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, Music, FileText, CheckCircle, AlertCircle } from 'lucide-react';
 import { useVideo } from '../context/VideoContext';
-import useVideoStatusStream from '../hooks/useVideoStatusStream';
+import { getVideoStatus } from '../api/videos';
+import usePolling from '../hooks/usePolling';
 import './LoadingPage.css';
 
 const STAGES = [
@@ -39,8 +40,23 @@ function LoadingPage() {
     const [errorMsg, setErrorMsg] = useState('');
     const [done, setDone] = useState(false);
 
-    // SSE 상태 콜백
-    const handleStatus = useCallback((statusData) => {
+    const fetchStatus = useCallback(() => {
+        if (!currentVideoId) return Promise.resolve(null);
+        return getVideoStatus(currentVideoId);
+    }, [currentVideoId]);
+
+    // 전처리 완료(PREPROCESS_DONE) 또는 실패(FAILED)까지만 폴링
+    const { data: statusData } = usePolling(fetchStatus, {
+        interval: 2000,
+        enabled: !!currentVideoId && !failed && !done,
+        until: useCallback((data) => {
+            if (!data) return false;
+            const vs = (data.video_status || '').toUpperCase();
+            return vs === 'PREPROCESS_DONE' || vs === 'PROCESSING' || vs === 'DONE' || vs === 'FAILED';
+        }, []),
+    });
+
+    useEffect(() => {
         if (!statusData) return;
         const vs = (statusData.video_status || '').toUpperCase();
 
@@ -58,25 +74,7 @@ function LoadingPage() {
         if (vs === 'PREPROCESS_DONE' || vs === 'PROCESSING' || vs === 'DONE') {
             setDone(true);
         }
-    }, []);
-
-    // SSE 완료 콜백
-    const handleDone = useCallback((data) => {
-        if (!data) return;
-        const vs = (data.video_status || '').toUpperCase();
-        if (vs === 'FAILED') {
-            setFailed(true);
-        } else if (vs === 'DONE' || vs === 'PREPROCESS_DONE' || vs === 'PROCESSING') {
-            setDone(true);
-        }
-    }, []);
-
-    // SSE 스트리밍 (polling 대신 사용)
-    useVideoStatusStream(currentVideoId, {
-        enabled: !!currentVideoId && !failed && !done,
-        onStatus: handleStatus,
-        onDone: handleDone,
-    });
+    }, [statusData]);
 
     // 전처리 완료 시 분석 페이지로 이동
     useEffect(() => {
