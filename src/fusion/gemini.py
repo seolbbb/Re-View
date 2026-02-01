@@ -228,7 +228,8 @@ def run_with_retries(
         while True:
             if verbose:
                 label = f" (Key {idx}/{total_clients})" if total_clients > 1 else ""
-                print(f"{_get_timestamp()}       [{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
+                indent = "" if context.lstrip().lower().startswith("batch") else "       "
+                print(f"{_get_timestamp()} {indent}[{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
             try:
                 return generate_content(
                     client_bundle,
@@ -272,12 +273,13 @@ def run_with_retries(
                     except:
                         simplified_msg = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
 
+                indent = "" if context.lstrip().lower().startswith("batch") else "       "
                 prefix = f"[{context}] " if context else ""
                 if simplified_msg:
                     if verbose:
-                        print(f"{_get_timestamp()}       [{context}] Failed: {simplified_msg}. Retrying in {sleep_for}s...", flush=True)
+                        print(f"{_get_timestamp()} {indent}[{context}] Failed: {simplified_msg}. Retrying in {sleep_for}s...", flush=True)
                     else:
-                        print(f"{_get_timestamp()} ⚠️ [{context}] Retry {attempt+1}/{max_retries}: {simplified_msg}", flush=True)
+                        print(f"{_get_timestamp()} ⚠️ {indent}[{context}] Retry {attempt+1}/{max_retries}: {simplified_msg}", flush=True)
                 
                 time.sleep(sleep_for)
                 attempt += 1
