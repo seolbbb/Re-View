@@ -1051,6 +1051,7 @@ def run_batch_fusion_pipeline(
                 "dedup_similarity_threshold": config.raw.sync_engine.dedup_similarity_threshold,
             },
             segment_id_offset=cumulative_segment_count,
+            run_id_override=processing_job_id or video_id,
         )
         
         # [User Request] Track segment IDs
