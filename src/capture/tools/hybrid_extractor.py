@@ -430,5 +430,7 @@ class HybridSlideExtractor:
                 "time_ranges": merged_ranges
             })
             
-        print(f"[Capture] Completed. Total Unique Slides: {len(final_manifest)}")
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d | %H:%M:%S.%f')[:-3]
+        print(f"[{timestamp}] [Capture] Completed. Total Unique Slides: {len(final_manifest)}")
         return final_manifest

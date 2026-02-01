@@ -59,7 +59,9 @@ def process_single_video_capture(
     # 파라미터 결정 (전달된 인자가 없으면 settings.yaml 기본값 사용)
     resolved_drop_ratio = settings.persistence_drop_ratio if scene_threshold is None else scene_threshold
     
-    print(f"[Capture] Processing: {video_name}")
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y-%m-%d | %H:%M:%S.%f')[:-3]
+    print(f"[{timestamp}] [Capture] Processing: {video_name}")
     print(f"   - Config: drop={resolved_drop_ratio}, persist={settings.persistence_threshold}, min_feat={settings.min_orb_features}, dedup(phash={settings.dedup_phash_threshold}, dist={settings.dedup_orb_distance}, sim={settings.dedup_sim_threshold})")
     
     # 추출기 초기화
