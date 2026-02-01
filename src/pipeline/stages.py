@@ -33,6 +33,14 @@ from src.db.stage_uploader import (
 )
 
 
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 def _read_latest_token_usage(token_usage_path: Path) -> Dict[str, int]:
     """token_usage.json에서 최신 토큰 사용량을 읽어 반환한다."""
     if not token_usage_path.exists():
@@ -918,19 +926,22 @@ def run_batch_fusion_pipeline(
         }
         current_segments = []
         
+        last_printed_line = None
+
         def _print_status():
+            nonlocal last_printed_line
             msg = []
             for k, v in status_map.items():
                 msg.append(f"[{k}] {v}")
             # [User Request] Add segments list etc.
             # Batch 1: segments [1, 2, 3] [VLM] DONE ...
             seg_info = f"segments {current_segments} " if current_segments else ""
-            line = f"\rBatch {current_batch_global_idx}: {seg_info}{' '.join(msg)}"
-            # 사용자 요청: 전부 로깅 (verbose 모드일 경우 \r 대신 \n 사용 제안 또는 \r 출력 후 newline 보장)
-            # 여기서는 verbose 로그와 섞일 때 가독성을 위해 \r 대신 일반 출력을 선택하거나, 
-            # 상태 변경 시에만 줄바꿈을 하도록 유도.
-            # 하지만 사용자가 "전부 로깅"을 원했으므로 \r을 제거하고 매번 새로운 줄에 출력하도록 함.
-            print(f"{_get_timestamp()} Batch {current_batch_global_idx}: {seg_info}{' '.join(msg)}", flush=True)
+            line_body = f"Batch {current_batch_global_idx}: {seg_info}{' '.join(msg)}"
+            
+            # 사용자 요청: 상태가 변경될 때만 출력 (중복 제거)
+            if line_body != last_printed_line:
+                print(f"{_get_timestamp()} {line_body}", flush=True)
+                last_printed_line = line_body
 
         _print_status()
 
@@ -1025,11 +1036,12 @@ def run_batch_fusion_pipeline(
         
         # [User Request] Track segment IDs
         # segments_units.jsonl을 읽거나 sync_result['segments_count']로 계산
-        count = sync_result.get("segments_count", 0)
-        current_segments = list(range(cumulative_segment_count + 1, cumulative_segment_count + count + 1))
+        # [User Request] Track segment IDs
+        # segments_units.jsonl을 읽거나 sync_result['segments_count']로 계산
+        current_batch_segments_count = sync_result.get("segments_count", 0)
+        current_segments = list(range(cumulative_segment_count + 1, cumulative_segment_count + current_batch_segments_count + 1))
         _print_status()
-        new_segment_count = sync_result.get("segments_count", 0)
-        cumulative_segment_count += new_segment_count
+        cumulative_segment_count += current_batch_segments_count
         status_map["Summarize"] = "RUNNING..."
         _print_status()
         
@@ -1061,6 +1073,7 @@ def run_batch_fusion_pipeline(
                 limit=None, 
                 status_callback=_sum_status_cb,
                 verbose=True,
+                batch_label=f"Batch {start_batch_index + i + 1}",
             )
             batch_summarizer_elapsed = time.perf_counter() - t_summarize
             total_summarizer_elapsed += batch_summarizer_elapsed
@@ -1089,8 +1102,9 @@ def run_batch_fusion_pipeline(
                 batch_size=getattr(config.judge, "batch_size", 10),
                 workers=getattr(config.judge, "workers", 4),
                 json_repair_attempts=getattr(config.judge, "json_repair_attempts", 3),
-                limit=None, 
+                limit=limit, 
                 status_callback=_judge_status_cb,
+                batch_label=f"Batch {start_batch_index + i + 1}",
             )
             batch_judge_elapsed = time.perf_counter() - t_judge
             total_judge_elapsed += batch_judge_elapsed
