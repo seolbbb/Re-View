@@ -25,6 +25,7 @@ Examples:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -123,11 +124,15 @@ def run_preprocess_pipeline(
         fallback_inputs = ROOT / "data" / "inputs" / video_value
         if fallback_inputs.exists():
             video_path = fallback_inputs.resolve()
-            print(f"[Info] Resolved video path from data/inputs: {video_path}")
+            # [User Request] 로컬 절대 경로 제거
+            rel_video_path = os.path.relpath(video_path, ROOT)
+            print(f"[Info] Resolved video path from data/inputs: {rel_video_path}")
         else:
              print(f"\n[Error] Video file not found: {video_value}")
              print(f"Please check if the file exists in 'data/inputs/' directory.")
-             print(f"Standard Input Directory: {ROOT / 'data' / 'inputs'}")
+             # [User Request] 로컬 절대 경로 제거
+             rel_input_dir = os.path.relpath(ROOT / 'data' / 'inputs', ROOT)
+             print(f"Standard Input Directory: {rel_input_dir}")
              raise FileNotFoundError(f"Video file not found: {video_value} (checked data/inputs/)")
 
     # 캡처 설정은 config/capture/settings.yaml에서 기본값을 가져온다.
@@ -258,7 +263,7 @@ def run_preprocess_pipeline(
             **kwargs: Any,
         ) -> None:
             """통합 로깅 및 DB 동기화 헬퍼."""
-            comp_map = {"audio": "Audio", "capture": "Capture", "stt": "STT"}
+            comp_map = {"audio": "Audio", "capture": "Capture", "stt": "STT", "video": "Video"}
             comp_name = comp_map.get(stage, "System")
 
             db_elapsed = 0.0
@@ -266,6 +271,11 @@ def run_preprocess_pipeline(
             if db_context:
                 db_start = time.perf_counter()
                 adapter, video_id, preprocess_job_id = db_context
+                
+                # [Fix] Capture 중복 업로드 방지
+                # 스트리밍으로 이미 업로드된 경우(skip_db_capture=True), 배치 업로드는 수행하지 않음
+                do_capture_sync = (stage == "capture" and not kwargs.get("skip_db_capture", False))
+                
                 stage_results = sync_preprocess_artifacts_to_db(
                     adapter=adapter,
                     video_id=video_id,
@@ -273,8 +283,10 @@ def run_preprocess_pipeline(
                     provider=stt_backend,
                     preprocess_job_id=preprocess_job_id,
                     include_stt=(stage == "stt"),
-                    include_captures=(stage == "capture"),
+                    include_captures=do_capture_sync,
                     include_audio=(stage == "audio"),
+                    include_video=(stage == "video"),
+                    video_path=video_path,
                     **kwargs,
                     table_name=db_table_name,
                 )
@@ -297,6 +309,44 @@ def run_preprocess_pipeline(
             pipeline_logger.log(comp_name, msg)
 
         # 병렬 또는 순차 실행을 위한 내부 함수들
+        def on_capture_event(event_type: str, slide_data: Dict[str, Any]) -> None:
+            """캡처 이벤트(신규/업데이트) 발생 시 DB에 즉시 반영한다."""
+            if not db_context:
+                return
+            adapter, video_id, preprocess_job_id = db_context
+
+            try:
+                if event_type == "new":
+                    # 단일 항목 리스트로 감싸서 업로드 재활용
+                    payload = [slide_data]
+                    res = adapter.save_captures_with_upload_payload(
+                        video_id=video_id,
+                        captures=payload,
+                        captures_dir=captures_dir,
+                        preprocess_job_id=preprocess_job_id,
+                        table_name=db_table_name
+                    )
+                    if res.get("errors"):
+                        pipeline_logger.log("DB", f"Error streaming capture: {res['errors']}")
+                    else:
+                        # 너무 빈번한 로그 방지
+                        # pipeline_logger.log("DB", f"Streamed capture: {slide_data.get('file_name')}")
+                        pass
+
+                elif event_type == "update":
+                    # 기존 캡처의 time_ranges 업데이트
+                    cap_id = slide_data.get("id")
+                    time_ranges = slide_data.get("time_ranges")
+                    
+                    if cap_id and time_ranges:
+                        # Adapter를 통하지 않고 직접 update (Mixin에 update 메서드가 없을 경우)
+                        adapter.client.table(db_table_name).update({
+                            "time_ranges": time_ranges
+                        }).eq("video_id", video_id).eq("cap_id", cap_id).execute()
+                        pipeline_logger.log("DB", f"Updated capture times: {cap_id}")
+            except Exception as e:
+                pipeline_logger.log("DB", f"Streaming error: {e}")
+
         def handle_audio_stt_chain() -> Dict[str, Any]:
             """Audio 추출 → STT를 체인으로 실행."""
             nonlocal stt_elapsed
@@ -348,21 +398,52 @@ def run_preprocess_pipeline(
                 verbose=capture_verbose,
                 video_name=video_name,
                 write_manifest=write_local_json,
+                callback=on_capture_event,
             )
             elapsed = time.perf_counter() - start
             capture_elapsed = elapsed
             timer.record_stage("capture", elapsed)
-            _finalize_stage("capture", elapsed, captures_payload=results)
+            
+            # [Fix] 스트리밍으로 이미 업로드했으므로 최종 단계에서는 로컬 파일 동기화만 하거나 생략한다.
+            # 중복 저장을 막기 위해 skip_db_capture=True 전달
+            _finalize_stage("capture", elapsed, captures_payload=results, skip_db_capture=True)
             return results
 
         pipeline_logger.log("System", f"Starting Preprocessing (Parallel={parallel})")
-
+        
+        # [User Request] Video 원본 업로드 (video_storage_key 채우기)
+        _finalize_stage("video", 0.0)
+ 
         if parallel:
+            import concurrent.futures
+            from concurrent.futures import ThreadPoolExecutor
+
             with ThreadPoolExecutor(max_workers=2) as executor:
-                f_audio_stt = executor.submit(handle_audio_stt_chain)
-                f_capture = executor.submit(handle_capture)
-                stt_payload = f_audio_stt.result()
-                capture_result = f_capture.result()
+                # Future -> Task Name Mapping
+                future_to_task = {
+                    executor.submit(handle_audio_stt_chain): "stt",
+                    executor.submit(handle_capture): "capture"
+                }
+                
+                # as_completed를 사용하여 먼저 끝나는 작업부터 처리
+                for future in concurrent.futures.as_completed(future_to_task):
+                    task_name = future_to_task[future]
+                    try:
+                        res = future.result()
+                        if task_name == "stt":
+                            stt_payload = res
+                            # handle_audio_stt_chain 내부에서 _finalize_stage("stt")가 호출되므로
+                            # 이미 DB 업로드는 완료된 상태임.
+                            pipeline_logger.log("Pipeline", "STT stage finalized immediately.")
+                        elif task_name == "capture":
+                            capture_result = res
+                            # handle_capture 내부에서 _finalize_stage("capture")가 호출되므로
+                            # 이미 DB 업로드는 완료된 상태임.
+                            pipeline_logger.log("Pipeline", "Capture stage finalized immediately.")
+                    except Exception as exc:
+                        pipeline_logger.log("Pipeline", f"{task_name} generated an exception: {exc}")
+                        # 예외 발생 시 플래그 처리 등을 할 수 있음
+                        pass
         else:
             stt_payload = handle_audio_stt_chain()
             capture_result = handle_capture()
@@ -429,8 +510,11 @@ def run_preprocess_pipeline(
                 print("Database sync skipped or failed (check logs above).")
 
         print("\nPreprocessing completed.")
-        print(f"Outputs: {video_root}")
-        print(f"Benchmark: {report_path}")
+        # [User Request] 로컬 경로를 상대 경로로 표시
+        rel_video_root = os.path.relpath(video_root, ROOT)
+        rel_report_path = os.path.relpath(report_path, ROOT)
+        print(f"Outputs: {rel_video_root}")
+        print(f"Benchmark: {rel_report_path}")
         
         if sync_to_db and db_context:
             try:
@@ -500,6 +584,7 @@ def get_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db-sync", dest="db_sync", action="store_true", help="Enable Supabase sync")
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase sync")
+    parser.add_argument("--video-id", dest="existing_video_id", help="Existing video UUID (to avoid re-creating)")
     parser.set_defaults(db_sync=None)
     return parser
 

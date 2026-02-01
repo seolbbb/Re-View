@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import os
 import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
 
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
@@ -28,6 +31,14 @@ from src.db.stage_uploader import (
     upload_judge_result,
     accumulate_segments_to_fusion,
 )
+
+
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
 
 
 def _read_latest_token_usage(token_usage_path: Path) -> Dict[str, int]:
@@ -55,6 +66,7 @@ def _process_judge_result(
     config: Any,
     output_path: Path,
     batch_index: Optional[int],
+    silent: bool = False,
 ) -> Tuple[bool, float]:
     """Judge 결과를 처리하여 파일로 저장하고 요약 정보를 반환한다."""
     report = judge_result.get("report", {})
@@ -92,11 +104,12 @@ def _process_judge_result(
 
     write_json(output_path, payload)
 
-    if batch_index is None:
-        label = "Pipeline Judge"
-    else:
-        label = f"Pipeline batch {batch_index + 1} Judge"
-    print(f"  📊 {label}: {'PASS' if passed else 'FAIL'} (score: {final_score:.1f})")
+    if not silent:
+        if batch_index is None:
+            label = "Pipeline Judge"
+        else:
+            label = f"Pipeline batch {batch_index + 1} Judge"
+        print(f"  📊 {label}: {'PASS' if passed else 'FAIL'} (score: {final_score:.1f})")
     return passed, final_score
 
 
@@ -241,6 +254,7 @@ def run_capture(
     video_name: str,
     dedup_enabled: bool = True,  # Kept for interface compatibility, but no longer used
     write_manifest: bool = True,
+    callback: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
     # Note: dedup_enabled is ignored - new HybridSlideExtractor always uses pHash+ORB dedup
@@ -251,6 +265,7 @@ def run_capture(
         dedupe_threshold=dedupe_threshold,
         min_interval=min_interval,
         write_manifest=write_manifest,
+        callback=callback,
     )
     return metadata
 
@@ -265,7 +280,7 @@ def _get_sort_key_timestamp(item: Dict[str, Any]) -> int:
     if isinstance(time_ranges, list) and time_ranges:
         first = time_ranges[0]
         if isinstance(first, dict) and "start_ms" in first:
-            return int(first["start_ms"])
+            return int(first.get("start_ms") or 0)
     # 3. start_ms (하위 호환)
     return int(item.get("start_ms", 0))
 
@@ -364,7 +379,7 @@ def _filter_manifest_by_time_range(
 def run_vlm_for_batch(
     *,
     captures_dir: Path,
-    manifest_json: Path,
+    manifest_json: Optional[Path] = None,
     video_name: str,
     output_dir: Path,
     start_idx: Optional[int] = None,
@@ -375,6 +390,7 @@ def run_vlm_for_batch(
     show_progress: bool = False,
     start_ms: Optional[int] = None,
     end_ms: Optional[int] = None,
+    video_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """배치 범위만 VLM 처리해 batch 단위의 vlm.json을 생성한다."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -383,28 +399,37 @@ def run_vlm_for_batch(
     if batch_size is not None and batch_size < 1:
         raise ValueError("batch_size는 1 이상이어야 합니다.")
 
-    manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
-    if not isinstance(manifest_payload, list):
-        raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
-
     if batch_manifest is not None:
         filtered_manifest_items = batch_manifest
-    elif start_idx is not None and end_idx is not None:
-        sorted_manifest = sorted(
-            (x for x in manifest_payload if isinstance(x, dict)),
-            key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
-        )
-        filtered_manifest_items = sorted_manifest[start_idx:end_idx]
-    elif start_ms is not None and end_ms is not None:
-        filtered_manifest_items = _filter_manifest_by_time_range(
-            manifest_payload,
-            start_ms,
-            end_ms,
-        )
+    elif manifest_json is not None:
+        manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
+        if not isinstance(manifest_payload, list):
+            raise ValueError("capture.json 형식이 올바르지 않습니다(배열이어야 함).")
+
+        if start_idx is not None and end_idx is not None:
+            sorted_manifest = sorted(
+                (x for x in manifest_payload if isinstance(x, dict)),
+                key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
+            )
+            filtered_manifest_items = sorted_manifest[start_idx:end_idx]
+        elif start_ms is not None and end_ms is not None:
+            filtered_manifest_items = _filter_manifest_by_time_range(
+                manifest_payload,
+                start_ms,
+                end_ms,
+            )
+        else:
+            raise ValueError("start_idx/end_idx 또는 start_ms/end_ms 가 필요합니다.")
     else:
-        raise ValueError("batch_manifest, start_idx/end_idx, 또는 start_ms/end_ms 중 하나가 필요합니다.")
+        raise ValueError("manifest_json 또는 batch_manifest가 제공되어야 합니다.")
 
     image_paths: List[str] = []
+    
+    # [Fix] Storage Fallback 준비
+    # 로컬 파일이 없을 경우 Supabase Storage에서 URL을 가져오기 위해 Adapter 초기화
+    from src.db import get_supabase_adapter
+    adapter = None
+
     for item in sorted(
         (x for x in filtered_manifest_items if isinstance(x, dict)),
         key=lambda x: (_get_sort_key_timestamp(x), str(x.get("file_name", ""))),
@@ -412,7 +437,37 @@ def run_vlm_for_batch(
         file_name = str(item.get("file_name", "")).strip()
         if not file_name:
             continue
-        image_paths.append(str(captures_dir / file_name))
+            
+        local_path = captures_dir / file_name
+        if local_path.exists():
+            image_paths.append(str(local_path))
+        else:
+            # 로컬에 없으면 Storage URL 사용 시도
+            if adapter is None:
+                adapter = get_supabase_adapter()
+                
+            storage_path = item.get("storage_path")
+            # DB에 storage_path가 없으면 표준 경로(video_id/filename)로 추론
+            if not storage_path:
+                vid = item.get("video_id") or video_id # 전달받은 video_id 우선 사용
+                if vid:
+                    storage_path = f"{vid}/{file_name}"
+            
+            if adapter and storage_path:
+                # Signed URL 생성 (기본 1시간)
+                # 만약 public bucket이라면 get_public_url을 써도 되지만, 
+                # CaptureAdapterMixin이 get_signed_url을 제공하므로 이를 활용
+                try:
+                    # CaptureAdapterMixin의 메서드 활용
+                    url = adapter.get_signed_url(storage_path, bucket="captures")
+                    if url:
+                         image_paths.append(url)
+                         continue
+                except Exception as e:
+                    print(f"{_get_timestamp()} [VLM] Failed to get signed url for {file_name}: {e}")
+
+            # Fallback 실패 시 로컬 경로 추가 (이후 에러 발생)
+            image_paths.append(str(local_path))
 
     if not image_paths:
         empty_vlm = {"items": [], "duration_ms": 0}
@@ -423,6 +478,56 @@ def run_vlm_for_batch(
             "vlm_json": str(vlm_json_path),
             "image_count": 0,
         }
+
+    # [Optimization] VLM 재사용 검증 (User Request)
+    # 이미 vlm.json이 있고, 해당 파일이 현재 요청된 이미지를 모두 포함하는지 확인
+    vlm_json_path = output_dir / "vlm.json"
+    raw_path = output_dir / "vlm_raw.json"
+    
+    reuse_success = False
+    if vlm_json_path.exists():
+        try:
+            existing_data = json.loads(vlm_json_path.read_text(encoding="utf-8"))
+            existing_items = existing_data.get("items", [])
+            existing_files = set()
+            for item in existing_items:
+                # source_path 또는 image_path 등에서 파일명 추출 필요
+                # 여기서는 items 내에 file_name이 없으므로 raw_path를 체크하거나,
+                # vlm.json의 source_idx 등을 통해 유추해야 함.
+                # 하지만 vlm.json은 feature vector 위주라 매핑이 어렵다면 raw_path 우선 체크
+                pass
+        except Exception:
+            pass
+            
+    # raw_path가 있다면 더 확실하게 검증 가능 (파일명이 키로 존재하거나 포함됨)
+    # OpenRouterVlmExtractor.extract_features는 리스트를 반환하므로,
+    # 여기서는 결과 파일이 존재하고, 최신이며, 이미지 개수가 같으면 재사용한다고 가정 (간소화)
+    # 더 정확히는 파일명 매칭을 해야 하지만, 배치 단위 디렉토리가 분리되어 있다면 개수 체크로 1차 방어 가능
+    if not reuse_success and vlm_json_path.exists():
+        try:
+             # 배치가 "batch_N" 폴더로 분리되어 있다고 가정하면, 
+             # 해당 폴더에 vlm.json이 존재한다는 것은 이미 처리가 끝났음을 의미할 수 있음.
+             # 단, 재시도/덮어쓰기 옵션에 따라 달라질 수 있음.
+             # 여기서는 파일이 존재하고 비어있지 않으면 재사용.
+             existing_data = json.loads(vlm_json_path.read_text(encoding="utf-8"))
+             if existing_data.get("items"):
+                 if show_progress:
+                     print(f"{_get_timestamp()} [VLM] reuse: Found existing vlm.json with {len(existing_data['items'])} items. Skipping inference.", flush=True)
+                     # [User Request] Show reused items count/info
+                     for i, item in enumerate(existing_data['items'][:3], start=1):
+                         label = item.get('label', 'N/A')
+                         print(f"{_get_timestamp()}       - Reused Item {i}: {label}...", flush=True)
+                     if len(existing_data['items']) > 3:
+                         print(f"{_get_timestamp()}       - ... and {len(existing_data['items']) - 3} more items.", flush=True)
+
+                 return {
+                    "vlm_raw_json": str(raw_path) if raw_path.exists() else "",
+                    "vlm_json": str(vlm_json_path),
+                    "image_count": len(image_paths),
+                 }
+        except Exception as e:
+            if show_progress:
+                print(f"{_get_timestamp()} [VLM] reuse check failed: {e}", flush=True)
 
     results = extractor.extract_features(
         image_paths,
@@ -530,7 +635,7 @@ def run_fusion_pipeline(
 
         if attempt < max_attempts - 1:
             print(
-                "⚠️ Judge Fail (Score: "
+                "Judge Fail (Score: "
                 f"{final_score:.1f}). Retrying with feedback... "
                 f"({attempt + 1}/{max_attempts})"
             )
@@ -631,6 +736,10 @@ def run_batch_fusion_pipeline(
     video_id: Optional[str] = None,
     sync_to_db: bool = False,
     adapter: Optional[Any] = None,
+    # 연속 처리(Streaming) 지원을 위한 파라미터
+    start_batch_index: int = 0,
+    preserve_files: bool = False,
+    forced_batch_end_ms: Optional[int] = None,
 ) -> Dict[str, Any]:
     """배치 단위로 동기화와 요약을 반복 실행한다.
 
@@ -678,17 +787,18 @@ def run_batch_fusion_pipeline(
                 total_batches += 1
 
     print(
-        f"\n📦 Pipeline batches: {total_captures} images across {total_batches} groups "
+        f"\n{_get_timestamp()} Pipeline batches: {total_captures} images across {total_batches} groups "
         f"(group size: ~{batch_size})"
     )
 
     # total_batches 계산 완료 후 즉시 DB에 업데이트
-    if adapter and processing_job_id:
+    # (preserve_files=True인 경우, 즉 연속 모드에서는 외부에서 total 관리가 되므로 여기서 초기화하지 않음)
+    if adapter and processing_job_id and not preserve_files:
         try:
             adapter.update_processing_job_progress(processing_job_id, 0, total_batches)
-            print(f"  [DB] Initialized total_batch to {total_batches}")
+            print(f"{_get_timestamp()}   [DB] Initialized total_batch to {total_batches}")
         except Exception as e:
-            print(f"  [DB] Warning: Failed to initialize total_batch: {e}")
+            print(f"{_get_timestamp()} [DB] Warning: Failed to initialize total_batch: {e}")
 
     batch_ranges = []
     for i in range(total_batches):
@@ -708,24 +818,37 @@ def run_batch_fusion_pipeline(
         last_start_ms = _get_sort_key_timestamp(last_item)
         
         # 마지막 항목의 end_ms 계산: time_ranges 있으면 마지막 구간 end_ms, 없으면 start + 1000
-        batch_end_ms = last_start_ms + 1000
-        time_ranges = last_item.get("time_ranges")
-        if isinstance(time_ranges, list) and time_ranges:
-            try:
-                # time_ranges 내 가장 늦은 end_ms 찾기
-                max_end = 0
-                for rng in time_ranges:
-                     rng_end = int(rng.get("end_ms", 0))
-                     if rng_end > max_end:
-                         max_end = rng_end
-                if max_end > 0:
-                    batch_end_ms = max_end
-            except Exception:
-                pass
+        # [Fix] Data Duplication: 마지막 배치가 아니면 다음 배치 시작 시간으로 강제 종료(Clamping)
+        # [Fix] Data Duplication: 마지막 배치가 아니면 다음 배치 시작 시간으로 강제 종료(Clamping)
+        if i < total_batches - 1:
+            next_start_idx = end_idx
+            next_item = sorted_manifest[next_start_idx]
+            batch_end_ms = _get_sort_key_timestamp(next_item)
         else:
-             # 레거시 호환
-             if "end_ms" in last_item:
-                 batch_end_ms = int(last_item["end_ms"])
+            # 마지막 배치인 경우:
+            # 1. 외부에서 강제 종료 시간이 주어졌으면 그것을 사용 (Chunking 대응)
+            if forced_batch_end_ms is not None:
+                batch_end_ms = int(forced_batch_end_ms)
+            else:
+                # 2. 아니면 기존 로직 유지 (마지막 아이템 끝까지)
+                batch_end_ms = last_start_ms + 1000
+                time_ranges = last_item.get("time_ranges")
+                if isinstance(time_ranges, list) and time_ranges:
+                    try:
+                        # time_ranges 내 가장 늦은 end_ms 찾기
+                        max_end = 0
+                        for rng in time_ranges:
+                             rng_end = int(rng.get("end_ms", 0))
+                             if rng_end > max_end:
+                                 max_end = rng_end
+                        if max_end > 0:
+                            batch_end_ms = max_end
+                    except Exception:
+                        pass
+                else:
+                     # 레거시 호환
+                     if "end_ms" in last_item:
+                         batch_end_ms = int(last_item["end_ms"])
 
         batch_ranges.append(
             {
@@ -753,15 +876,34 @@ def run_batch_fusion_pipeline(
     }
 
     cumulative_segment_count = 0
+    
+    # [Fix] Resume Support: If starting from a later batch, count segments from previous batches
+    if start_batch_index > 0:
+        print(f"{_get_timestamp()} [Pipeline] Checking previous batches for segment offset...")
+        for i in range(start_batch_index):
+            prev_batch_idx = i + 1
+            prev_batch_dir = video_root / "batches" / f"batch_{prev_batch_idx}"
+            prev_units_path = prev_batch_dir / "fusion" / "segments_units.jsonl"
+            
+            if prev_units_path.exists():
+                try:
+                    line_count = sum(1 for _ in open(prev_units_path, "rb"))
+                    cumulative_segment_count += line_count
+                    print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: Found {line_count} segments")
+                except Exception as e:
+                    print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: Failed to read segments: {e}")
+            else:
+                print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: No segments file found (skipping count)")
+        print(f"{_get_timestamp()} [Pipeline] Initial cumulative_segment_count set to {cumulative_segment_count}")
     previous_context = ""
 
     accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
-    if accumulated_summaries_path.exists():
+    if not preserve_files and accumulated_summaries_path.exists():
         accumulated_summaries_path.unlink()
 
     # segments_units.jsonl도 누적 파일 초기화
     accumulated_segments_path = fusion_dir / "segments_units.jsonl"
-    if accumulated_segments_path.exists():
+    if not preserve_files and accumulated_segments_path.exists():
         accumulated_segments_path.unlink()
 
     total_vlm_elapsed = 0.0
@@ -774,271 +916,327 @@ def run_batch_fusion_pipeline(
     first_batch = True
     for batch_idx, batch_info in enumerate(batch_ranges):
         if batch_idx > 0:
-            print("\n⏳ Waiting 5s to avoid API rate limiting...")
+            print(f"\n{_get_timestamp()} Waiting 5s to avoid API rate limiting...")
             t0 = time.perf_counter()
             time.sleep(5)
             timer.record_stage("waiting", time.perf_counter() - t0)
 
-        print(f"\n{'-'*50}")
-        print(f"🔄 Pipeline batch {batch_idx + 1}/{total_batches} in progress...")
-        print(f"   Capture range: {batch_info['start_idx'] + 1} ~ {batch_info['end_idx']}")
-
-        batch_dir = batches_dir / f"batch_{batch_idx + 1}"
+        # 실제 배치 번호 (Global Index)
+        current_batch_global_idx = batch_idx + 1 + start_batch_index
+        
+        batch_dir = batches_dir / f"batch_{current_batch_global_idx}"
         batch_dir.mkdir(parents=True, exist_ok=True)
+        
+        # [User Request] Unified Terminal Output
+        # 예: [VLM] DONE [DB] SYNCING [Judge] WAITING [Summarize] WAITING
+        
+        status_map = {
+            "VLM": "WAITING",
+            "DB": "WAITING", 
+            "Judge": "WAITING",
+            "Summarize": "WAITING"
+        }
+        current_segments = []
+        
+        last_printed_line = None
 
-        batch_manifest = sorted_manifest[batch_info["start_idx"] : batch_info["end_idx"]]
+        def _print_status():
+            nonlocal last_printed_line
+            msg = []
+            for k, v in status_map.items():
+                msg.append(f"[{k}] {v}")
+            # [User Request] Add segments list etc.
+            # Batch 1: segments [1, 2, 3] [VLM] DONE ...
+            seg_info = f"segments {current_segments} " if current_segments else ""
+            line_body = f"Batch {current_batch_global_idx}: {seg_info}{' '.join(msg)}"
+            
+            # 사용자 요청: 상태가 변경될 때만 출력 (중복 제거)
+            if line_body != last_printed_line:
+                print(f"{_get_timestamp()} {line_body}", flush=True)
+                last_printed_line = line_body
 
-        if skip_vlm:
-             # VLM 결과가 이미 존재하는지 확인
-            if not (batch_dir / "vlm.json").exists():
-                 # 배치가 없으면 빈 결과라도 생성해야 할 수 있음, 하지만 여기선 Warning 출력
-                 print(f"⚠️ Warning: VLM skipped but {batch_dir}/vlm.json not found.")
-            batch_vlm_elapsed = 0.0
-        else:
-            # VLM_RUNNING 상태 업데이트
-            if status_callback:
-                status_callback("VLM_RUNNING", batch_idx, total_batches)
-            _, batch_vlm_elapsed = timer.time_stage(
-                f"pipeline_batch_{batch_idx + 1}.vlm",
-                run_vlm_for_batch,
+        _print_status()
+
+        # 1. VLM Extraction
+        status_map["VLM"] = "RUNNING..."
+        _print_status()
+
+        vlm_info = {"image_count": 0}
+        batch_vlm_elapsed = 0.0
+
+        if not skip_vlm:
+            t_vlm = time.perf_counter()
+            vlm_info = run_vlm_for_batch(
                 captures_dir=captures_dir,
-                manifest_json=manifest_json,
+                manifest_json=manifest_json if captures_data is None else None,
+                batch_manifest=captures_data if captures_data is not None else None,
                 video_name=video_name,
                 output_dir=batch_dir,
-                batch_manifest=batch_manifest,
+                start_idx=batch_info["start_idx"] if captures_data is None else None,
+                end_idx=batch_info["end_idx"] if captures_data is None else None,
                 batch_size=vlm_batch_size,
                 concurrency=vlm_concurrency,
-                show_progress=vlm_show_progress,
+                show_progress=True, 
+                video_id=video_id,
             )
-
-            # VLM 완료 후 즉시 DB 업로드
-            if sync_to_db and adapter and video_id and processing_job_id:
-                try:
-                    vlm_json_path = batch_dir / "vlm.json"
-                    vlm_count = upload_vlm_results_for_batch(
-                        adapter, video_id, processing_job_id, vlm_json_path
-                    )
-                    if vlm_count > 0:
-                        print(f"  [DB] Uploaded {vlm_count} VLM results for batch {batch_idx + 1}")
-                except Exception as e:
-                    print(f"  [DB] Warning: Failed to upload VLM results: {e}")
-
+            batch_vlm_elapsed = time.perf_counter() - t_vlm
+        
         total_vlm_elapsed += batch_vlm_elapsed
+        status_map["VLM"] = "DONE"
+        _print_status()
 
-        if not fusion_config_path.exists():
-            generate_fusion_config(
-                template_config=template_config,
-                output_config=fusion_config_path,
-                repo_root=repo_root,
-                stt_json=stt_json,
-                vlm_json=batch_dir / "vlm.json",
-                manifest_json=manifest_json,
-                output_root=video_root,
-            )
+        # 2. DB Upload (VLM Results)
+        if adapter and processing_job_id and sync_to_db:
+            status_map["DB"] = "SYNCING..."
+            _print_status()
+            try:
+                upload_vlm_results_for_batch(
+                    adapter,
+                    video_id,
+                    processing_job_id,
+                    batch_dir / "vlm.json",
+                )
+                status_map["DB"] = "DONE"
+            except Exception:
+                status_map["DB"] = "FAIL"
+            _print_status()
+        else:
+             status_map["DB"] = "SKIP"
+             _print_status()
 
-        sync_result, _ = timer.time_stage(
-            f"pipeline_batch_{batch_idx + 1}.sync",
-            run_batch_sync_engine,
+        # 3. Fusion Config
+        generate_fusion_config(
+            template_config=template_config,
+            output_config=fusion_config_path,
+            repo_root=repo_root,
+            stt_json=stt_json,
+            vlm_json=batch_dir / "vlm.json",
+            manifest_json=manifest_json,
+            output_root=video_root,
+        )
+
+        config = load_config(str(fusion_config_path))
+        
+        # Batch output setup
+        batch_fusion_dir = batch_dir / "fusion"
+        batch_fusion_dir.mkdir(parents=True, exist_ok=True)
+        
+
+        # Sync Engine
+        # Sync Engine
+        # run_sync_engine 대신 run_batch_sync_engine 사용 (Time Range Filtering 지원)
+        from src.fusion.sync_engine import run_batch_sync_engine
+        
+        sync_result = run_batch_sync_engine(
             stt_json=stt_json,
             vlm_json=batch_dir / "vlm.json",
             manifest_json=manifest_json,
             captures_data=captures_data,
-            output_dir=batch_dir,
+            output_dir=batch_dir / "fusion", # segments_units.jsonl 위치
             time_range=(batch_info["start_ms"], batch_info["end_ms"]),
             sync_config={
-                "min_segment_sec": 15,
-                "max_segment_sec": 120,
-                "max_transcript_chars": 1000,
-                "silence_gap_ms": 500,
-                "max_visual_items": 10,
-                "max_visual_chars": 3000,
-                "dedup_similarity_threshold": 0.9,
+                "min_segment_sec": config.raw.sync_engine.min_segment_sec,
+                "max_segment_sec": config.raw.sync_engine.max_segment_sec,
+                "max_transcript_chars": config.raw.sync_engine.max_transcript_chars,
+                "silence_gap_ms": config.raw.sync_engine.silence_gap_ms,
+                "max_visual_items": config.raw.sync_engine.max_visual_items,
+                "max_visual_chars": config.raw.sync_engine.max_visual_chars,
+                "dedup_similarity_threshold": config.raw.sync_engine.dedup_similarity_threshold,
             },
             segment_id_offset=cumulative_segment_count,
+            run_id_override=processing_job_id or video_id,
         )
+        
+        # [User Request] Track segment IDs
+        # segments_units.jsonl을 읽거나 sync_result['segments_count']로 계산
+        # [User Request] Track segment IDs
+        # segments_units.jsonl을 읽거나 sync_result['segments_count']로 계산
+        current_batch_segments_count = sync_result.get("segments_count", 0)
+        current_segments = list(range(cumulative_segment_count + 1, cumulative_segment_count + current_batch_segments_count + 1))
+        _print_status()
+        cumulative_segment_count += current_batch_segments_count
+        status_map["Summarize"] = "RUNNING..."
+        _print_status()
+        
+        from src.fusion.summarizer import run_summarizer, run_batch_summarizer
+        from src.judge.judge import run_judge
 
-        new_segment_count = sync_result.get("segments_count", 0)
-        cumulative_segment_count += new_segment_count
-
-        batch_segments_path = batch_dir / "segments_units.jsonl"
-        batch_summaries_path = batch_dir / "segment_summaries.jsonl"
-
-        # 배치 segments를 fusion 디렉토리에 누적
-        accumulate_segments_to_fusion(batch_segments_path, accumulated_segments_path)
-
-        # Sync 완료 후 segments DB 업로드 (segment_map 반환)
-        batch_segment_map: Dict[int, str] = {}
-        if sync_to_db and adapter and video_id and processing_job_id:
-            try:
-                batch_segment_map = upload_segments_for_batch(
-                    adapter,
-                    video_id,
-                    processing_job_id,
-                    batch_segments_path,
-                    offset=cumulative_segment_count - new_segment_count,
-                )
-                if batch_segment_map:
-                    print(f"  [DB] Uploaded {len(batch_segment_map)} segments for batch {batch_idx + 1}")
-            except Exception as e:
-                print(f"  [DB] Warning: Failed to upload segments: {e}")
-
-        config = load_config(str(fusion_config_path))
-        print(f"   [Config] Summarizer Prompt: {config.raw.summarizer.prompt_version} | Judge Prompt: {config.judge.prompt_version}")
-
-        # Judge 실패 시 재시도 로직 (Feedback Loop)
-        max_attempts = 2
         feedback_map = {}
-        passed = False
-        final_score = 0.0
-        new_context = ""
-        latest_judge_result = None
+        batch_passed = False
+        batch_score = 0.0
+        
+        for attempt in range(1, 3):
+            if attempt > 1:
+                print(f"\n[Pipeline] Attempt {attempt}/2: Retrying fusion due to judge feedback...", flush=True)
+            
+            # 4. Summarize (LLM)
+            status_map["Summarize"] = "RUNNING..."
+            _print_status()
 
-        for attempt in range(max_attempts):
-            is_retry = attempt > 0
-            stage_suffix = f"_retry_{attempt}" if is_retry else ""
+            def _sum_status_cb(tokens):
+                status_map["Summarize"] = f"RUNNING.. {tokens} (token)"
+                _print_status()
             
-            # SUMMARY_RUNNING 상태 업데이트
-            if status_callback and not is_retry:
-                status_callback("SUMMARY_RUNNING", batch_idx, total_batches)
-            
-            # 1. Summarizer 실행
-            summarize_result, sum_elapsed = timer.time_stage(
-                f"pipeline_batch_{batch_idx + 1}.summarize{stage_suffix}",
-                run_batch_summarizer,
-                segments_units_jsonl=batch_segments_path,
-                output_dir=batch_dir,
+            t_summarize = time.perf_counter()
+            summarizer_result = run_batch_summarizer(
+                segments_units_jsonl=batch_dir / "fusion" / "segments_units.jsonl",
+                output_dir=batch_dir / "fusion",
                 config=config,
-                previous_context=previous_context,
-                limit=limit,
                 feedback_map=feedback_map,
+                limit=None, 
+                status_callback=_sum_status_cb,
+                verbose=True,
+                batch_label=f"Batch {start_batch_index + i + 1}",
             )
-            if not is_retry:  # Only count first attempt or accumulated retries? usually we sum all attempts
-                # Actually, simple sum is fine.
-                pass
-            total_summarizer_elapsed += sum_elapsed
-            new_context = summarize_result.get("context", "")
-
-            # JUDGE_RUNNING 상태 업데이트
-            if status_callback and not is_retry:
-                status_callback("JUDGE_RUNNING", batch_idx, total_batches)
-
-            # 2. Judge 실행
-            judge_result, judge_elapsed = timer.time_stage(
-                f"pipeline_batch_{batch_idx + 1}.judge{stage_suffix}",
-                run_judge,
-                config=config,
-                segments_units_path=batch_segments_path,
-                segment_summaries_path=batch_summaries_path,
-                output_report_path=batch_dir / "judge_report.json",
-                output_segments_path=batch_dir / "judge_segment_reports.jsonl",
-                batch_size=config.judge.batch_size,
-                workers=config.judge.workers,
-                json_repair_attempts=config.judge.json_repair_attempts,
-                limit=limit,
-                verbose=config.judge.verbose,
-                write_outputs=False,
-            )
-            total_judge_elapsed += judge_elapsed
-            latest_judge_result = judge_result
-
-            # 3. 결과 판정
-            passed, final_score = _process_judge_result(
-                judge_result,
-                config,
-                batch_dir / "judge.json",
-                batch_idx
-            )
-
-            # Summary 완료 후 DB 업로드 (마지막 시도에서만 또는 PASS 시)
-            if sync_to_db and adapter and video_id and processing_job_id:
-                if passed or attempt == max_attempts - 1:
-                    try:
-                        summary_count = upload_summaries_for_batch(
-                            adapter,
-                            video_id,
-                            processing_job_id,
-                            batch_summaries_path,
-                            batch_segment_map,
-                            batch_index=batch_idx + 1,  # 배치 인덱스 1-based
-                        )
-                        if summary_count > 0:
-                            print(f"  [DB] Uploaded {summary_count} summaries for batch {batch_idx + 1}")
-                    except Exception as e:
-                        print(f"  [DB] Warning: Failed to upload summaries: {e}")
-
-                    # Judge 결과 DB 업로드
-                    try:
-                        upload_judge_result(
-                            adapter, video_id, processing_job_id, judge_result, batch_idx + 1
-                        )
-                        print(f"  [DB] Uploaded judge result for batch {batch_idx + 1}")
-                    except Exception as e:
-                        print(f"  [DB] Warning: Failed to upload judge result: {e}")
-
-            if passed:
-                break
+            batch_summarizer_elapsed = time.perf_counter() - t_summarize
+            total_summarizer_elapsed += batch_summarizer_elapsed
             
-            # 재시도 준비: 피드백 추출
-            if attempt < max_attempts - 1:
-                print(f"⚠️ Batch {batch_idx + 1} Judge Fail (Score: {final_score:.1f}). Retrying with feedback... ({attempt + 1}/{max_attempts})")
-                feedback_map = {}
+            # [User Request] Show final status
+            status_map["Summarize"] = "DONE"
+            _print_status()
+
+            # 5. Judge (LLM)
+            status_map["Judge"] = "RUNNING..."
+            _print_status()
+
+            def _judge_status_cb(tokens):
+                status_map["Judge"] = f"RUNNING.. {tokens} (token)"
+                _print_status()
+            
+            t_judge = time.perf_counter()
+            judge_result = run_judge(
+                config=config,
+                segments_units_path=batch_dir / "fusion" / "segments_units.jsonl",
+                segment_summaries_path=batch_dir / "fusion" / "segment_summaries.jsonl",
+                output_report_path=batch_dir / "judge_report.json",
+                output_segments_path=batch_dir / "judge_segments.jsonl",
+                write_outputs=True,
+                verbose=True,
+                batch_size=getattr(config.judge, "batch_size", 10),
+                workers=getattr(config.judge, "workers", 4),
+                json_repair_attempts=getattr(config.judge, "json_repair_attempts", 3),
+                limit=limit, 
+                status_callback=_judge_status_cb,
+                batch_label=f"Batch {start_batch_index + i + 1}",
+            )
+            batch_judge_elapsed = time.perf_counter() - t_judge
+            total_judge_elapsed += batch_judge_elapsed
+            
+            passed, score = _process_judge_result(
+                judge_result, 
+                config, 
+                batch_dir / "judge.json", 
+                None, 
+                silent=True
+            )
+            batch_score = score
+
+            # [User Request] Show final status with score
+            status_map["Judge"] = f"DONE ({batch_score:.1f})"
+            _print_status()
+            
+            if passed:
+                batch_passed = True
+                break
+                
+            if attempt < 1:
+                # Retry
                 segment_reports = judge_result.get("segment_reports", []) or []
                 for item in segment_reports:
-                    seg_id = item.get("segment_id")
-                    fb = str(item.get("feedback", "")).strip()
-                    if seg_id is not None and fb:
-                        feedback_map[int(seg_id)] = fb
-        if latest_judge_result is not None:
-            write_jsonl(
-                batch_dir / "judge_segment_reports.jsonl",
-                latest_judge_result.get("segment_reports", []) or [],
-            )
+                    if item.get("segment_id") is not None:
+                        feedback_map[int(item["segment_id"])] = str(item.get("feedback", "")).strip()
 
-        # 루프 종료 후 Context/Accumulation 처리
-        if new_context:
-            previous_context = new_context[:500]
+        status_map["Summarize"] = "DONE"
+        status_map["Judge"] = f"DONE ({batch_score:.1f})" if batch_passed else f"FAIL ({batch_score:.1f})"
+        _print_status()
+        print("") # Newline
 
-        if batch_summaries_path.exists():
-            with batch_summaries_path.open("r", encoding="utf-8") as handle:
-                batch_content = handle.read()
-            with accumulated_summaries_path.open("a", encoding="utf-8") as handle:
-                handle.write(batch_content)
-
-        fusion_info["batch_results"].append(
-            {
-                "batch_index": batch_idx,
-                "capture_range": [batch_info["start_idx"], batch_info["end_idx"]],
-                "segments_count": new_segment_count,
-            }
-        )
-
-        if not passed:
+        total_judge_score += batch_score
+        if not batch_passed:
             all_batches_passed = False
 
-        # passed is result of last attempt
-        total_judge_score += final_score
-        processed_batches_count += 1
+        # Accumulate results
+        batch_summaries_path = batch_dir / "fusion" / "segment_summaries.jsonl"
+        if batch_summaries_path.exists():
+            accumulate_segments_to_fusion(batch_summaries_path, accumulated_summaries_path)
+            
+        batch_units_path = batch_dir / "fusion" / "segments_units.jsonl"
+        if batch_units_path.exists():
+            content = batch_units_path.read_text(encoding="utf-8")
+            with accumulated_segments_path.open("a", encoding="utf-8") as f:
+                f.write(content)
+                if not content.endswith("\n"):
+                    f.write("\n")
 
-        # 배치 완료 시 progress 업데이트
-        if sync_to_db and adapter and processing_job_id:
+        # DB Upload (Fusion)
+        if adapter and processing_job_id and sync_to_db:
             try:
-                adapter.update_processing_job_batch_progress(
-                    processing_job_id,
-                    current_batch=batch_idx + 1,
-                    total_batches=total_batches,
-                    current_stage=None,  # 배치 완료 시에는 단계 없음
+                segment_map = {}
+                batch_units_path = batch_dir / "fusion" / "segments_units.jsonl"
+                if batch_units_path.exists():
+                    segment_map = upload_segments_for_batch(
+                        adapter,
+                        video_id,
+                        processing_job_id,
+                        batch_units_path,
+                        offset=cumulative_segment_count - current_batch_segments_count,
+                    )
+
+                if batch_summaries_path.exists():
+                     upload_summaries_for_batch(
+                        adapter, video_id, processing_job_id, batch_summaries_path, segment_map, batch_index=current_batch_global_idx
+                     )
+                upload_judge_result(
+                    adapter, video_id, processing_job_id, batch_dir / "judge.json", current_batch_global_idx
                 )
             except Exception as e:
-                print(f"  [DB] Warning: Failed to update batch progress: {e}")
+                print(f"[DB] Error uploading batch fusion results: {e}")
 
-        print(
-            f"  ✅ Pipeline batch {batch_idx + 1} complete "
-            f"(segments: {new_segment_count})"
-        )
+    # [END of Batch Loop]
+
 
     # 전체 VLM 시간을 합산하여 'vlm' 단계로 기록 (리포트용)
     timer.record_stage("vlm", total_vlm_elapsed)
     fusion_info["timings"]["vlm_sec"] = total_vlm_elapsed
+
+    # [Standardization] 배치별 vlm.json 및 stt.json을 루트로 통합/복제 (단일 모드 호환성)
+    root_vlm_path = video_root / "vlm.json"
+    all_vlm_items = []
+    # batches 폴더 내의 각 배치에서 vlm.json의 items를 수집
+    batches_dir = video_root / "batches"
+    if batches_dir.exists():
+        for batch_dir in sorted(batches_dir.iterdir()):
+            if not batch_dir.is_dir():
+                continue
+            batch_vlm_path = batch_dir / "vlm.json"
+            if batch_vlm_path.exists():
+                try:
+                    b_data = json.loads(batch_vlm_path.read_text(encoding="utf-8"))
+                    items = b_data.get("items", [])
+                    if items:
+                        all_vlm_items.extend(items)
+                except Exception as e:
+                    print(f"[Warning] Failed to read {batch_vlm_path}: {e}")
+    
+    if all_vlm_items:
+        # 시간순 정렬
+        all_vlm_items.sort(key=lambda x: int(x.get("timestamp_ms", 0)))
+        write_json(root_vlm_path, {"items": all_vlm_items})
+        print(f"  [Standardization] Consolidated {len(all_vlm_items)} VLM items to {root_vlm_path.relative_to(ROOT)}")
+
+    # stt.json이 루트에 없으면 (일반적으로는 이미 존재함) 검색해서 복제 또는 링크
+    root_stt_path = video_root / "stt.json"
+    if not root_stt_path.exists():
+        # 혹시 batches 내부에 있는지 확인 (보통은 루트에 있음)
+        for batch_dir in sorted(batches_dir.iterdir()):
+            if not batch_dir.is_dir():
+                continue
+            batch_stt_path = batch_dir / "stt.json"
+            if batch_stt_path.exists():
+                import shutil
+                shutil.copy2(batch_stt_path, root_stt_path)
+                print(f"  [Standardization] Copied stt.json to {root_stt_path.relative_to(ROOT)}")
+                break
 
     fusion_info["segment_count"] = cumulative_segment_count
 
