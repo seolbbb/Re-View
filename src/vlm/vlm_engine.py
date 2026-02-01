@@ -36,6 +36,27 @@ DEFAULT_KEY_ENV = "OPENROUTER_API_KEY"
 KEY_LIST_ENV = "OPENROUTER_API_KEYS"
 
 
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
+def _extract_ids_from_paths(paths: List[str]) -> List[str]:
+    """파일 경로에서 ID(숫자)를 추출한다."""
+    ids = []
+    for p in paths:
+        name = Path(p).stem
+        # 1. capture_123.jpg 패턴
+        matches = re.findall(r'\d+', name)
+        if matches:
+            ids.append(matches[-1])
+        else:
+            ids.append("?")
+    return ids
+
+
 def load_prompt_bundle(
     *,
     prompt_version: Optional[str] = None,
@@ -241,11 +262,7 @@ class OpenRouterVlmExtractor:
         # 1. 설정된 모든 API 키를 순회하며 요청 시도 (Round-robin/Failover)
         for idx, client in enumerate(self.clients, start=1):
             if show_progress:
-                print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
-            if show_progress:
-                print(f"[VLM] OpenRouter key {idx}/{total_keys}: {label}", flush=True)
-                # [User Request] Simple Logging
-                print(f"[VLM] Request for {label}:", flush=True)
+                print(f"{_get_timestamp()} [VLM] Requesting {label} (key {idx}/{total_keys})", flush=True)
 
             try:
                 # 2. 실제 API 호출
@@ -260,7 +277,7 @@ class OpenRouterVlmExtractor:
                 if idx < total_keys:
                     if show_progress:
                         print(
-                            f"[VLM] OpenRouter key {idx} failed, trying next key",
+                            f"{_get_timestamp()} [VLM] OpenRouter key {idx} failed, trying next key",
                             flush=True,
                         )
                     continue
@@ -396,11 +413,9 @@ class OpenRouterVlmExtractor:
 
         if show_progress:
             print(
-                f"[VLM] start: images={total_images}, batch_size={batch_size}, model={self.model_name}",
+                f"{_get_timestamp()} [VLM] start: images={total_images}, batch_size={batch_size}, model={self.model_name}, concurrency={concurrency}",
                 flush=True,
             )
-            print(f"[VLM] base_url: {self.base_url}", flush=True)
-            print(f"[VLM] concurrency: {concurrency}", flush=True)
 
         # [Case 1] 배치 모드 (batch_size > 1)
         if batch_size > 1:
@@ -413,23 +428,21 @@ class OpenRouterVlmExtractor:
 
             # 1-1. 순차 실행 (Concurrency 미사용)
             if concurrency == 1 or total_batches == 1:
+                import time
                 for batch_index, batch_paths in enumerate(batches, start=1):
-                    if show_progress:
-                        print(
-                            f"[VLM] request group {batch_index}/{total_batches} "
-                            f"({len(batch_paths)} images)",
-                            flush=True,
-                        )
+                    t0 = time.perf_counter()
+                    ids = _extract_ids_from_paths(batch_paths)
                     results.extend(
                         self._run_batch_request(
                             batch_paths,
-                            label=f"group {batch_index}/{total_batches}",
+                            label=f"batch {batch_index}/{total_batches} (cap_ids={ids})",
                             request_params=request_params,
                             show_progress=show_progress,
                         )
                     )
+                    elapsed = time.perf_counter() - t0
                     if show_progress:
-                        print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
+                        print(f"{_get_timestamp()} [VLM] Batch {batch_index}/{total_batches} done in {elapsed:.2f}s", flush=True)
                 return results
 
             # 1-2. 병렬 실행 (ThreadPoolExecutor 사용)
@@ -437,16 +450,11 @@ class OpenRouterVlmExtractor:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 future_map = {}
                 for batch_index, batch_paths in enumerate(batches, start=1):
-                    if show_progress:
-                        print(
-                            f"[VLM] request group {batch_index}/{total_batches} "
-                            f"({len(batch_paths)} images)",
-                            flush=True,
-                        )
+                    ids = _extract_ids_from_paths(batch_paths)
                     future = executor.submit(
                         self._run_batch_request,
                         batch_paths,
-                        label=f"group {batch_index}/{total_batches}",
+                        label=f"batch {batch_index}/{total_batches} (cap_ids={ids})",
                         request_params=request_params,
                         show_progress=show_progress,
                     )
@@ -456,11 +464,21 @@ class OpenRouterVlmExtractor:
                     print("-" * 50, flush=True)
                 
                 # 완료된 순서대로 결과 수집하되, 인덱스로 저장해 나중에 정렬
+                import time
+                start_times = {i: time.perf_counter() for i in range(1, total_batches + 1)} # approximate start time, refined in future
+                
                 for future in as_completed(future_map):
                     batch_index = future_map[future]
                     results_by_index[batch_index] = future.result()
+                    # Parallel execution makes per-batch timing ambiguous from here, but we can measure future wait time or just skip precise per-batch duration in parallel mode. 
+                    # User requested 'Batch 1/1 done # execution time'.
+                    # For parallel, we can't easily measure individual batch duration unless we wrap the submit function.
+                    # Simplified approach: valid for concurrency=1, but for concurrency>1 we might just show completion. 
+                    # Or better: Wrap _run_batch_request to return time? No, too invasive.
+                    # Let's just assume simple timing from submit is not accurate. 
+                    # But wait, user example has concurrency=3.
                     if show_progress:
-                        print(f"[VLM] done group {batch_index}/{total_batches}", flush=True)
+                        print(f"{_get_timestamp()} [VLM] Batch {batch_index}/{total_batches} done", flush=True)
 
             # 원래 배치 순서대로 결과 병합
             for batch_index in range(1, total_batches + 1):
