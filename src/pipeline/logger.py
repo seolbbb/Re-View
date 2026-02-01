@@ -16,6 +16,7 @@
 import sys
 import threading
 from typing import Dict, Optional
+from datetime import datetime
 
 
 class ColumnLogger:
@@ -100,7 +101,9 @@ class ColumnLogger:
             # 출력할 유효 내용이 있는 경우에만 실행
             if line_parts:
                 final_line = "    ".join(line_parts)
-                print(final_line)
+                # 현재 시간을 맨 앞에 추가
+                timestamp = datetime.now().strftime('%Y-%m-%d | %H:%M:%S.%f')[:-3]
+                print(f"[{timestamp}] {final_line}")
                 sys.stdout.flush()
 
 

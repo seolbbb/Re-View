@@ -148,18 +148,24 @@ def process_pipeline(request: ProcessRequest, background_tasks: BackgroundTasks)
 # =============================================================================
 
 
-def _build_status_payload(adapter, video_id: str) -> Dict[str, Any]:
-    """비디오 상태 페이로드를 생성합니다 (SSE/REST 공용)."""
+@app.get("/videos/{video_id}/status")
+def get_video_status(video_id: str) -> Dict[str, Any]:
+    """비디오 상태 및 현재 작업 정보 조회."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # 비디오 정보 조회
     video = adapter.get_video(video_id)
     if not video:
-        return None
-
+        raise HTTPException(status_code=404, detail="Video not found")
+    
     result = {
         "video_id": video_id,
         "video_status": video.get("status"),
         "error_message": video.get("error_message"),
     }
-
+    
     # 전처리 작업 정보
     preprocess_job_id = video.get("current_preprocess_job_id")
     if preprocess_job_id:
@@ -171,7 +177,7 @@ def _build_status_payload(adapter, video_id: str) -> Dict[str, Any]:
                 "started_at": preprocess_job.get("started_at"),
                 "ended_at": preprocess_job.get("ended_at"),
             }
-
+    
     # 처리 작업 정보
     processing_job_id = video.get("current_processing_job_id")
     if processing_job_id:
@@ -185,115 +191,8 @@ def _build_status_payload(adapter, video_id: str) -> Dict[str, Any]:
                 "started_at": processing_job.get("started_at"),
                 "ended_at": processing_job.get("ended_at"),
             }
-
+    
     return result
-
-
-def _build_summaries_payload(adapter, video_id: str) -> Dict[str, Any]:
-    """요약 페이로드를 생성합니다 (SSE/REST 공용)."""
-    rows = adapter.get_summaries(video_id)
-
-    items = []
-    for r in rows:
-        seg_info = r.get("segments") or {}
-        items.append({
-            "summary_id": r.get("id"),
-            "segment_id": r.get("segment_id"),
-            "segment_index": seg_info.get("segment_index"),
-            "start_ms": seg_info.get("start_ms"),
-            "end_ms": seg_info.get("end_ms"),
-            "summary": r.get("summary"),
-            "created_at": r.get("created_at"),
-        })
-
-    items.sort(key=lambda x: x.get("segment_index") or 0)
-
-    return {
-        "video_id": video_id,
-        "count": len(items),
-        "items": items,
-    }
-
-
-@app.get("/videos/{video_id}/status")
-def get_video_status(video_id: str) -> Dict[str, Any]:
-    """비디오 상태 및 현재 작업 정보 조회."""
-    adapter = get_supabase_adapter()
-    if not adapter:
-        raise HTTPException(status_code=503, detail="Database not configured")
-
-    result = _build_status_payload(adapter, video_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    return result
-
-
-@app.get("/videos/{video_id}/status/stream")
-def stream_video_status(video_id: str):
-    """비디오 상태 및 요약을 SSE로 스트리밍합니다.
-
-    이벤트 타입:
-    - status: 상태 변경 시 (video_status, processing_job, error_message)
-    - summaries: 새 요약 추가 시 (count, items)
-    - done: 처리 완료/실패 시
-    """
-    adapter = get_supabase_adapter()
-    if not adapter:
-        raise HTTPException(status_code=503, detail="Database not configured")
-
-    # 초기 비디오 존재 확인
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    def event_generator():
-        last_status_json = None
-        last_summary_count = 0
-
-        while True:
-            # 상태 조회
-            status_data = _build_status_payload(adapter, video_id)
-            if status_data is None:
-                yield _format_sse_event("error", {"error": "Video not found"})
-                break
-
-            # 상태 변경 시에만 이벤트 발생
-            status_json = json.dumps(status_data, sort_keys=True, default=str)
-            if status_json != last_status_json:
-                yield _format_sse_event("status", status_data)
-                last_status_json = status_json
-
-            # 현재 상태 확인
-            current_status = (status_data.get("video_status") or "").upper()
-
-            # 처리 중일 때만 요약 체크
-            if current_status not in ("DONE", "FAILED"):
-                summaries = _build_summaries_payload(adapter, video_id)
-                if summaries["count"] > last_summary_count:
-                    yield _format_sse_event("summaries", summaries)
-                    last_summary_count = summaries["count"]
-
-            # 완료/실패 시 done 이벤트 후 종료
-            if current_status in ("DONE", "FAILED"):
-                # 최종 요약 전송
-                final_summaries = _build_summaries_payload(adapter, video_id)
-                if final_summaries["count"] > last_summary_count:
-                    yield _format_sse_event("summaries", final_summaries)
-                yield _format_sse_event("done", {"video_status": current_status})
-                break
-
-            time.sleep(1)  # 1초 간격 DB 체크
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @app.get("/videos/{video_id}/progress")
@@ -393,12 +292,36 @@ def get_video_summaries(video_id: str) -> Dict[str, Any]:
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
-
+    
     video = adapter.get_video(video_id)
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
-
-    return _build_summaries_payload(adapter, video_id)
+        
+    # summaries 테이블 조회 (segments 조인됨)
+    rows = adapter.get_summaries(video_id)
+    
+    # 응답 포맷 구성
+    items = []
+    for r in rows:
+        seg_info = r.get("segments") or {}
+        items.append({
+            "summary_id": r.get("id"),
+            "segment_id": r.get("segment_id"),
+            "segment_index": seg_info.get("segment_index"),
+            "start_ms": seg_info.get("start_ms"),
+            "end_ms": seg_info.get("end_ms"),
+            "summary": r.get("summary"),  # JSONB
+            "created_at": r.get("created_at"),
+        })
+        
+    # segment_index 기준 정렬
+    items.sort(key=lambda x: x.get("segment_index") or 0)
+    
+    return {
+        "video_id": video_id,
+        "count": len(items),
+        "items": items,
+    }
 
 
 @app.get("/videos/{video_id}/evidence")
@@ -484,6 +407,11 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
 
     adapter = get_supabase_adapter()
     try:
+        print("\n" + "=" * 60)
+        print(f"  Re:View API Pipeline: {video_id}")
+        print("=" * 60)
+        print(f"1. Starting 'Preprocessing'...")
+        
         # 1. 전처리 (existing_video_id로 기존 레코드 재사용, DB 중복 생성 방지)
         run_preprocess_pipeline(
             video=video_path,
@@ -496,6 +424,7 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
             _ensure_preprocess_job_finalized(adapter, video_id)
             adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
+        print(f"\n2. Starting 'Processing'...")
         # 2. 처리 파이프라인
         video_name = Path(video_path).stem
         run_processing_pipeline(
@@ -543,6 +472,13 @@ async def upload_video(
         original_filename=file.filename,
     )
     video_id = video["id"]
+    
+    # [User Request] Video 원본 업로드 (video_storage_key 채우기)
+    try:
+        adapter.upload_video(video_id, save_path)
+    except Exception as e:
+        print(f"[API] Warning: Video upload failed but continuing preprocess: {e}")
+
     adapter.update_video_status(video_id, "PREPROCESSING")
 
     background_tasks.add_task(_run_full_pipeline, str(save_path), video_id)
@@ -649,6 +585,10 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
     adapter = get_supabase_adapter()
     tmp_dir = None
     try:
+        print("\n" + "=" * 60)
+        print(f"  Re:View API Pipeline (Storage): {video_id}")
+        print("=" * 60)
+        
         # 1. Storage에서 임시 디렉토리로 다운로드
         tmp_dir = tempfile.mkdtemp()
         original_name = Path(storage_key).name
@@ -659,6 +599,7 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         file_data = adapter.client.storage.from_("videos").download(storage_key)
         tmp_path.write_bytes(file_data)
 
+        print(f"\n1. Starting 'Preprocessing'...")
         # 2. 전처리
         run_preprocess_pipeline(
             video=str(tmp_path),
@@ -668,9 +609,10 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         )
         if adapter:
             _update_video_duration(adapter, video_id, str(tmp_path))
-            _ensure_preprocess_job_finalized(adapter, video_id)
+            _ensure_preprocess_job_finalized(adapter, video_id) # Added this line
             adapter.update_video_status(video_id, "PREPROCESS_DONE")
 
+        print(f"\n2. Starting 'Processing'...") # Added print header
         # 3. 처리 파이프라인
         video_name = tmp_path.stem
         run_processing_pipeline(
@@ -778,7 +720,6 @@ class ChatRequest(BaseModel):
     video_id: str
     message: str
     session_id: Optional[str] = None
-    reasoning_mode: Optional[str] = None  # "flash" or "thinking"
 
 
 class ChatResponse(BaseModel):
@@ -799,9 +740,6 @@ def _get_or_create_chat_session(request: ChatRequest):
     if request.session_id:
         session = _chat_sessions.get(request.session_id)
     if session:
-        # Update reasoning_mode if provided in request
-        if request.reasoning_mode and request.reasoning_mode in ("flash", "thinking"):
-            session._state["reasoning_mode"] = request.reasoning_mode
         return session
 
     adapter = get_supabase_adapter()
@@ -818,10 +756,6 @@ def _get_or_create_chat_session(request: ChatRequest):
         "video_name": video_name,
         "chat_mode": "full",
     }
-    # Set reasoning_mode if provided
-    if request.reasoning_mode and request.reasoning_mode in ("flash", "thinking"):
-        initial_state["reasoning_mode"] = request.reasoning_mode
-
     return _chat_sessions.create(
         request.video_id,
         video_name,
