@@ -19,9 +19,15 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
 from src.fusion.config import ConfigBundle
 from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_token_usage
-from src.fusion.gemini import init_gemini_client, run_with_retries
+from src.fusion.gemini import init_gemini_client, run_with_retries, GeminiClientBundle
 
 
 PROMPTS_PATH = ROOT / "config" / "judge" / "prompts.yaml"
@@ -123,12 +129,13 @@ def _evaluate_batch(
     batch_total: int,
     json_repair_attempts: int,
     verbose: bool,
-) -> Dict[int, Dict[str, Any]]:
+    batch_label: Optional[str] = None,
+) -> Tuple[Dict[int, Dict[str, Any]], int]:
     """배치 단위로 LLM 평가를 실행하고 결과를 반환한다."""
     # 1. 배치 처리 시작 시간 측정
     seg_ids = [int(item.get("segment_id", -1)) for item in batch]
     if verbose:
-        print(f"[JUDGE] batch {batch_index}/{batch_total} start (segments={seg_ids})")
+        print(f"{_get_timestamp()} [JUDGE] Batch {batch_index}/{batch_total} start (segments={seg_ids})")
     started = time.perf_counter()
     
     # 2. 클라이언트/프롬프트 준비
@@ -136,7 +143,7 @@ def _evaluate_batch(
     prompt = _build_prompt(prompt_template, batch)
     
     # 3. LLM 호출 (Retry 로직 포함)
-    llm_text = run_with_retries(
+    llm_text, total_tokens = run_with_retries(
         client_bundle,
         prompt,
         response_schema,
@@ -145,6 +152,8 @@ def _evaluate_batch(
         timeout_sec=config.raw.llm_gemini.timeout_sec,
         max_retries=config.raw.llm_gemini.max_retries,
         backoff_sec=config.raw.llm_gemini.backoff_sec,
+        context=f"{batch_label}: Judge" if batch_label else "Judge",
+        verbose=verbose,
     )
     
     last_error: Optional[Exception] = None
@@ -160,13 +169,16 @@ def _evaluate_batch(
                 if not isinstance(item, dict):
                     raise ValueError("LLM response item is not an object.")
                 seg_id = int(item.get("segment_id"))
+                if verbose:
+                    prefix = f"{batch_label}: " if batch_label else "      "
+                    print(f"{_get_timestamp()} {prefix}- [Judge] Evaluated segment {seg_id}", flush=True)
                 results[seg_id] = item
             last_error = None
             break
         except Exception as exc:
             last_error = exc
             # 수정 프롬프트로 재시도
-            llm_text = run_with_retries(
+            llm_text, tokens = run_with_retries(
                 client_bundle,
                 _repair_prompt(llm_text),
                 response_schema,
@@ -175,15 +187,18 @@ def _evaluate_batch(
                 timeout_sec=config.raw.llm_gemini.timeout_sec,
                 max_retries=config.raw.llm_gemini.max_retries,
                 backoff_sec=config.raw.llm_gemini.backoff_sec,
+                context=f"{batch_label}: [Judge]" if batch_label else "Judge",
+                verbose=verbose,
             )
+            total_tokens += tokens
     if last_error:
         raise RuntimeError(f"LLM JSON parse failed: {last_error}")
     
     # 5. 처리 결과 반환
     if verbose:
         elapsed = time.perf_counter() - started
-        print(f"[JUDGE] batch {batch_index}/{batch_total} done in {elapsed:.2f}s")
-    return results
+        print(f"{_get_timestamp()} [JUDGE] Batch {batch_index}/{batch_total} done in {elapsed:.2f}s")
+    return results, total_tokens
 
 
 def _load_segments_units(path: Path) -> Dict[int, Dict[str, Any]]:
@@ -288,6 +303,8 @@ def run_judge(
     limit: Optional[int],
     verbose: bool,
     write_outputs: bool,
+    status_callback: Optional[Callable[[int], None]] = None,
+    batch_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Judge를 실행하고 결과를 반환한다."""
     # 1. 데이터 로드 및 정합성 체크
@@ -345,36 +362,39 @@ def run_judge(
             model=client_bundle.model,
             extra={"segments_count": len(payloads)}
         )
-        print(f"[TOKEN] judge input_tokens={input_tokens}")
+        if status_callback:
+            status_callback(input_tokens)
     except Exception as exc:
-        print(f"[TOKEN] count_tokens failed: {exc}")
+        pass
 
     llm_results: Dict[int, Dict[str, Any]] = {}
+    total_judge_tokens = 0
     batches = _chunked(payloads, batch_size)
     if verbose:
         print(
-            f"[JUDGE] batches={len(batches)} batch_size={batch_size} workers={workers}"
+            f"{_get_timestamp()} [JUDGE] batches={len(batches)} batch_size={batch_size} workers={workers}"
         )
     
     # 4. 배치 평가 실행 (단일/병렬)
     if workers == 1 or len(batches) == 1:
         for idx, batch in enumerate(batches, start=1):
-            llm_results.update(
-                _evaluate_batch(
-                    config=config,
-                    response_schema=response_schema,
-                    prompt_template=prompt_template,
-                    batch=batch,
-                    batch_index=idx,
-                    batch_total=len(batches),
-                    json_repair_attempts=json_repair_attempts,
-                    verbose=verbose,
-                )
+            batch_result, batch_tokens = _evaluate_batch(
+                config=config,
+                response_schema=response_schema,
+                prompt_template=prompt_template,
+                batch=batch,
+                batch_index=idx,
+                batch_total=len(batches),
+                json_repair_attempts=json_repair_attempts,
+                verbose=verbose,
+                batch_label=f"{batch_label} ({idx}/{len(batches)})" if batch_label else None,
             )
+            llm_results.update(batch_result)
+            total_judge_tokens += batch_tokens
     else:
-        max_workers = min(workers, len(batches))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_batch = {
                 executor.submit(
                     _evaluate_batch,
                     config=config,
@@ -385,11 +405,14 @@ def run_judge(
                     batch_total=len(batches),
                     json_repair_attempts=json_repair_attempts,
                     verbose=verbose,
-                )
+                    batch_label=f"{batch_label} ({idx}/{len(batches)})" if batch_label else None,
+                ): idx
                 for idx, batch in enumerate(batches, start=1)
-            ]
-            for future in as_completed(futures):
-                llm_results.update(future.result())
+            }
+            for future in as_completed(future_to_batch):
+                batch_result, batch_tokens = future.result()
+                llm_results.update(batch_result)
+                total_judge_tokens += batch_tokens
 
     # 5. 결과 집계 및 점수 계산
     segment_reports: List[Dict[str, Any]] = []
@@ -464,7 +487,11 @@ def run_judge(
         },
     }
 
-    result = {"report": report, "segment_reports": segment_reports}
+    result = {
+        "report": report, 
+        "segment_reports": segment_reports,
+        "token_usage": {"total_tokens": total_judge_tokens}
+    }
     if write_outputs:
         report["meta"]["segments_units_path"] = str(segments_units_path)
         report["meta"]["segment_summaries_path"] = str(segment_summaries_path)

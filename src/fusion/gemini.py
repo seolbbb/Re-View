@@ -12,6 +12,14 @@ from .config import ConfigBundle
 
 logger = logging.getLogger(__name__)
 
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 # [TEST] Safety imports for fix
 from google.genai.types import SafetySetting, HarmCategory, HarmBlockThreshold
 
@@ -156,8 +164,8 @@ def generate_content(
     timeout_sec: int,
     *,
     client_override: Optional[Any] = None,
-) -> str:
-    """Gemini 호출 결과의 텍스트를 반환한다."""
+) -> tuple[str, int]:
+    """Gemini 호출 결과의 텍스트와 토큰 사용량을 반환한다."""
     client = client_override or client_bundle.client
     config = {
         "temperature": temperature,
@@ -166,9 +174,6 @@ def generate_content(
     }
 
     # [TEST-START] Disable Safety Filters to fix 'Failed to extract text' error
-    # Original: (No safety settings, uses defaults)
-    # config['safety_settings'] = None 
-    
     config['safety_settings'] = [
         SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.BLOCK_NONE),
         SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.BLOCK_NONE),
@@ -193,7 +198,12 @@ def generate_content(
             config=config,
         )
         
-    return extract_text_from_response(response)
+    text = extract_text_from_response(response)
+    total_tokens = 0
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        total_tokens = getattr(response.usage_metadata, "total_token_count", 0)
+    
+    return text, total_tokens
 
 
 def run_with_retries(
@@ -205,8 +215,10 @@ def run_with_retries(
     timeout_sec: int,
     max_retries: int,
     backoff_sec: List[int],
-) -> str:
-    """오류 시 Gemini 호출을 재시도한다."""
+    context: str = "",
+    verbose: bool = False,
+) -> tuple[str, int]:
+    """오류 시 Gemini 호출을 재시도하며 결과와 토큰 사용량을 반환한다."""
     clients = getattr(client_bundle, "clients", None) or [client_bundle.client]
     total_clients = len(clients)
     last_error: Optional[Exception] = None
@@ -214,6 +226,10 @@ def run_with_retries(
     for idx, client in enumerate(clients, start=1):
         attempt = 0
         while True:
+            if verbose:
+                label = f" (Key {idx}/{total_clients})" if total_clients > 1 else ""
+                indent = "" if context.lstrip().lower().startswith("batch") else "       "
+                print(f"{_get_timestamp()} {indent}[{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
             try:
                 return generate_content(
                     client_bundle,
@@ -257,10 +273,15 @@ def run_with_retries(
                     except:
                         simplified_msg = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
 
-                logger.warning(
-                    f"⚠️ Retry {attempt+1}/{max_retries}: {simplified_msg}"
-                )
-                time.sleep(max(sleep_for, 0))
+                indent = "" if context.lstrip().lower().startswith("batch") else "       "
+                prefix = f"[{context}] " if context else ""
+                if simplified_msg:
+                    if verbose:
+                        print(f"{_get_timestamp()} {indent}[{context}] Failed: {simplified_msg}. Retrying in {sleep_for}s...", flush=True)
+                    else:
+                        print(f"{_get_timestamp()} ⚠️ {indent}[{context}] Retry {attempt+1}/{max_retries}: {simplified_msg}", flush=True)
+                
+                time.sleep(sleep_for)
                 attempt += 1
 
     if last_error:
