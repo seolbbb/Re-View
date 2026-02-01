@@ -38,6 +38,7 @@ _DEFAULT_REASONING_MODE = os.getenv("CHATBOT_REASONING_MODE", "flash")
 _DEFAULT_ROUTER_MODE = os.getenv("CHATBOT_ROUTER", "rules").strip().lower()
 _DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
 _MAX_EVIDENCE_UNITS = int(os.getenv("CHATBOT_MAX_EVIDENCE_UNITS", "10"))
+_TRACE_VERBOSE = True
 
 _OUT_OF_RANGE_MESSAGE = (
     "죄송합니다. 해당 시간에 대한 요약 정보가 아직 업데이트되지 않았습니다. "
@@ -778,14 +779,26 @@ def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[
         return {}
     stt_rows = len(evidence.get("stt") or [])
     vlm_rows = len(evidence.get("vlm") or [])
-    _trace(
-        "enrich.evidence",
-        status="ok",
-        stt_ids=len(stt_ids),
-        cap_ids=len(cap_ids),
-        stt_rows=stt_rows,
-        vlm_rows=vlm_rows,
-    )
+    if _TRACE_VERBOSE:
+        _trace(
+            "enrich.evidence",
+            status="ok",
+            stt_ids=len(stt_ids),
+            cap_ids=len(cap_ids),
+            stt_rows=stt_rows,
+            vlm_rows=vlm_rows,
+            stt_id_list=",".join(stt_ids),
+            cap_id_list=",".join(cap_ids),
+        )
+    else:
+        _trace(
+            "enrich.evidence",
+            status="ok",
+            stt_ids=len(stt_ids),
+            cap_ids=len(cap_ids),
+            stt_rows=stt_rows,
+            vlm_rows=vlm_rows,
+        )
     enriched = _attach_db_evidence(
         records,
         evidence.get("stt", []),
