@@ -48,9 +48,13 @@ class CaptureSettings:
     dedup_orb_distance: int       # ORB 매칭 거리 임계값 (기본: 60)
     dedup_sim_threshold: float    # 중복 판정 유사도 임계값 (기본: 0.5)
 
+    # --- 성능 최적화 설정 ---
+    enable_roi_detection: bool = True   # 콘텐츠 영역 자동 검출 (레터박스 제외)
+    max_processing_width: int = 1280    # 처리할 최대 가로 해상도 (0 = 제한 없음)
+    roi_padding: int = 10               # ROI 주변 여백 (픽셀)
+
     # --- 하위 호환성용 필드 ---
-    sensitivity_diff: float       # 구버전 전이 감지 임계값
-    min_interval: float           # 최소 캡처 간격 (초)
+    min_interval: float = 0.5        # 최소 캡처 간격 (초)
 
 
 def _coerce_str(settings: Dict[str, Any], key: str, default: str) -> str:
@@ -160,7 +164,11 @@ def load_capture_settings(*, settings_path: Optional[Path] = None) -> CaptureSet
         dedup_orb_distance=_coerce_int(payload, "dedup_orb_distance", 60),
         dedup_sim_threshold=_coerce_float(payload, "dedup_sim_threshold", 0.5),
 
-        sensitivity_diff=_coerce_float(payload, "sensitivity_diff", 0.3),
+        # Performance Optimization params
+        enable_roi_detection=bool(payload.get("enable_roi_detection", True)),
+        max_processing_width=_coerce_int(payload, "max_processing_width", 1280),
+        roi_padding=_coerce_int(payload, "roi_padding", 10),
+
         min_interval=_coerce_float(payload, "min_interval", 0.5),
     )
 

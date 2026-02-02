@@ -47,6 +47,9 @@ class HybridSlideExtractor:
         dedup_phash_threshold: int = 12,
         dedup_orb_distance: int = 60,
         dedup_sim_threshold: float = 0.5,
+        enable_roi_detection: bool = True,
+        max_processing_width: int = 1280,
+        roi_padding: int = 10,
         callback: Optional[Any] = None
     ):
         """
@@ -73,6 +76,13 @@ class HybridSlideExtractor:
         self.dedup_sim_threshold = dedup_sim_threshold
         self.callback = callback
         
+        # 성능 최적화 파라미터
+        self.enable_roi_detection = enable_roi_detection
+        self.max_processing_width = max_processing_width
+        self.roi_padding = roi_padding
+        self.roi_cache: Optional[Tuple[int, int, int, int]] = None  # 검출된 ROI 캐시 (x, y, w, h)
+        self.scale_factor: float = 1.0  # 다운스케일링 비율 (역변환용)
+        
         # 특징점 추출 엔진 설정 (ORB: 빠른 속도와 적절한 성능 제공)
         self.orb = cv2.ORB_create(nfeatures=1500)
         
@@ -92,6 +102,43 @@ class HybridSlideExtractor:
 
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
+
+    def _detect_content_roi(self, frame: np.ndarray) -> Tuple[int, int, int, int]:
+        """
+        [Usage File] Internal Use
+        [Purpose] 영상에서 실제 콘텐츠 영역(ROI)을 자동 검출하여 레터박스 등불필요한 검은색 영역을 제외합니다.
+        
+        [Args]
+        - frame (np.ndarray): BGR 컬러 프레임
+        
+        [Returns]
+        - Tuple[int, int, int, int]: (x, y, width, height) ROI 좌표
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Threshold를 사용해 검은 영역과 콘텐츠 영역 분리
+        # 임계값 10은 거의 검은색(0~10) 범위를 제외
+        _, binary = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        
+        # 윤곽선 검출
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # 가장 큰 윤곽선을 실제 콘텐츠 영역으로 간주
+            largest = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest)
+            
+            # 패딩 추가 (경계가 잘리지 않도록)
+            h_frame, w_frame = frame.shape[:2]
+            x = max(0, x - self.roi_padding)
+            y = max(0, y - self.roi_padding)
+            w = min(w_frame - x, w + 2 * self.roi_padding)
+            h = min(h_frame - y, h + 2 * self.roi_padding)
+            
+            return (x, y, w, h)
+        
+        # Fallback: 윤곽선을 찾지 못한 경우 전체 영역 반환
+        return (0, 0, frame.shape[1], frame.shape[0])
 
     def _compute_phash(self, image: np.ndarray) -> str:
         """
@@ -350,7 +397,30 @@ class HybridSlideExtractor:
 
             # 정해진 샘플링 주기에만 분석 수행
             if frame_idx % check_step == 0:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # ROI 검출 (첫 프레임에서만 수행, 이후 캐시 사용)
+                if self.enable_roi_detection and self.roi_cache is None:
+                    self.roi_cache = self._detect_content_roi(frame)
+                    print(f"   - ROI detected: {self.roi_cache}")
+                
+                # ROI 적용 (검은색 레터박스 영역 제외)
+                if self.roi_cache:
+                    x, y, w, h = self.roi_cache
+                    roi_frame = frame[y:y+h, x:x+w]
+                else:
+                    roi_frame = frame
+                
+                # 해상도 다운스케일링 (연산량 감소)
+                if self.max_processing_width > 0 and roi_frame.shape[1] > self.max_processing_width:
+                    self.scale_factor = self.max_processing_width / roi_frame.shape[1]
+                    new_w = self.max_processing_width
+                    new_h = int(roi_frame.shape[0] * self.scale_factor)
+                    processing_frame = cv2.resize(roi_frame, (new_w, new_h))
+                else:
+                    processing_frame = roi_frame
+                    self.scale_factor = 1.0
+                
+                # Grayscale 변환 및 ORB 특징점 검출
+                gray = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2GRAY)
                 kp = self.orb.detect(gray, None)
                 
                 # 특징점 밀도 맵 생성 (32x32)
@@ -375,7 +445,7 @@ class HybridSlideExtractor:
                 # --- 슬라이드 전환 감지 로직 ---
                 # 1. Start of Slide
                 if self.pending_slide is None and current_text_count > self.min_orb_features:
-                    self.pending_slide = frame.copy()
+                    self.pending_slide = roi_frame.copy()
                     self.pending_features = current_text_count
                     self.current_slide_start_time = current_time # 시작 시간 기록
 
@@ -389,7 +459,7 @@ class HybridSlideExtractor:
                         # 상태 리셋 및 즉시 재탐색 준비
                         if current_text_count > self.min_orb_features:
                             # 바로 다음 슬라이드가 이어지는 경우
-                            self.pending_slide = frame.copy()
+                            self.pending_slide = roi_frame.copy()
                             self.pending_features = current_text_count
                             self.current_slide_start_time = current_time
                         else:
@@ -398,7 +468,7 @@ class HybridSlideExtractor:
                     
                     # 3. Update Best Frame (정보량이 더 많아지면 갱신)
                     elif current_text_count > self.pending_features:
-                        self.pending_slide = frame.copy()
+                        self.pending_slide = roi_frame.copy()
                         self.pending_features = current_text_count
 
             frame_idx += 1

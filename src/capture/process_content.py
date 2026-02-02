@@ -75,6 +75,9 @@ def process_single_video_capture(
         dedup_phash_threshold=settings.dedup_phash_threshold,
         dedup_orb_distance=settings.dedup_orb_distance,
         dedup_sim_threshold=settings.dedup_sim_threshold,
+        enable_roi_detection=settings.enable_roi_detection,
+        max_processing_width=settings.max_processing_width,
+        roi_padding=settings.roi_padding,
         callback=callback
     )
 
