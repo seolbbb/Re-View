@@ -165,11 +165,21 @@ def prepare_preprocess_db_sync(
                 duration_sec = None
 
         video_id = existing_video_id
-        if not video_id and user_id:
-            # 동일 파일명의 기존 video 레코드를 재사용한다.
+        if not video_id:
+            # user_id가 없더라도 동일 파일명/이름의 기존 비디오가 있는지 확인한다.
+            # (싱글 유저 환경 또는 데모 실행 시 중복 생성 방지)
             existing_video = adapter.get_video_by_filename(user_id, video_path.name)
+            if not existing_video:
+                # filename으로 못 찾으면 name으로 다시 시도 (run_process_pipeline 호환성)
+                # get_video_by_filename은 내부적으로 original_filename을 봅니다.
+                # get_video_by_name 같은 메서드가 있다면 좋겠지만, 여기서는 직접 쿼리 불가능하므로
+                # 일단 original_filename 매칭을 신뢰하거나, 추가 로직이 필요할 수 있습니다.
+                # Adapter에 get_video_by_name이 없으므로 일단 filename 매칭만 수행.
+                pass
+            
             if existing_video:
                 video_id = existing_video["id"]
+                # print(f"[DB] Found existing video by filename: {video_id}")
 
         if video_id and duration_sec is not None:
             # 기존 레코드의 duration_sec를 업데이트한다.
@@ -218,8 +228,10 @@ def sync_preprocess_artifacts_to_db(
     include_stt: bool,
     include_captures: bool,
     include_audio: bool = True,
+    include_video: bool = True,
     stt_payload: Optional[Any] = None,
     captures_payload: Optional[List[Dict[str, Any]]] = None,
+    video_path: Optional[Path] = None,
     audio_path: Optional[Path] = None,
     table_name: str = "captures",
 ) -> Dict[str, Any]:
@@ -229,7 +241,17 @@ def sync_preprocess_artifacts_to_db(
     """
     results: Dict[str, Any] = {"saved": {}, "errors": []}
 
-    # 1. Audio 업로드 (가장 먼저 - 파일 크기가 클 수 있음)
+    # 1. Video 업로드 (Optional)
+    if include_video and video_path and video_path.exists():
+        try:
+            print(f"[DB] Uploading original video: {video_path.name}...")
+            upload_result = adapter.upload_video(video_id, video_path)
+            results["saved"]["video_file"] = 1
+            results["video_storage_key"] = upload_result.get("storage_path")
+        except Exception as e:
+            results["errors"].append(f"video_upload: {str(e)}")
+
+    # 2. Audio 업로드 (가장 먼저 - 파일 크기가 클 수 있음)
     if include_audio:
         try:
             # 오디오 파일 경로 찾기
