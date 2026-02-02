@@ -54,9 +54,6 @@ _OUT_OF_RANGE_MESSAGE = (
     "요약 작업은 완료되었지만, 특정 시간대의 상세 내용을 제공해 드리지 못하고 있습니다."
 )
 _NO_SUMMARY_MESSAGE = "아직 요약이 생성되지 않았습니다. 요약 작업을 먼저 실행해 주세요."
-_NEED_MODE_MESSAGE = "먼저 모드를 선택해 주세요. (full 또는 partial)"
-_PARTIAL_NOT_READY = "Partial summary chatbot is not implemented yet."
-_NEED_REASONING_MODE_MESSAGE = "응답 모드를 선택해 주세요. (flash 또는 thinking)"
 
 
 def _load_google_api_keys() -> List[str]:
@@ -225,10 +222,6 @@ class ChatState(TypedDict, total=False):
     message: str
     cleaned_message: str
     time_ms: Optional[int]
-    intent: str
-    next_step: str
-    selected_mode: Optional[str]
-    selected_reasoning_mode: Optional[str]
     chat_mode: Optional[str]
     reasoning_mode: Optional[str]
     enrich_decision: str
@@ -256,15 +249,6 @@ class LangGraphMessage:
     is_final: bool = True
 
 
-def _normalize_mode(text: str) -> Optional[str]:
-    normalized = text.strip().lower()
-    if normalized in {"full", "전문 요약", "전문", "전체"}:
-        return "full"
-    if normalized in {"partial", "부분 요약", "부분"}:
-        return "partial"
-    return None
-
-
 def _normalize_reasoning_mode(text: str) -> Optional[str]:
     normalized = text.strip().lower()
     if normalized in {"flash", "flash mode"}:
@@ -275,7 +259,7 @@ def _normalize_reasoning_mode(text: str) -> Optional[str]:
 
 
 def _parse_input(state: ChatState) -> Dict[str, Any]:
-    """사용자 입력을 파싱해 라우팅에 필요한 필드를 구성한다."""
+    """사용자 입력을 파싱해 필요한 필드를 구성한다."""
     message = state.get("message", "") or ""
     time_ms: Optional[int] = None
     has_time_tag = False
@@ -310,164 +294,14 @@ def _parse_input(state: ChatState) -> Dict[str, Any]:
                         minutes = int(match.group(1))
                         time_ms = minutes * 60 * 1000
     cleaned = message.strip()
-    selected_reasoning_mode = _normalize_reasoning_mode(cleaned)
-    selected_mode = _normalize_mode(cleaned)
-    if selected_reasoning_mode:
-        intent = "reasoning_select"
-    else:
-        intent = "mode_select" if selected_mode else "message"
     _trace(
         "node.parse_input",
         has_time_tag=has_time_tag,
-        selected_mode=selected_mode,
-        selected_reasoning_mode=selected_reasoning_mode,
     )
     return {
         "cleaned_message": cleaned,
         "time_ms": time_ms,
-        "selected_mode": selected_mode,
-        "selected_reasoning_mode": selected_reasoning_mode,
-        "intent": intent,
     }
-
-
-def _route_after_parse(state: ChatState) -> str:
-    """parse_input 결과를 바탕으로 다음 노드를 규칙 기반으로 결정한다."""
-    if state.get("intent") == "reasoning_select":
-        decision = "reasoning_select"
-        _trace("route.rules", decision=decision)
-        return decision
-    if state.get("intent") == "mode_select":
-        decision = "mode_select"
-        _trace("route.rules", decision=decision)
-        return decision
-    mode = state.get("chat_mode")
-    if mode == "partial":
-        decision = "partial"
-        _trace("route.rules", decision=decision)
-        return decision
-    if mode == "full":
-        decision = "full"
-        _trace("route.rules", decision=decision)
-        return decision
-    decision = "need_mode"
-    _trace("route.rules", decision=decision)
-    return decision
-
-
-_ROUTER_LABELS = {"mode_select", "reasoning_select", "partial", "full", "need_mode"}
-
-
-def _build_router_prompt(state: ChatState) -> str:
-    """LLM 라우터용 프롬프트를 구성한다."""
-    message = state.get("cleaned_message", "")
-    return (
-        "You are a routing assistant for a chatbot state machine.\n"
-        "Choose exactly one label from: mode_select, reasoning_select, full, partial, need_mode.\n"
-        "Rules:\n"
-        "- If the user explicitly selects chat mode (full/partial), choose mode_select.\n"
-        "- If the user explicitly selects reasoning mode (flash/thinking), choose reasoning_select.\n"
-        "- If chat_mode is already set, choose full or partial to proceed.\n"
-        "- If chat_mode is not set and the user asks a question, choose need_mode.\n"
-        "- If unsure, choose need_mode.\n"
-        "\n"
-        f"message={message!r}\n"
-        f"selected_mode={state.get('selected_mode')!r}\n"
-        f"selected_reasoning_mode={state.get('selected_reasoning_mode')!r}\n"
-        f"chat_mode={state.get('chat_mode')!r}\n"
-        f"reasoning_mode={state.get('reasoning_mode')!r}\n"
-        f"time_ms={state.get('time_ms')!r}\n"
-        "\n"
-        "Return only the label."
-    )
-
-
-def _generate_router_choice(prompt: str) -> str:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
-    config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=16)
-    response = client.models.generate_content(
-        model=_DECISION_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    text = _extract_genai_text(response)
-    return text.strip()
-
-
-def _normalize_router_label(value: str) -> str:
-    cleaned = re.sub(r"[^a-z_]", "", value.strip().lower())
-    return cleaned
-
-
-def _route_with_llm(state: ChatState) -> Dict[str, Any]:
-    """LLM 라우팅 결과를 next_step에 기록한다."""
-    if state.get("selected_mode") or state.get("selected_reasoning_mode"):
-        next_step = _route_after_parse(state)
-        _trace("route.llm", decision=next_step, reason="explicit_selection")
-        return {"next_step": next_step}
-    if state.get("chat_mode") in {"full", "partial"}:
-        decision = state.get("chat_mode")
-        _trace("route.llm", decision=decision, reason="chat_mode_set")
-        return {"next_step": decision}
-    prompt = _build_router_prompt(state)
-    try:
-        raw = _generate_router_choice(prompt)
-    except Exception as exc:
-        logger.warning("LLM router failed: %s", exc)
-        _trace("route.llm", decision="fallback_rules", error=str(exc))
-        return {"next_step": _route_after_parse(state)}
-    label = _normalize_router_label(raw)
-    if label not in _ROUTER_LABELS:
-        _trace("route.llm", decision="fallback_rules", raw=raw, normalized=label)
-        return {"next_step": _route_after_parse(state)}
-    _trace("route.llm", decision=label, raw=raw)
-    return {"next_step": label}
-
-
-def _handle_mode_select(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
-    """사용자가 선택한 chat_mode를 반영하고 요약 상태를 확인한다."""
-    selected_mode = state.get("selected_mode")
-    _trace("node.mode_select", selected=selected_mode)
-    if selected_mode not in {"full", "partial"}:
-        return {"response": _NEED_MODE_MESSAGE}
-
-    updates: Dict[str, Any] = {"chat_mode": selected_mode}
-    if selected_mode == "partial":
-        result = backend.partial_not_implemented(state)
-        updates["response"] = result.get("error", _PARTIAL_NOT_READY)
-        return updates
-
-    result = backend.ensure_summary_exists(state)
-    if not result.get("success"):
-        updates["response"] = result.get("error", "요약 상태 확인에 실패했습니다.")
-        return updates
-    updates["response"] = result.get("message", "모드를 설정했습니다.")
-    return updates
-
-
-def _handle_reasoning_select(state: ChatState) -> Dict[str, Any]:
-    """사용자가 선택한 reasoning_mode를 반영한다."""
-    selected_mode = state.get("selected_reasoning_mode")
-    _trace("node.reasoning_select", selected=selected_mode)
-    if selected_mode not in {"flash", "thinking"}:
-        return {"response": _NEED_REASONING_MODE_MESSAGE}
-    return {
-        "reasoning_mode": selected_mode,
-        "response": f"응답 모드를 설정했습니다. ({selected_mode})",
-    }
-
-
-def _handle_partial(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
-    _trace("node.partial")
-    result = backend.partial_not_implemented(state)
-    return {"response": result.get("error", _PARTIAL_NOT_READY)}
 
 
 def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
@@ -693,7 +527,21 @@ def _sanitize_records_for_flash(records: List[Dict[str, Any]]) -> List[Dict[str,
         if "summary" in updated:
             updated["summary"] = _strip_evidence_refs(updated.get("summary"))
         updated.pop("source_refs", None)
-        updated.pop("evidence", None)
+        evidence = updated.get("evidence") or {}
+        sanitized_evidence: Dict[str, Any] = {}
+        for key in ("stt", "vlm"):
+            items = evidence.get(key) or []
+            cleaned_items = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                cleaned_items.append({k: v for k, v in item.items() if k != "unit_id"})
+            if cleaned_items:
+                sanitized_evidence[key] = cleaned_items
+        if sanitized_evidence:
+            updated["evidence"] = sanitized_evidence
+        else:
+            updated.pop("evidence", None)
         sanitized.append(updated)
     return sanitized
 
@@ -729,7 +577,7 @@ def _build_prompt(state: ChatState) -> str:
         prompt = (
             "You are the Summary Chatbot.\n"
             "Always respond in Korean.\n"
-            "Use only the provided summary records to answer.\n"
+            "Use the provided summary records and evidence if available.\n"
             "Explain evidence in natural language. Do not reveal internal IDs (e.g., segment_id, cap_001, stt_001).\n"
             "If summaries are missing but evidence is sufficient, provide a reasonable interpretation based on the evidence.\n"
             "If the answer is not present, say you cannot find it.\n"
@@ -1064,43 +912,7 @@ def _generate_answer(state: ChatState) -> Dict[str, Any]:
     return {"response": response_text, history_key: history}
 
 
-def _build_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
-    if _LANGGRAPH_IMPORT_ERROR:
-        raise RuntimeError(
-            "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
-        ) from _LANGGRAPH_IMPORT_ERROR
-
-    graph: Any = StateGraph(ChatState)
-    graph.add_node("parse_input", _parse_input)
-    graph.add_node("prepare_full", lambda state: _prepare_full(state, backend))
-    graph.add_node("decide_summary", _decide_summary_sufficiency)
-    graph.add_node("enrich_evidence", lambda state: _enrich_with_db_evidence(state, backend))
-    graph.add_node("generate_answer", _generate_answer)
-
-    graph.set_entry_point("parse_input")
-    graph.add_edge("parse_input", "prepare_full")
-    graph.add_conditional_edges(
-        "prepare_full",
-        _route_after_prepare,
-        {
-            "respond": END,
-            "llm": "decide_summary",
-        },
-    )
-    graph.add_conditional_edges(
-        "decide_summary",
-        _route_after_summary_sufficiency,
-        {
-            "need_evidence": "enrich_evidence",
-            "answer": "generate_answer",
-        },
-    )
-    graph.add_edge("enrich_evidence", "generate_answer")
-    graph.add_edge("generate_answer", END)
-    return graph.compile()
-
-
-def _build_agent_graph(backend: SummaryBackend, *, router_mode: str) -> Any:
+def _build_agent_graph(backend: SummaryBackend) -> Any:
     """full 전용 최소 그래프를 구성한다 (parse → 요약 준비 → 답변)."""
     if _LANGGRAPH_IMPORT_ERROR:
         raise RuntimeError(
@@ -1153,7 +965,7 @@ class LangGraphSession:
         self._backend = backend or ProcessApiBackend()
         state_seed = dict(initial_state or {})
         router_mode = (state_seed.get("router_mode") or _DEFAULT_ROUTER_MODE).strip().lower()
-        self._graph = _build_agent_graph(self._backend, router_mode=router_mode)
+        self._graph = _build_agent_graph(self._backend)
         self._state = state_seed
         self._state.setdefault("summary_cache", [])
         self._state.setdefault("pending_updates", [])
@@ -1310,10 +1122,6 @@ class LangGraphSession:
         scratch_keys = {
             "message",
             "cleaned_message",
-            "intent",
-            "next_step",
-            "selected_mode",
-            "selected_reasoning_mode",
             "response",
             "time_ms",
             "answer_records",
