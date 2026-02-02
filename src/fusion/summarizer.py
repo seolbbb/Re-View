@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from textwrap import dedent
 
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    from datetime import datetime
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
+
+
 import yaml
 
 from .config import ConfigBundle
@@ -496,6 +503,7 @@ def run_summarizer(
     config: ConfigBundle,
     limit: Optional[int] = None,
     feedback_map: Optional[Dict[int, str]] = None,
+    batch_label: Optional[str] = None,
 ) -> None:
     paths = config.paths
     ensure_output_root(paths.output_root)
@@ -545,16 +553,15 @@ def run_summarizer(
             model=client_bundle.model,
             extra={"segments_count": len(segments)}
         )
-        print(f"[TOKEN] summarizer input_tokens={input_tokens}")
     except Exception as exc:
-        print(f"[TOKEN] count_tokens failed: {exc}")
+        pass
 
     output_jsonl = output_dir / "segment_summaries.jsonl"
     output_handle = None
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text = run_with_retries(
+        llm_text, tokens = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
@@ -563,6 +570,7 @@ def run_summarizer(
             config.raw.llm_gemini.timeout_sec,
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
+            context="Summarizer",
         )
 
         last_error: Optional[Exception] = None
@@ -625,7 +633,7 @@ def run_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text = run_with_retries(
+                llm_text, tokens = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -634,6 +642,7 @@ def run_summarizer(
                     config.raw.llm_gemini.timeout_sec,
                     config.raw.llm_gemini.max_retries,
                     config.raw.llm_gemini.backoff_sec,
+                    context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
                 )
         if last_error:
             raise RuntimeError(f"LLM JSON/Validation failed: {last_error}")
@@ -650,6 +659,9 @@ def run_batch_summarizer(
     previous_context: Optional[str] = None,
     limit: Optional[int] = None,
     feedback_map: Optional[Dict[int, str]] = None,
+    status_callback: Optional[Callable[[int], None]] = None,
+    verbose: bool = False,
+    batch_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """배치별 세그먼트 요약을 생성합니다.
 
@@ -720,16 +732,18 @@ def run_batch_summarizer(
             model=client_bundle.model,
             extra={"segments_count": len(segments), "has_context": previous_context is not None}
         )
-        print(f"[TOKEN] batch_summarizer input_tokens={input_tokens}")
+        if status_callback:
+            status_callback(input_tokens)
     except Exception as exc:
-        print(f"[TOKEN] count_tokens failed: {exc}")
+        pass
 
     output_jsonl = output_dir / "segment_summaries.jsonl"
     output_handle = None
+    total_tokens = 0
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text = run_with_retries(
+        llm_text, tokens = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
@@ -738,7 +752,10 @@ def run_batch_summarizer(
             config.raw.llm_gemini.timeout_sec,
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
+            context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
+            verbose=verbose,
         )
+        total_tokens += tokens
 
         last_error: Optional[Exception] = None
         attempts = config.raw.summarizer.json_repair_attempts
@@ -762,6 +779,9 @@ def run_batch_summarizer(
                 # 파일에 기록
                 for segment in segments:
                     segment_id = int(segment.get("segment_id"))
+                    if verbose:
+                        prefix = f"{batch_label}: " if batch_label else "      "
+                        print(f"{_get_timestamp()} {prefix}- [Summarizer] Processed segment {segment_id}", flush=True)
                     summary = summary_map[segment_id]
                     record = {
                         "run_id": segment.get("run_id"),
@@ -789,7 +809,7 @@ def run_batch_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text = run_with_retries(
+                llm_text, tokens = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -798,7 +818,10 @@ def run_batch_summarizer(
                     config.raw.llm_gemini.timeout_sec,
                     config.raw.llm_gemini.max_retries,
                     config.raw.llm_gemini.backoff_sec,
+                    context="Summarizer",
+                    verbose=verbose,
                 )
+                total_tokens += tokens
         if last_error:
             raise RuntimeError(f"LLM JSON/검증 실패: {last_error}")
     finally:
@@ -813,6 +836,7 @@ def run_batch_summarizer(
         "segment_summaries_jsonl": str(output_jsonl),
         "segments_count": len(segments),
         "context": next_context,
+        "token_usage": {"total_tokens": total_tokens},
     }
 
 

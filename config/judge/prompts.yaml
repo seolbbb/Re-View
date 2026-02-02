@@ -92,6 +92,9 @@ v2:
     }
     ```
 
+    # DATA TO EVALUATE
+    {{SEGMENTS_JSON}}
+
   output_format: |
     # OUTPUT FORMAT
 
@@ -111,10 +114,7 @@ v2:
       }
     ]
     ```
-
-    Input JSON:
-    {{SEGMENTS_JSON}}
-
+    
 # [Legacy] Monolithic Version (v1)
 # - Formerly judge_v4
 # - Monolithic template string
@@ -204,9 +204,6 @@ v1: # Legacy
       "feedback": "한 줄 피드백"
     }
 
-    Input JSON:
-    {{SEGMENTS_JSON}}
-
 # [Optimized] Token Efficient Version (v3)
 # - Goal: Fast evaluation with minimal tokens.
 # - Structure: Concise rubric.
@@ -235,7 +232,7 @@ v3:
        - 6: Simple transcript paraphrase.
        - 0: Incoherent.
 
-    4. **Multimodal** (Ref):
+    4. **Multimodal** (10%):
        - Check `vlm_ids` usage.
 
   protocol: |
@@ -245,7 +242,7 @@ v3:
 
   input_format: |
     JSON Input:
-    { "segment_id": 1, "validation_report": {...}, "source_refs": {...}, "summary": {...} }
+    {{SEGMENTS_JSON}}
 
   output_format: |
     Output JSON Array ONLY:
@@ -256,6 +253,4 @@ v3:
         "feedback": "완벽합니다."
       }
     ]
-    Input:
-    {{SEGMENTS_JSON}}
 

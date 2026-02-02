@@ -120,7 +120,7 @@ class FinalSummaryConfig(BaseModel):
     """전체 영상을 아우르는 최종 타임라인 요약 생성 설정을 담는다."""
     model_config = ConfigDict(extra="forbid")
 
-    generate_formats: List[Literal["timeline", "tldr_timeline"]]
+    generate_formats: List[Literal["timeline", "tldr_timeline", "tldr"]]
     temperature: float = Field(..., ge=0.0, le=1.0)
     max_chars_per_format: int = Field(..., ge=0)
     style: FinalSummaryStyleConfig
