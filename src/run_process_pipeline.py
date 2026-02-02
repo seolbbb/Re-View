@@ -40,6 +40,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -67,6 +68,7 @@ from src.pipeline.stages import (
     run_batch_fusion_pipeline,
     run_fusion_pipeline,
     run_vlm_qwen,
+    _get_sort_key_timestamp,
 )
 
 QWEN_BASE_URL_DEFAULT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -91,6 +93,12 @@ def _append_benchmark_report(path: Path, report_md: str, pipeline_label: str) ->
             handle.write(report_md)
     else:
         path.write_text(report_md, encoding="utf-8")
+
+
+def _get_timestamp() -> str:
+    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
 
 
 def _apply_qwen_vlm_overrides(repo_root: Path) -> Path:
@@ -147,6 +155,8 @@ def run_processing_pipeline(
     force_db: Optional[bool] = None,
     use_db: Optional[bool] = None,
     db_table_name: str = "captures",
+    continuous: bool = False,
+    poll_interval: int = 10,
 ) -> None:
     """DB 또는 로컬 입력을 사용해 VLM + Fusion을 실행한다."""
     # 파이프라인 기본 설정을 읽어 CLI 인자에 적용한다.
@@ -171,7 +181,7 @@ def run_processing_pipeline(
             v_data = temp_adapter.client.table("videos").select("name").eq("id", video_id).execute()
             if v_data.data:
                 video_name = v_data.data[0].get("name")
-                print(f"[DB] Resolved video_name '{video_name}' for ID {video_id}")
+                print(f"{_get_timestamp()} [DB] Resolved video_name '{video_name}' for ID {video_id}")
         
         # 여전히 없으면 설정 파일의 process_name 사용
         if not video_name or not str(video_name).strip():
@@ -246,53 +256,73 @@ def run_processing_pipeline(
         input_source = "db"
         input_reason = "local artifacts missing"
 
-    # DB에서 가져온 경우 duration 정보를 보존한다.
+        # DB에서 가져온 경우 duration 정보를 보존한다.
     db_duration = None
     db_captures_data = None  # DB에서 가져온 captures 데이터 (sync_engine에서 직접 사용)
     if force_db:
         use_db = True
+    
     if force_db or not local_ready:
         if not use_db:
             raise ValueError("DB usage is disabled and local artifacts are missing.")
-        print(f"[Input] Using Supabase artifacts ({input_reason}).")
-        # Supabase 설정이 없으면 DB 모드를 사용할 수 없다.
+        
         adapter = get_supabase_adapter()
         if not adapter:
             raise ValueError("Supabase adapter not configured. Check SUPABASE_URL/SUPABASE_KEY.")
 
-        # video_id가 없으면 name으로 최신 레코드를 찾는다.
+        print(f"{_get_timestamp()} [Input] Using Supabase artifacts ({input_reason}).")
+
         video_row = None
-        if video_id:
-            result = (
-                adapter.client.table("videos")
-                .select("id,name,original_filename,duration_sec")
-                .eq("id", video_id)
-                .limit(1)
-                .execute()
-            )
-            rows = result.data or []
-            video_row = rows[0] if rows else None
-        else:
-            for candidate in [video_name, safe_video_name]:
-                if not candidate:
-                    continue
+        # Continuous 모드일 경우 비디오 레코드가 생성될 때까지 대기한다.
+        # 전처리가 오래 걸릴 수 있으므로 타임아웃을 넉넉하게 설정 (1시간)
+        # 10s * 360 = 3600s = 1h
+        max_retries = 360 if continuous else 1
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            # video_id가 없으면 name으로 최신 레코드를 찾는다.
+            if video_id:
                 result = (
                     adapter.client.table("videos")
                     .select("id,name,original_filename,duration_sec")
-                    .eq("name", candidate)
-                    .order("created_at", desc=True)
+                    .eq("id", video_id)
                     .limit(1)
                     .execute()
                 )
                 rows = result.data or []
-                if rows:
-                    video_row = rows[0]
-                    break
+                video_row = rows[0] if rows else None
+            else:
+                for candidate in [video_name, safe_video_name]:
+                    if not candidate:
+                        continue
+                    result = (
+                        adapter.client.table("videos")
+                        .select("id,name,original_filename,duration_sec")
+                        .eq("name", candidate)
+                        .order("created_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    rows = result.data or []
+                    if rows:
+                        video_row = rows[0]
+                        break
+            
+            if video_row:
+                break
+                
+            if continuous:
+                if retry_count == 0:
+                    print(f"{_get_timestamp()} [Input] Video '{video_name}' not found in DB. Waiting for Preprocessor to create record...")
+                time.sleep(poll_interval)
+                retry_count += 1
+            else:
+                break
 
         # DB에 레코드가 없으면 진행할 수 없다.
         if not video_row:
             target = video_id or video_name
-            raise ValueError(f"Video not found in DB: {target}")
+            raise ValueError(f"Video not found in DB (after {retry_count} checks): {target}")
 
         video_id = video_row["id"]
         if not safe_video_name:
@@ -321,22 +351,38 @@ def run_processing_pipeline(
         if preprocess_rows:
             latest_preprocess_job_id = preprocess_rows[0].get("id")
 
-        # STT 결과를 우선 최신 전처리 작업 기준으로 가져온다.
-        stt_query = adapter.client.table("stt_results").select("*").eq("video_id", video_id)
-        if latest_preprocess_job_id:
-            stt_query = stt_query.eq("preprocess_job_id", latest_preprocess_job_id)
-        stt_rows = stt_query.execute().data or []
-        if not stt_rows and latest_preprocess_job_id:
-            stt_rows = (
-                adapter.client.table("stt_results")
-                .select("*")
-                .eq("video_id", video_id)
-                .execute()
-                .data
-                or []
-            )
+        # STT 결과가 생성될 때까지 대기한다 (Continuous 모드일 경우)
+        stt_rows = []
+        retry_count_stt = 0
+        while retry_count_stt < max_retries:
+            stt_query = adapter.client.table("stt_results").select("*").eq("video_id", video_id)
+            if latest_preprocess_job_id:
+                stt_query = stt_query.eq("preprocess_job_id", latest_preprocess_job_id)
+            stt_rows = stt_query.execute().data or []
+            
+            if not stt_rows and latest_preprocess_job_id:
+                stt_rows = (
+                    adapter.client.table("stt_results")
+                    .select("*")
+                    .eq("video_id", video_id)
+                    .execute()
+                    .data
+                    or []
+                )
+            
+            if stt_rows:
+                break
+                
+            if continuous:
+                if retry_count_stt == 0:
+                    print(f"{_get_timestamp()} [Input] STT results not found in DB. Waiting for Preprocessor to finish STT...")
+                time.sleep(poll_interval)
+                retry_count_stt += 1
+            else:
+                break
+
         if not stt_rows:
-            raise ValueError("stt_results not found in DB.")
+            raise ValueError(f"stt_results not found in DB (after {retry_count_stt} checks).")
 
         # DB 스키마 형태에 맞춰 STT 세그먼트 리스트를 구성한다.
         stt_segments: list = []
@@ -363,7 +409,7 @@ def run_processing_pipeline(
 
         captures_query = (
             adapter.client.table(db_table_name)
-            .select("id,cap_id,file_name,time_ranges,storage_path,preprocess_job_id")
+            .select("id,cap_id,video_id,file_name,time_ranges,storage_path,preprocess_job_id")
             .eq("video_id", video_id)
         )
         if latest_preprocess_job_id:
@@ -372,7 +418,7 @@ def run_processing_pipeline(
         if not capture_rows and latest_preprocess_job_id:
             capture_rows = (
                 adapter.client.table(db_table_name)
-                .select("id,cap_id,file_name,time_ranges,storage_path")
+                .select("id,cap_id,video_id,file_name,time_ranges,storage_path")
                 .eq("video_id", video_id)
                 .execute()
                 .data
@@ -412,16 +458,24 @@ def run_processing_pipeline(
                 manifest_item["start_ms"] = ranges[0].get("start_ms")
                 manifest_item["end_ms"] = ranges[0].get("end_ms")
             
-            manifest_payload.append(manifest_item)
             image_path = captures_dir / file_name
+            
+            # 로컬 파일이 이미 있고 force_db가 아니면 다운로드 스킵 (Manifest에는 추가)
             if image_path.exists() and not force_db:
+                manifest_payload.append(manifest_item)
                 continue
+                
             storage_path = row.get("storage_path")
             if not storage_path:
-                raise ValueError(f"Missing storage_path for capture: {file_name}")
-            # 스토리지에서 캡처 이미지를 다운로드한다.
-            image_bytes = adapter.client.storage.from_("captures").download(storage_path)
-            image_path.write_bytes(image_bytes)
+                print(f"{_get_timestamp()} [Warning] Skipping {file_name}: Missing storage_path in DB")
+                continue
+            
+            try:
+                image_bytes = adapter.client.storage.from_("captures").download(storage_path)
+                image_path.write_bytes(image_bytes)
+                manifest_payload.append(manifest_item)
+            except Exception as e:
+                print(f"{_get_timestamp()} [Warning] Skipping {file_name}: Download failed ({e})")
 
         manifest_json.write_text(
             json.dumps(manifest_payload, ensure_ascii=False, indent=2),
@@ -430,7 +484,7 @@ def run_processing_pipeline(
 
         db_duration = video_row.get("duration_sec")
     else:
-        print("[Input] Using local artifacts.")
+        print(f"{_get_timestamp()} [Input] Using local artifacts.")
 
     # 입력 아티팩트 경로가 모두 준비되었는지 확인한다.
     if not (stt_json and manifest_json and captures_dir):
@@ -453,10 +507,10 @@ def run_processing_pipeline(
                 )
                 if v_res.data:
                     video_id = v_res.data[0]["id"]
-                    print(f"[DB] Resolved video_id {video_id} for name '{candidate}'")
+                    print(f"{_get_timestamp()} [DB] Resolved video_id {video_id} for name '{candidate}'")
                     break
             if not video_id:
-                print(f"[DB] Warning: Could not resolve video_id for '{video_name}'. DB sync might fail.")
+                print(f"{_get_timestamp()} [DB] Warning: Could not resolve video_id for '{video_name}'. DB sync might fail.")
 
     # 캡처 개수를 로딩해 리포트에 반영한다.
     manifest_payload = json.loads(manifest_json.read_text(encoding="utf-8"))
@@ -484,9 +538,9 @@ def run_processing_pipeline(
                 )
                 processing_job_id = job.get("id")
                 if processing_job_id:
-                    print(f"[DB] Created processing_job: {processing_job_id} (config_hash: {config_hash})")
+                    print(f"{_get_timestamp()} [DB] Created processing_job: {processing_job_id} (config_hash: {config_hash})")
             except Exception as e:
-                print(f"[DB] Warning: Failed to create processing_job: {e}")
+                print(f"{_get_timestamp()} [DB] Warning: Failed to create processing_job: {e}")
 
     # 메타데이터와 타이머를 초기화한다.
     timer = BenchmarkTimer()
@@ -531,49 +585,201 @@ def run_processing_pipeline(
             # 초기 배치 진행률은 0으로 설정 (total_batch는 배치 모드에서 나중에 설정됨)
             adapter_for_job.update_processing_job_progress(processing_job_id, 0, None)
         except Exception as e:
-            print(f"[DB] Warning: Failed to update processing_job status: {e}")
+            print(f"{_get_timestamp()} [DB] Warning: Failed to update processing_job status: {e}")
 
     timer.start_total()
     segment_count = 0
 
     try:
-        print(f"\nStarting processing pipeline (batch_mode={batch_mode})...")
+        print(f"\n{_get_timestamp()} Starting processing pipeline (batch_mode={batch_mode})...")
         print("-" * 50)
 
         if batch_mode:
-            # Status 업데이트용 콜백 정의
+            current_adapter = adapter_for_job
+            if continuous and not current_adapter:
+                current_adapter = get_supabase_adapter()
+                if not current_adapter:
+                    raise ValueError("Supabase adapter is required for continuous monitoring.")
+
+            # Status 업데이트용 콜백
             def status_callback(status: str, current: int, total: int) -> None:
-                if processing_job_id and adapter_for_job:
+                if processing_job_id and current_adapter:
                     try:
-                        adapter_for_job.update_processing_job_status(processing_job_id, status)
-                    except Exception as e:
-                        print(f"[DB] Warning: Failed to update status to {status}: {e}")
+                        current_adapter.update_processing_job_status(processing_job_id, status)
+                    except Exception:
+                        pass
+
+            # 초기 데이터 로드
+            pending_captures = []
+            if db_captures_data:
+                pending_captures = sorted(db_captures_data, key=lambda x: _get_sort_key_timestamp(x))
+            elif manifest_json and manifest_json.exists():
+                try:
+                    loaded = json.loads(manifest_json.read_text(encoding="utf-8"))
+                    if isinstance(loaded, list):
+                        pending_captures = sorted(loaded, key=lambda x: _get_sort_key_timestamp(x))
+                except Exception:
+                    pass
             
-            # 배치 모드에서는 VLM+Fusion을 배치 단위로 처리한다.
-            fusion_info = run_batch_fusion_pipeline(
-                video_root=video_root,
-                captures_dir=captures_dir,
-                manifest_json=manifest_json,
-                captures_data=db_captures_data,  # DB에서 가져온 captures 직접 전달
-                stt_json=stt_json,
-                video_name=safe_video_name,
-                batch_size=batch_size,
-                timer=timer,
-                vlm_batch_size=vlm_batch_size,
-                vlm_concurrency=vlm_concurrency,
-                vlm_show_progress=vlm_show_progress,
-                limit=limit,
-                repo_root=ROOT,
-                status_callback=status_callback if processing_job_id else None,
-                # DB 동기화 관련 파라미터 전달
-                processing_job_id=processing_job_id,
-                video_id=video_id,
-                sync_to_db=sync_to_db,
-                adapter=adapter_for_job,
-            )
-            segment_count = fusion_info.get("segment_count", 0)
-            vlm_image_count = capture_count
-            vlm_elapsed = fusion_info["timings"].get("vlm_sec", 0.0)
+            # 처리된 ID 추적 (중복 방지)
+            processed_ids = set()
+            for c in pending_captures:
+                cid = str(c.get("id") or c.get("cap_id") or "")
+                if cid: processed_ids.add(cid)
+
+            next_batch_idx = 0
+            total_segments_acc = 0
+            vlm_elapsed_acc = 0.0
+            
+            print(f"{_get_timestamp()} [{'Continuous' if continuous else 'Batch'} Mode] Started processing loop. DEBUG: batch_size={batch_size}")
+
+            while True:
+                # 1. 전처리 작업 상태 확인 (Continuous 모드일 때만)
+                preprocess_done = False
+                if continuous and current_adapter and video_id:
+                    try:
+                        # 최신 전처리 작업 상태 조회
+                        pp_res = (
+                             current_adapter.client.table("preprocessing_jobs")
+                            .select("status")
+                            .eq("video_id", video_id)
+                            .order("created_at", desc=True)
+                            .limit(1)
+                            .execute()
+                        )
+                        # DONE 또는 FAILED일 때도 전처리가 끝난 것으로 간주 (남은 데이터 처리 후 종료)
+                        if pp_res.data and pp_res.data[0]["status"] in ("DONE", "FAILED"):
+                            preprocess_done = True
+                            if pp_res.data[0]["status"] == "FAILED":
+                                print(f"{_get_timestamp()} [Pipeline] Preprocessing FAILED (treating as done for remaining items).")
+                    except Exception as e:
+                        print(f"{_get_timestamp()} [Pipeline] Warning: Check preprocess status failed: {e}")
+
+                # 2. 대기 중인 캡처 처리
+                while True:
+                    chunk_size = batch_size
+                    # 처리 가능 여부 판단
+                    can_process = False
+                    
+                    if len(pending_captures) >= batch_size:
+                        can_process = True
+                    elif pending_captures:
+                        # 자투리 데이터 처리 조건:
+                        # - Continuous 모드가 아님 (무조건 처리)
+                        # - Continuous 모드인데 전처리가 끝났음 (마지막 자투리)
+                        if not continuous or preprocess_done:
+                            chunk_size = min(len(pending_captures), batch_size) # 남은 것 중 배치 크기만큼
+                            can_process = True
+                    
+                    if not can_process:
+                        break
+                        
+                    # 청크 추출 및 실행
+                    chunk = pending_captures[:chunk_size]
+                    pending_captures = pending_captures[chunk_size:]
+                    
+                    print(f"\n{_get_timestamp()} [Pipeline] Processing batch {next_batch_idx + 1} (Size: {len(chunk)})")
+                    
+                    # 다음 청크가 있으면 그 시작 시간을 강제 종료 시간으로 설정 (Clamping)
+                    # 이를 통해 청크 단위로 실행되더라도 시간 범위가 겹치지 않게 함
+                    forced_end_ms = None
+                    if pending_captures:
+                         next_start_item = pending_captures[0]
+                         forced_end_ms = _get_sort_key_timestamp(next_start_item)
+
+                    fusion_info = run_batch_fusion_pipeline(
+                        video_root=video_root,
+                        captures_dir=captures_dir,
+                        captures_data=chunk,
+                        stt_json=stt_json,
+                        video_name=safe_video_name,
+                        batch_size=batch_size, # run_batch 내부 로직용
+                        timer=timer,
+                        vlm_batch_size=vlm_batch_size,
+                        vlm_concurrency=vlm_concurrency,
+                        vlm_show_progress=vlm_show_progress,
+                        limit=limit,
+                        repo_root=ROOT,
+                        status_callback=status_callback if processing_job_id else None,
+                        processing_job_id=processing_job_id,
+                        video_id=video_id,
+                        sync_to_db=sync_to_db,
+                        adapter=current_adapter,
+                        start_batch_index=next_batch_idx,
+                        preserve_files=True,
+                        forced_batch_end_ms=forced_end_ms,
+                    )
+                    
+                    next_batch_idx += 1
+                    total_segments_acc += fusion_info.get("segment_count", 0)
+                    vlm_elapsed_acc += fusion_info.get("timings", {}).get("vlm_sec", 0.0)
+
+                # 3. 종료 조건 확인 및 폴링
+                if not continuous:
+                    break
+                
+                if preprocess_done and not pending_captures:
+                    print(f"{_get_timestamp()} [Pipeline] Preprocessing finished and no pending captures. Exiting loop.")
+                    break
+                
+                # 4. 신규 데이터 폴링
+                if current_adapter and video_id:
+                    print(f"{_get_timestamp()} [Pipeline] Waiting for input... (Pending: {len(pending_captures)} < Batch: {batch_size}, Preprocess: {'RUNNING' if not preprocess_done else 'DONE'})")
+                    # print(f"           Sleeping {poll_interval}s...") # 간결한 로그를 위해 생략 혹은 필요한 경우 활성화
+                    time.sleep(poll_interval)
+                    try:
+                        # captures 테이블에서 video_id로 조회
+                        # 최적화: id > last_checked_id 같은 걸 쓰면 좋지만, 여기선 단순히 전체 가져와서 ID로 필터링
+                        # (데이터가 아주 많지 않다고 가정)
+                        # 또는 created_at 기준으로 가져올 수도 있음
+                        caps_res = (
+                            current_adapter.client.table(db_table_name)
+                            .select("id,cap_id,file_name,time_ranges,storage_path")
+                            .eq("video_id", video_id)
+                            .execute()
+                        )
+                        new_items = []
+                        if caps_res.data:
+                            sorted_rows = sorted(caps_res.data, key=lambda x: _get_sort_key_timestamp(x))
+                            for row in sorted_rows:
+                                cid = str(row.get("id") or row.get("cap_id") or "")
+                                if cid and cid not in processed_ids:
+                                    # 새 항목 발견 -> 다운로드 및 추가
+                                    file_name = row.get("file_name")
+                                    storage_path = row.get("storage_path")
+                                    if file_name and storage_path:
+                                        img_path = captures_dir / file_name
+                                        if not img_path.exists():
+                                            # 다운로드
+                                            img_bytes = current_adapter.client.storage.from_("captures").download(storage_path)
+                                            img_path.write_bytes(img_bytes)
+                                    
+                                    # Manifest Item 구성
+                                    m_item = {
+                                        "id": row.get("cap_id") or row.get("id"),
+                                        "file_name": file_name,
+                                        "time_ranges": row.get("time_ranges") or [],
+                                        # 호환성 필드
+                                        "timestamp_ms": _get_sort_key_timestamp(row),
+                                        "start_ms": _get_sort_key_timestamp(row)
+                                    }
+                                    new_items.append(m_item)
+                                    processed_ids.add(cid)
+                        
+                        if new_items:
+                            print(f"{_get_timestamp()} [Loop] Found {len(new_items)} new captures.")
+                            pending_captures.extend(new_items)
+                            # 다시 정렬
+                            pending_captures.sort(key=lambda x: _get_sort_key_timestamp(x))
+                            
+                    except Exception as e:
+                        print(f"{_get_timestamp()} [Loop] Warning: Fetch new captures failed: {e}")
+
+            # 루프 종료 후 통계 정리
+            segment_count = total_segments_acc
+            vlm_image_count = len(processed_ids)
+            vlm_elapsed = vlm_elapsed_acc
+            fusion_info = {} # 마지막 fusion_info 정보는 의미가 퇴색되므로 초기화 혹은 마지막 값 사용
         else:
             # 단일 모드에서는 VLM 실행 후 Fusion으로 넘어간다.
             vlm_image_count, vlm_elapsed = timer.time_stage(
@@ -649,7 +855,7 @@ def run_processing_pipeline(
 
         if sync_to_db and processing_job_id and adapter_for_job:
             # Final summary_results UPSERT (timeline, tldr 포맷 저장)
-            print("\n[DB] Upserting final summary results...")
+            print(f"\n{_get_timestamp()} [DB] Upserting final summary results...")
             results_dir = video_root / "results"
             summaries_path = video_root / "fusion" / "segment_summaries.jsonl"
             try:
@@ -662,17 +868,17 @@ def run_processing_pipeline(
                 )
                 if upsert_result.get("saved"):
                     for fmt, result_id in upsert_result["saved"].items():
-                        print(f"  [DB] summary_results ({fmt}): {result_id}")
+                        print(f"{_get_timestamp()}   [DB] summary_results ({fmt}): {result_id}")
                 if upsert_result.get("errors"):
                     for err in upsert_result["errors"]:
-                        print(f"  [DB] Warning: {err}")
+                        print(f"{_get_timestamp()}   [DB] Warning: {err}")
             except Exception as e:
-                print(f"[DB] Warning: Failed to upsert final summary results: {e}")
+                print(f"{_get_timestamp()} [DB] Warning: Failed to upsert final summary results: {e}")
 
             # 배치별 업로드가 이미 완료되었으므로 기존 sync는 스킵 가능
             # 하지만 단일 모드나 fallback을 위해 유지
             if not batch_mode:
-                print("\nSyncing processing outputs to Supabase (Processing Jobs)...")
+                print(f"\n{_get_timestamp()} Syncing processing outputs to Supabase (Processing Jobs)...")
                 db_results = sync_processing_results_to_db(
                     video_root=video_root,
                     video_id=video_id,
@@ -681,18 +887,18 @@ def run_processing_pipeline(
                 saved = db_results.get("saved", {})
                 errors = db_results.get("errors", [])
 
-                print(f"[DB] Upload Summary (Processing Job {processing_job_id}):")
+                print(f"{_get_timestamp()} [DB] Upload Summary (Processing Job {processing_job_id}):")
                 for k, v in saved.items():
-                    print(f"  - {k}: {v} records")
+                    print(f"{_get_timestamp()}   - {k}: {v} records")
 
                 if errors:
-                    print(f"[DB] ⚠️ Completed with {len(errors)} errors:")
+                    print(f"{_get_timestamp()} [DB] Completed with {len(errors)} errors:")
                     for e in errors:
-                        print(f"  - {e}")
+                        print(f"{_get_timestamp()}   - {e}")
                 else:
-                    print("[DB] ✅ Processing artifacts uploaded successfully.")
+                    print(f"{_get_timestamp()} [DB] Processing artifacts uploaded successfully.")
             else:
-                print("[DB] ✅ Batch mode: artifacts already uploaded during pipeline execution.")
+                print(f"{_get_timestamp()} [DB] Batch mode: artifacts already uploaded during pipeline execution.")
 
         # processing_job 상태를 DONE으로 업데이트
         if processing_job_id and adapter_for_job:
@@ -701,13 +907,16 @@ def run_processing_pipeline(
                 # 배치 모드일 경우 total_batch 사용, 아니면 1로 설정
                 total_batches = fusion_info.get("batch_count", 1) if batch_mode else 1
                 adapter_for_job.update_processing_job_progress(processing_job_id, total_batches, total_batches)
-                print(f"[DB] processing_job {processing_job_id} marked as DONE")
+                print(f"{_get_timestamp()} [DB] processing_job {processing_job_id} marked as DONE")
             except Exception as e:
-                print(f"[DB] Warning: Failed to update processing_job status: {e}")
+                print(f"{_get_timestamp()} [DB] Warning: Failed to update processing_job status: {e}")
 
-        print("\nProcessing completed.")
-        print(f"Outputs: {video_root}")
-        print(f"Benchmark: {report_path}")
+        print(f"\n{_get_timestamp()} Processing completed.")
+        # [User Request] 로컬 경로를 상대 경로로 표시
+        rel_video_root = os.path.relpath(video_root, ROOT)
+        rel_report_path = os.path.relpath(report_path, ROOT)
+        print(f"{_get_timestamp()} Outputs: {rel_video_root}")
+        print(f"{_get_timestamp()} Benchmark: {rel_report_path}")
 
     except Exception as exc:
         # 에러 발생 시 상태를 기록한 뒤 예외를 다시 올린다.
@@ -727,10 +936,10 @@ def run_processing_pipeline(
                 adapter_for_job.update_processing_job_status(
                     processing_job_id, "FAILED", error_message=str(exc)
                 )
-                print(f"[DB] processing_job {processing_job_id} marked as FAILED")
+                print(f"{_get_timestamp()} [DB] processing_job {processing_job_id} marked as FAILED")
             except Exception:
                 pass
-        print(f"\nProcessing failed: {exc}")
+        print(f"\n{_get_timestamp()} Processing failed: {exc}")
         raise
 
 
@@ -744,6 +953,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-mode", dest="batch_mode", action="store_true", help="Enable batch mode")
     parser.add_argument("--no-batch-mode", dest="batch_mode", action="store_false", help="Disable batch mode")
     parser.set_defaults(batch_mode=None)
+    parser.add_argument("--batch-size", type=int, default=None, help="Processing size per batch (default: 10)")
     parser.add_argument("--limit", type=int, default=None, help="Limit segments")
     parser.add_argument("--force-db", dest="force_db", action="store_true", help="Force DB download even if local exists")
     parser.add_argument("--no-force-db", dest="force_db", action="store_false", help="Disable DB download")
@@ -752,6 +962,8 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-db-sync", dest="db_sync", action="store_false", help="Skip Supabase upload")
     parser.set_defaults(db_sync=None)
     parser.add_argument("--db-table", default="captures", help="DB table name for captures (default: captures)")
+    parser.add_argument("--continuous", dest="continuous", action="store_true", help="Enable continuous monitoring mode")
+    parser.add_argument("--poll-interval", type=int, default=10, help="Poll interval in seconds for continuous mode")
     return parser
 
 
@@ -770,10 +982,13 @@ def main() -> None:
         video_id=args.video_id,
         output_base=args.output_base,
         batch_mode=args.batch_mode,
+        batch_size=args.batch_size,
         limit=args.limit,
         sync_to_db=args.db_sync,
         force_db=args.force_db,
         db_table_name=args.db_table,
+        continuous=args.continuous,
+        poll_interval=args.poll_interval,
     )
 
 
