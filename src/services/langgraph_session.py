@@ -6,6 +6,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
@@ -23,7 +24,9 @@ else:
 
 logger = logging.getLogger(__name__)
 _TRACE_LOGGER: Optional[logging.Logger] = None
+_HISTORY_LOGGER: Optional[logging.Logger] = None
 _TRACE_LOG_PATH = Path(os.getenv("CHATBOT_TRACE_LOG", "logs/langgraph_trace.log"))
+_HISTORY_LOG_PATH = Path("logs/history.log")
 
 _TIME_TAG_RE = re.compile(r"\[time_ms=(\d+)\]")
 _TIME_KR_RE = re.compile(r"(\d+)\s*분\s*(\d+)\s*초")
@@ -38,7 +41,13 @@ _DEFAULT_REASONING_MODE = os.getenv("CHATBOT_REASONING_MODE", "flash")
 _DEFAULT_ROUTER_MODE = os.getenv("CHATBOT_ROUTER", "rules").strip().lower()
 _DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
 _MAX_EVIDENCE_UNITS = int(os.getenv("CHATBOT_MAX_EVIDENCE_UNITS", "10"))
+_HISTORY_LOG_FORMAT = os.getenv("CHATBOT_HISTORY_LOG_FORMAT", "pretty").strip().lower()
 _TRACE_VERBOSE = True
+_TRACE_HISTORY = True
+_TRACE_HISTORY_FULL = False
+_TRACE_SESSION_SEPARATOR = True
+_TRACE_SEPARATOR_TEXT = "--------------------------------------------------------------------------------"
+_TRACE_HISTORY_TAIL = 6
 
 _OUT_OF_RANGE_MESSAGE = (
     "죄송합니다. 해당 시간에 대한 요약 정보가 아직 업데이트되지 않았습니다. "
@@ -100,6 +109,23 @@ def _get_trace_logger() -> logging.Logger:
     return trace_logger
 
 
+def _get_history_logger() -> logging.Logger:
+    global _HISTORY_LOGGER
+    if _HISTORY_LOGGER:
+        return _HISTORY_LOGGER
+    history_logger = logging.getLogger("langgraph_history")
+    if not history_logger.handlers:
+        _HISTORY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(_HISTORY_LOG_PATH, encoding="utf-8")
+        formatter = logging.Formatter("%(message)s")
+        handler.setFormatter(formatter)
+        history_logger.addHandler(handler)
+    history_logger.setLevel(logging.INFO)
+    history_logger.propagate = False
+    _HISTORY_LOGGER = history_logger
+    return history_logger
+
+
 def _trace(event: str, **fields: Any) -> None:
     logger = _get_trace_logger()
     if event == "session.message":
@@ -113,11 +139,86 @@ def _trace(event: str, **fields: Any) -> None:
     logger.info("%s | %s", event, payload)
 
 
+def _history_log(event: str, **fields: Any) -> None:
+    logger = _get_history_logger()
+    payload: Dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        payload[key] = value
+    if _HISTORY_LOG_FORMAT == "jsonl":
+        message = json.dumps(payload, ensure_ascii=False)
+    else:
+        message = json.dumps(payload, ensure_ascii=False, indent=2)
+    logger.info(message)
+
+
+def _history_separator(text: str) -> None:
+    logger = _get_history_logger()
+    logger.info(text)
+
+
 def _shorten(text: str, limit: int = 160) -> str:
     cleaned = " ".join(text.split())
     if len(cleaned) <= limit:
         return cleaned
     return f"{cleaned[:limit]}..."
+
+
+def _format_history_items(items: List[Dict[str, Any]], limit: int = 160) -> List[Dict[str, str]]:
+    parts: List[Dict[str, str]] = []
+    for item in items:
+        role = item.get("role") or "unknown"
+        content = item.get("content") or ""
+        text = _shorten(str(content), limit=limit).replace("\n", " ").replace("\r", " ")
+        parts.append({"role": role, "content": text})
+    return parts
+
+
+def _resolve_history(state: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], str]:
+    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
+    history_key = f"history_{reasoning_mode}"
+    history = state.get(history_key, [])
+    if not isinstance(history, list):
+        history = []
+    if not history:
+        legacy = state.get("history", [])
+        if isinstance(legacy, list):
+            history = legacy
+    return history_key, history, reasoning_mode
+
+
+def _trace_separator(session_id: str, *, kind: str) -> None:
+    if not _TRACE_SESSION_SEPARATOR:
+        return
+    _history_separator(_TRACE_SEPARATOR_TEXT)
+
+
+def _trace_history(session_id: str, state: Dict[str, Any], *, reason: str) -> None:
+    if not _TRACE_HISTORY:
+        return
+    history_key, history, reasoning_mode = _resolve_history(state)
+    history_len = len(history)
+    payload: Dict[str, Any] = {
+        "session_id": session_id,
+        "reason": reason,
+        "reasoning_mode": reasoning_mode,
+        "history_key": history_key,
+        "history_len": history_len,
+    }
+    if history_len:
+        if _TRACE_HISTORY_FULL:
+            items = history
+        else:
+            tail_count = max(0, _TRACE_HISTORY_TAIL)
+            items = history[-tail_count:] if tail_count else []
+        if items:
+            payload["tail_len"] = len(items)
+            payload["tail"] = _format_history_items(items)
+    _history_log("session.history", **payload)
 
 
 class ChatState(TypedDict, total=False):
@@ -396,8 +497,6 @@ def _prepare_full(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     matches = context.get("matches") or []
     records = matches or summary_cache
     reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
-    if reasoning_mode == "flash":
-        records = _sanitize_records_for_flash(records)
     _trace(
         "summary.records",
         total=len(summary_cache),
@@ -612,7 +711,10 @@ def _build_prompt(state: ChatState) -> str:
         tail = history[-6:]
         lines = [f"{item.get('role')}: {item.get('content')}" for item in tail]
         history_text = "\n".join(lines)
-    summary_json = _format_records(records)
+    records_for_prompt = records
+    if reasoning_mode == "flash":
+        records_for_prompt = _sanitize_records_for_flash(records)
+    summary_json = _format_records(records_for_prompt)
     if reasoning_mode == "thinking":
         prompt = (
             "You are the Summary Chatbot.\n"
@@ -1062,6 +1164,20 @@ class LangGraphSession:
         self._state.setdefault("router_mode", router_mode)
         default_reasoning_mode = _normalize_reasoning_mode(_DEFAULT_REASONING_MODE) or "flash"
         self._state.setdefault("reasoning_mode", default_reasoning_mode)
+        if _TRACE_HISTORY and _TRACE_SESSION_SEPARATOR:
+            _trace_separator(self._session_id, kind="start")
+        if _TRACE_HISTORY:
+            history_key, history, reasoning_mode = _resolve_history(self._state)
+            _history_log(
+                "session.start",
+                session_id=self._session_id,
+                app_name=self._app_name,
+                user_id=self._user_id,
+                router=router_mode,
+                reasoning_mode=reasoning_mode,
+                history_key=history_key,
+                history_len=len(history),
+            )
 
     @property
     def app_name(self) -> str:
@@ -1090,6 +1206,7 @@ class LangGraphSession:
         result = self._graph.invoke(input_state)
         response_text = result.get("response", "")
         self._state = self._prune_state(result)
+        _trace_history(self._session_id, self._state, reason="send_message")
         elapsed = time.monotonic() - started
         _trace(
             "session.complete",
@@ -1116,6 +1233,7 @@ class LangGraphSession:
         if not prompt:
             response_text = result.get("response", "")
             self._state = self._prune_state(result)
+            _trace_history(self._session_id, self._state, reason="stream_message")
             elapsed = time.monotonic() - started
             _trace(
                 "session.complete",
@@ -1145,6 +1263,7 @@ class LangGraphSession:
             yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
             result["response"] = response_text
             self._state = self._prune_state(result)
+            _trace_history(self._session_id, self._state, reason="stream_error")
             return
         if not response_text:
             response_text = _fallback_answer(result.get("answer_records") or [])
@@ -1171,6 +1290,7 @@ class LangGraphSession:
         result[history_key] = history
         result["response"] = response_text
         self._state = self._prune_state(result)
+        _trace_history(self._session_id, self._state, reason="stream_message")
         total_elapsed = time.monotonic() - started
         _trace(
             "session.complete",
@@ -1179,6 +1299,10 @@ class LangGraphSession:
         )
 
     def close(self) -> None:
+        _trace_history(self._session_id, self._state, reason="close")
+        _history_log("session.close", session_id=self._session_id)
+        if _TRACE_HISTORY and _TRACE_SESSION_SEPARATOR:
+            _trace_separator(self._session_id, kind="end")
         return None
 
     @staticmethod
