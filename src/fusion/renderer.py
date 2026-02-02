@@ -538,6 +538,26 @@ def build_summary_tldr_timeline(
     return "\n".join(lines).strip()
 
 
+def build_summary_tldr(
+    segments: List[Dict[str, object]]
+) -> str:
+    """TL;DR 요약문만 생성한다."""
+    lines = ["# Final Summary (TL;DR)"]
+    for segment in sorted(segments, key=lambda x: int(x["segment_id"])):
+        summary = segment.get("summary", {}) or {}
+        bullets = summary.get("bullets", []) or []
+        for bullet in bullets:
+            claim = str(bullet.get("claim", "")).strip()
+            if not claim:
+                continue
+            bullet_id = str(bullet.get("bullet_id", "")).strip()
+            if bullet_id:
+                lines.append(f"- ({bullet_id}) {claim}")
+            else:
+                lines.append(f"- {claim}")
+    return "\n".join(lines).strip()
+
+
 def compose_final_summaries(
     summaries_jsonl: Path,
     max_chars: int,
@@ -554,5 +574,13 @@ def compose_final_summaries(
         build_summary_tldr_timeline(segments, include_timestamps).splitlines(),
         max_chars,
     )
+    summary_tldr = _truncate_lines(
+        build_summary_tldr(segments).splitlines(),
+        max_chars,
+    )
 
-    return {"timeline": summary_timeline, "tldr_timeline": summary_tldr_timeline}
+    return {
+        "timeline": summary_timeline,
+        "tldr_timeline": summary_tldr_timeline,
+        "tldr": summary_tldr,
+    }
