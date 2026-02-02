@@ -3,16 +3,16 @@ input_dir: data/inputs        # 입력 비디오 디렉토리
 output_dir: data/outputs      # 출력 디렉토리
 
 # 특징점 기반 추출 핵심 설정
-sample_interval_sec: 0.5         # 분석 프레임 샘플링 간격 (초)
+sample_interval_sec: 0.25        # 분석 프레임 샘플링 간격 (초)
 persistence_threshold: 6         # 특징점 유효 인정을 위한 최소 지속 샘플 수
-persistence_drop_ratio: 0.4      # 슬라이드 종료 판단을 위한 특징점 감소 비율
+persistence_drop_ratio: 0.2      # 슬라이드 종료 판단을 위한 특징점 감소 비율
 min_orb_features: 50             # 새 슬라이드 인식을 위한 최소 특징점 수
 
 # 중복 제거 설정
 dedup_phash_threshold: 12        # pHash 해밍 거리 임계값
 dedup_orb_distance: 60           # ORB 매칭 거리 임계값
-dedup_sim_threshold: 0.5         # 중복 판정 유사도 임계값
+dedup_sim_threshold: 0.7         # 중복 판정 유사도 임계값
 
 # 하위 호환성용 필드
-sensitivity_diff: 0.3            # 전이 감지 임계값
+sensitivity_diff: 0.2            # 전이 감지 임계값
 min_interval: 0.5                # 최소 캡처 간격 (초)
