@@ -582,8 +582,8 @@ def run_processing_pipeline(
     if processing_job_id and adapter_for_job:
         try:
             adapter_for_job.update_processing_job_status(processing_job_id, "VLM_RUNNING")
-            # 초기 배치 진행률은 0으로 설정 (total_batch는 배치 모드에서 나중에 설정됨)
-            adapter_for_job.update_processing_job_progress(processing_job_id, 0, None)
+            # Note: 초기 배치 진행률(current_batch, total_batch)은 run_batch_fusion_pipeline에서
+            # 실제 배치 수 계산 후 설정됨. 여기서 설정하지 않음.
         except Exception as e:
             print(f"{_get_timestamp()} [DB] Warning: Failed to update processing_job status: {e}")
 
@@ -630,8 +630,24 @@ def run_processing_pipeline(
             next_batch_idx = 0
             total_segments_acc = 0
             vlm_elapsed_acc = 0.0
-            
-            print(f"{_get_timestamp()} [{'Continuous' if continuous else 'Batch'} Mode] Started processing loop. DEBUG: batch_size={batch_size}")
+
+            # 전체 배치 수 미리 계산하여 DB에 설정 (프론트엔드 진행률 표시용)
+            total_captures_count = len(pending_captures)
+            if total_captures_count > 0 and batch_size > 0:
+                import math
+                total_batches_estimated = math.ceil(total_captures_count / batch_size)
+            else:
+                total_batches_estimated = 1
+
+            # DB에 total_batch 초기 설정
+            if current_adapter and processing_job_id:
+                try:
+                    current_adapter.update_processing_job_progress(processing_job_id, 0, total_batches_estimated)
+                    print(f"{_get_timestamp()} [DB] Initialized total_batch: 0/{total_batches_estimated}")
+                except Exception as e:
+                    print(f"{_get_timestamp()} [DB] Warning: Failed to initialize total_batch: {e}")
+
+            print(f"{_get_timestamp()} [{'Continuous' if continuous else 'Batch'} Mode] Started processing loop (captures={total_captures_count}, batches={total_batches_estimated})")
 
             while True:
                 # 1. 전처리 작업 상태 확인 (Continuous 모드일 때만)

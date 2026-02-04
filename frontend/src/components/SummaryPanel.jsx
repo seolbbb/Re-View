@@ -120,12 +120,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
 
     const stageLabel = (() => {
         const s = (progressInfo.stage || videoStatus || '').toUpperCase();
-        const batchPrefix = progressInfo.total > 1
-            ? `배치 ${Math.min(progressInfo.current + 1, progressInfo.total)}/${progressInfo.total} · `
-            : '';
-        if (s === 'VLM_RUNNING') return `${batchPrefix}AI 분석 진행 중...`;
-        if (s === 'SUMMARY_RUNNING') return `${batchPrefix}요약 생성 중...`;
-        if (s === 'JUDGE_RUNNING') return `${batchPrefix}품질 평가 중...`;
+        // 배치 정보는 오른쪽 진행률 표시에서만 보여줌 (메시지에는 포함하지 않음)
+        if (s === 'VLM_RUNNING') return 'AI 분석 진행 중...';
+        if (s === 'SUMMARY_RUNNING') return '요약 생성 중...';
+        if (s === 'JUDGE_RUNNING') return '품질 평가 중...';
         if (s === 'PREPROCESSING' || s === 'PREPROCESS_DONE') return '전처리 완료, 분석 대기 중...';
         return '영상 분석 중...';
     })();

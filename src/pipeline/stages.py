@@ -791,14 +791,8 @@ def run_batch_fusion_pipeline(
         f"(group size: ~{batch_size})"
     )
 
-    # total_batches 계산 완료 후 즉시 DB에 업데이트
-    # (preserve_files=True인 경우, 즉 연속 모드에서는 외부에서 total 관리가 되므로 여기서 초기화하지 않음)
-    if adapter and processing_job_id and not preserve_files:
-        try:
-            adapter.update_processing_job_progress(processing_job_id, 0, total_batches)
-            print(f"{_get_timestamp()}   [DB] Initialized total_batch to {total_batches}")
-        except Exception as e:
-            print(f"{_get_timestamp()} [DB] Warning: Failed to initialize total_batch: {e}")
+    # Note: total_batch는 run_process_pipeline.py에서 파이프라인 시작 시 미리 설정됨
+    # 여기서는 current_batch 진행률만 업데이트함
 
     batch_ranges = []
     for i in range(total_batches):
@@ -961,6 +955,13 @@ def run_batch_fusion_pipeline(
         status_map["VLM"] = "RUNNING..."
         _print_status()
 
+        # DB 상태 업데이트: VLM_RUNNING
+        if adapter and processing_job_id:
+            try:
+                adapter.update_processing_job_status(processing_job_id, "VLM_RUNNING")
+            except Exception:
+                pass
+
         vlm_info = {"image_count": 0}
         batch_vlm_elapsed = 0.0
 
@@ -1073,10 +1074,17 @@ def run_batch_fusion_pipeline(
             status_map["Summarize"] = "RUNNING..."
             _print_status()
 
+            # DB 상태 업데이트: SUMMARY_RUNNING
+            if adapter and processing_job_id:
+                try:
+                    adapter.update_processing_job_status(processing_job_id, "SUMMARY_RUNNING")
+                except Exception:
+                    pass
+
             def _sum_status_cb(tokens):
                 status_map["Summarize"] = f"RUNNING.. {tokens} (token)"
                 _print_status()
-            
+
             t_summarize = time.perf_counter()
             summarizer_result = run_batch_summarizer(
                 segments_units_jsonl=batch_dir / "fusion" / "segments_units.jsonl",
@@ -1099,10 +1107,17 @@ def run_batch_fusion_pipeline(
             status_map["Judge"] = "RUNNING..."
             _print_status()
 
+            # DB 상태 업데이트: JUDGE_RUNNING
+            if adapter and processing_job_id:
+                try:
+                    adapter.update_processing_job_status(processing_job_id, "JUDGE_RUNNING")
+                except Exception:
+                    pass
+
             def _judge_status_cb(tokens):
                 status_map["Judge"] = f"RUNNING.. {tokens} (token)"
                 _print_status()
-            
+
             t_judge = time.perf_counter()
             judge_result = run_judge(
                 config=config,
@@ -1191,6 +1206,17 @@ def run_batch_fusion_pipeline(
                 )
             except Exception as e:
                 print(f"[DB] Error uploading batch fusion results: {e}")
+
+        # 배치 완료 시 current_batch 진행률 업데이트 (total_batch는 건드리지 않음)
+        if adapter and processing_job_id:
+            try:
+                # total=None으로 전달하여 current_batch만 업데이트
+                result = adapter.update_processing_job_progress(processing_job_id, current_batch_global_idx, None)
+                print(f"{_get_timestamp()}   [DB] Updated current_batch: {current_batch_global_idx}")
+            except Exception as e:
+                print(f"{_get_timestamp()} [DB] Warning: Failed to update batch progress: {e}")
+
+        processed_batches_count += 1
 
     # [END of Batch Loop]
 
