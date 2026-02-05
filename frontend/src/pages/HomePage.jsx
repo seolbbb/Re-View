@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import Header from '../components/Header';
 import VideoCard from '../components/VideoCard';
 import UploadArea from '../components/UploadArea';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { Library, Loader2 } from 'lucide-react';
-import { listVideos } from '../api/videos';
+import { listVideos, deleteVideo } from '../api/videos';
 import './HomePage.css';
 
 // DB 상태 → UI 상태 매핑
@@ -35,6 +36,8 @@ function HomePage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [filter, setFilter] = useState('all');
+    const [deleteTarget, setDeleteTarget] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     useEffect(() => {
         setLoading(true);
@@ -54,6 +57,31 @@ function HomePage() {
         if (filter === 'progress') return uiStatus === 'progress' || uiStatus === 'pending';
         return true;
     });
+
+    const handleDeleteRequest = (videoId, videoTitle) => {
+        setDeleteTarget({ id: videoId, title: videoTitle });
+    };
+
+    const handleDeleteConfirm = async () => {
+        if (!deleteTarget) return;
+        setIsDeleting(true);
+        try {
+            await deleteVideo(deleteTarget.id);
+            setVideos((prev) => prev.filter((v) => v.id !== deleteTarget.id));
+            setDeleteTarget(null);
+        } catch (err) {
+            alert(`삭제 실패: ${err.message || '알 수 없는 오류'}`);
+            setDeleteTarget(null);
+        } finally {
+            setIsDeleting(false);
+        }
+    };
+
+    const handleDeleteCancel = () => {
+        if (!isDeleting) {
+            setDeleteTarget(null);
+        }
+    };
 
     return (
         <div className="home-page">
@@ -135,6 +163,7 @@ function HomePage() {
                                     duration={formatDuration(video.duration_sec)}
                                     date={formatDate(video.created_at)}
                                     status={mapStatus(video.status)}
+                                    onDelete={handleDeleteRequest}
                                 />
                             </div>
                         ))}
@@ -146,6 +175,19 @@ function HomePage() {
             <footer className="home-footer">
                 <p>&copy; 2026 Re:View. AI-Powered Video Analysis Platform</p>
             </footer>
+
+            {/* Delete Confirm Dialog */}
+            <ConfirmDialog
+                isOpen={!!deleteTarget}
+                onClose={handleDeleteCancel}
+                onConfirm={handleDeleteConfirm}
+                title="영상 삭제"
+                message={deleteTarget ? `"${deleteTarget.title}" 영상을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.` : ''}
+                confirmText="삭제"
+                cancelText="취소"
+                isLoading={isDeleting}
+                variant="danger"
+            />
         </div>
     );
 }

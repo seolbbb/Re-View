@@ -40,6 +40,10 @@ export function post(url, body) {
   });
 }
 
+export function del(url) {
+  return request(url, { method: 'DELETE' });
+}
+
 export function postForm(url, formData) {
   return fetch(BASE_URL + url, { method: 'POST', body: formData }).then(async (res) => {
     if (!res.ok) {

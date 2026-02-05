@@ -717,6 +717,51 @@ def list_videos() -> Dict[str, Any]:
     return {"videos": videos}
 
 
+@app.delete("/api/videos/{video_id}")
+def delete_video(video_id: str) -> Dict[str, Any]:
+    """비디오 삭제 (DB + Storage).
+
+    1. 비디오 존재 확인
+    2. Storage 삭제 (videos, captures, audio 버킷)
+    3. DB 삭제 (CASCADE로 관련 테이블 자동 정리)
+    """
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    # 1. 비디오 존재 확인
+    video = adapter.get_video(video_id)
+
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # 2. Storage 삭제 (각 버킷에서 video_id 폴더 내 파일들 삭제)
+    storage_errors = []
+    for bucket in ["videos", "captures", "audio"]:
+        try:
+            # 폴더 내 파일 목록 조회
+            files = adapter.client.storage.from_(bucket).list(video_id)
+            if files:
+                # 파일 경로 리스트 생성
+                paths = [f"{video_id}/{f['name']}" for f in files]
+                if paths:
+                    adapter.client.storage.from_(bucket).remove(paths)
+        except Exception as e:
+            # Storage 삭제 실패해도 DB 삭제는 계속 진행
+            storage_errors.append(f"{bucket}: {str(e)}")
+
+    # 3. DB 삭제 (CASCADE로 관련 테이블 자동 정리)
+    deleted = adapter.delete_video(video_id)
+    if not deleted:
+        raise HTTPException(status_code=500, detail="Failed to delete video from database")
+
+    result = {"status": "ok", "video_id": video_id, "message": "Video deleted successfully"}
+    if storage_errors:
+        result["storage_warnings"] = storage_errors
+
+    return result
+
+
 @app.get("/api/videos/{video_id}/stream")
 def stream_video(video_id: str):
     """비디오 파일 서빙 (Storage signed URL 또는 로컬 fallback)."""

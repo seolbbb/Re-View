@@ -4,7 +4,7 @@ import { Play, Calendar } from 'lucide-react';
 import { getThumbnailUrl } from '../api/videos';
 import './VideoCard.css';
 
-function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, status = 'done' }) {
+function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, status = 'done', onDelete }) {
     const [imgError, setImgError] = useState(false);
 
     const statusConfig = {
@@ -17,6 +17,14 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
 
     // Use thumbnail prop if provided (legacy), otherwise use API
     const imgSrc = thumbnail || (thumbnailVideoId ? getThumbnailUrl(thumbnailVideoId) : null);
+
+    const handleDeleteClick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onDelete) {
+            onDelete(id, title);
+        }
+    };
 
     return (
         <Link to={`/analysis/${id}`} className="video-card">
@@ -53,7 +61,17 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
             </div>
             <div className="video-info">
                 <h3 className="video-title">{title}</h3>
-                <span className="video-date"><Calendar className="w-3 h-3" />{date}</span>
+                <div className="video-meta">
+                    <span className="video-date"><Calendar className="w-3 h-3" />{date}</span>
+                    {onDelete && (
+                        <button
+                            className="video-delete-btn"
+                            onClick={handleDeleteClick}
+                        >
+                            삭제
+                        </button>
+                    )}
+                </div>
             </div>
         </Link>
     );

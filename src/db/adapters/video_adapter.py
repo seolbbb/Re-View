@@ -211,6 +211,18 @@ class VideoAdapterMixin:
             "updated_video": updated_video
         }
 
+    def delete_video(self, video_id: str) -> bool:
+        """비디오 레코드를 삭제합니다 (CASCADE로 관련 데이터 자동 삭제).
+
+        Args:
+            video_id: 삭제할 비디오의 UUID
+
+        Returns:
+            bool: 삭제 성공 여부
+        """
+        result = self.client.table("videos").delete().eq("id", video_id).execute()
+        return len(result.data) > 0
+
     # NOTE: pipeline_runs 테이블은 더 이상 사용되지 않습니다.
     # 대신 preprocessing_jobs/processing_jobs 테이블을 사용하세요.
     # 관련 함수는 job_adapter.py에서 제공됩니다.

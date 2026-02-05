@@ -1,4 +1,4 @@
-import { get, post, BASE_URL } from './client';
+import { get, post, del, BASE_URL } from './client';
 
 // ---------------------------------------------------------------------------
 // Signed URL 기반 3단계 업로드
@@ -70,4 +70,8 @@ export function getThumbnailUrl(videoId) {
 
 export function restartProcessing(videoId) {
   return post('/process', { video_id: videoId });
+}
+
+export function deleteVideo(videoId) {
+  return del(`/api/videos/${videoId}`);
 }

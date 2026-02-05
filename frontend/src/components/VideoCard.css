@@ -150,10 +150,38 @@
     color: var(--accent-coral);
 }
 
+.video-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
 .video-date {
     font-size: 13px;
     color: var(--text-muted);
     display: flex;
     align-items: center;
     gap: 6px;
+}
+
+/* Delete Button */
+.video-delete-btn {
+    background: transparent;
+    border: none;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: all 0.2s ease;
+}
+
+.video-card:hover .video-delete-btn {
+    opacity: 1;
+}
+
+.video-delete-btn:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
 }
