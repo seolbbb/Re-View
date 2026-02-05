@@ -586,7 +586,44 @@ class UploadInitResponse(BaseModel):
 
 @app.post("/api/videos/upload/init", response_model=UploadInitResponse)
 def init_upload(request: UploadInitRequest):
-    """Signed URL 발급 + 비디오 레코드 생성."""
+    """
+    비디오 업로드를 위한 Presigned URL 발급 및 DB 레코드 생성.
+    
+    Purpose:
+        프론트엔드에서 비디오 파일을 직접 스토리지에 업로드할 수 있도록
+        Presigned URL을 발급합니다. R2 환경에서는 boto3 generate_presigned_url을,
+        Supabase 환경에서는 create_signed_upload_url을 사용합니다.
+    
+    Storage Path Structure:
+        - R2: {video_id}/{r2_prefix_videos}/{filename}
+          예: abc123/videos/sample.mp4
+        - Supabase: {video_id}/{filename}
+    
+    API Flow:
+        1. Frontend → POST /api/videos/upload/init (파일명 전달)
+        2. Backend → videos 테이블에 레코드 생성
+        3. Backend → Presigned URL 반환
+        4. Frontend → PUT {upload_url} (파일 직접 업로드)
+        5. Frontend → POST /api/videos/upload/complete (업로드 완료 알림)
+    
+    Args:
+        request (UploadInitRequest): 업로드할 파일명 포함
+            - filename: 원본 파일명 (확장자 포함)
+    
+    Returns:
+        UploadInitResponse:
+            - video_id: 생성된 비디오 ID (UUID)
+            - video_name: 파일명 (확장자 제외)
+            - upload_url: Presigned URL (1시간 유효)
+            - storage_key: 스토리지 경로
+    
+    Raises:
+        HTTPException(503): DB 연결 실패
+    
+    Related:
+        - complete_upload(): 업로드 완료 후 파이프라인 실행
+        - _run_full_pipeline_from_storage(): 전처리 및 처리 실행
+    """
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
@@ -600,14 +637,31 @@ def init_upload(request: UploadInitRequest):
     )
     video_id = video["id"]
 
-    storage_key = f"{video_id}/{safe_name}"
-    adapter.update_video_storage_key(video_id, storage_key)
-
-    # Supabase Storage signed upload URL 생성
-    signed = adapter.client.storage.from_("videos").create_signed_upload_url(
-        storage_key
-    )
-    upload_url = signed.get("signed_url") or signed.get("signedURL", "")
+    # R2 또는 Supabase Storage에 따라 경로 및 URL 생성
+    if adapter.s3_client:
+        # R2 presigned URL 생성
+        storage_key = f"{video_id}/{adapter.r2_prefix_videos}/{safe_name}"
+        adapter.update_video_storage_key(video_id, storage_key)
+        
+        upload_url = adapter.s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': adapter.r2_bucket,
+                'Key': storage_key,
+                'ContentType': 'video/mp4'
+            },
+            ExpiresIn=3600  # 1시간 유효
+        )
+        print(f"[R2] Generated presigned upload URL for {storage_key}")
+    else:
+        # Supabase Storage fallback
+        storage_key = f"{video_id}/{safe_name}"
+        adapter.update_video_storage_key(video_id, storage_key)
+        
+        signed = adapter.client.storage.from_("videos").create_signed_upload_url(
+            storage_key
+        )
+        upload_url = signed.get("signed_url") or signed.get("signedURL", "")
 
     return UploadInitResponse(
         video_id=video_id,
@@ -656,7 +710,46 @@ def complete_upload(
 
 
 def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
-    """Storage에서 비디오를 다운로드하여 전처리 → 처리 파이프라인을 순차 실행합니다."""
+    """
+    스토리지에서 비디오를 다운로드하여 전처리 → 처리 파이프라인을 순차 실행.
+    
+    Purpose:
+        프론트엔드에서 업로드 완료 후 백그라운드에서 실행되는 메인 파이프라인.
+        R2 또는 Supabase Storage에서 비디오를 다운로드하고, 전처리(캡처 추출,
+        STT) 및 처리(VLM, Fusion) 파이프라인을 순차적으로 실행합니다.
+    
+    Storage Integration (R2 Priority):
+        1. adapter.s3_client가 초기화되어 있으면 R2 사용
+        2. R2 미설정 시 Supabase Storage fallback
+        3. 다운로드 경로: {bucket}/{storage_key}
+    
+    Pipeline Flow:
+        1. 스토리지에서 임시 디렉토리로 비디오 다운로드
+        2. run_preprocess_pipeline() 실행 (캡처/오디오 추출, STT)
+        3. run_processing_pipeline() 실행 (VLM, Judge, Fusion)
+        4. 임시 디렉토리 정리
+    
+    Args:
+        video_id (str): 비디오 UUID (DB 레코드 ID)
+        storage_key (str): 스토리지 경로
+            - R2: {video_id}/videos/{filename}
+            - Supabase: {video_id}/{filename}
+    
+    Returns:
+        None (백그라운드 태스크로 실행)
+    
+    Side Effects:
+        - videos.status 업데이트 (PREPROCESSING → PREPROCESS_DONE → PROCESSING → DONE)
+        - captures, stt_results, segments, summaries 테이블에 결과 저장
+        - R2/Supabase Storage에 캡처 이미지, 오디오 업로드
+    
+    Error Handling:
+        - 예외 발생 시 videos.status를 FAILED로 업데이트
+        - 임시 디렉토리는 finally 블록에서 항상 정리
+    
+    Called By:
+        - complete_upload() 엔드포인트 (BackgroundTasks)
+    """
     from src.run_preprocess_pipeline import run_preprocess_pipeline
 
     adapter = get_supabase_adapter()
@@ -666,15 +759,21 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         print(f"  Re:View API Pipeline (Storage): {video_id}")
         print("=" * 60)
         
-        # 1. Storage에서 임시 디렉토리로 다운로드
+        # 1. Storage에서 임시 디렉토리로 다운로드 (R2 우선, Supabase fallback)
         tmp_dir = tempfile.mkdtemp()
         original_name = Path(storage_key).name
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         tmp_filename = f"{timestamp}_{original_name}"
         tmp_path = Path(tmp_dir) / tmp_filename
 
-        file_data = adapter.client.storage.from_("videos").download(storage_key)
-        tmp_path.write_bytes(file_data)
+        if adapter.s3_client:
+            # R2에서 다운로드
+            adapter.s3_client.download_file(adapter.r2_bucket, storage_key, str(tmp_path))
+            print(f"[R2] Downloaded video from {adapter.r2_bucket}/{storage_key}")
+        else:
+            # Supabase Storage fallback
+            file_data = adapter.client.storage.from_("videos").download(storage_key)
+            tmp_path.write_bytes(file_data)
 
         print(f"\n1. Starting 'Preprocessing'...")
         # 2. 전처리
