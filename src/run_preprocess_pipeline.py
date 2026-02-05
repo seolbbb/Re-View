@@ -276,6 +276,10 @@ def run_preprocess_pipeline(
                 # 스트리밍으로 이미 업로드된 경우(skip_db_capture=True), 배치 업로드는 수행하지 않음
                 do_capture_sync = (stage == "capture" and not kwargs.get("skip_db_capture", False))
                 
+                # [Fix] Video 중복 업로드 방지
+                # existing_video_id가 있는 경우 프론트엔드에서 이미 presigned URL로 업로드했으므로 재업로드 불필요
+                do_video_sync = (stage == "video" and existing_video_id is None)
+                
                 stage_results = sync_preprocess_artifacts_to_db(
                     adapter=adapter,
                     video_id=video_id,
@@ -285,7 +289,7 @@ def run_preprocess_pipeline(
                     include_stt=(stage == "stt"),
                     include_captures=do_capture_sync,
                     include_audio=(stage == "audio"),
-                    include_video=(stage == "video"),
+                    include_video=do_video_sync,
                     video_path=video_path,
                     **kwargs,
                     table_name=db_table_name,
