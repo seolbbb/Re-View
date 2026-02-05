@@ -1,5 +1,46 @@
-"""비디오 및 파이프라인 실행 관리 어댑터 모듈."""
+"""비디오 및 파이프라인 실행 관리 어댑터 모듈.
 
+=============================================================================
+모듈 목적 (Purpose)
+=============================================================================
+이 모듈은 videos 테이블에 대한 CRUD 작업과 비디오 파일의 스토리지 업로드를
+담당하는 Mixin 클래스를 정의합니다. Cloudflare R2와 Supabase Storage 모두 지원합니다.
+
+=============================================================================
+활용처 (Usage Context)
+=============================================================================
+- src/db/supabase_adapter.py → SupabaseAdapter가 이 Mixin을 상속
+- src/process_api.py → /api/videos/upload 엔드포인트에서 upload_video() 호출
+- src/run_preprocess_pipeline.py → 전처리 파이프라인에서 비디오 레코드 생성/업데이트
+
+=============================================================================
+API 엔드포인트 연결 (Connected API Endpoints)
+=============================================================================
+- POST /api/videos/upload → upload_video() 호출
+- GET /api/videos → list_videos() 호출
+- GET /api/videos/{video_id}/status → get_video() 호출
+
+=============================================================================
+R2 스토리지 경로 구조 (Storage Path Structure)
+=============================================================================
+R2 사용 시: {video_id}/{R2_PREFIX_VIDEOS}/{timestamp}_{filename}
+Supabase Fallback: {video_id}/{timestamp}_{filename}
+
+예시:
+  - R2: 92f1750b-08df-47e3/videos/20260205120000_sample.mp4
+  - Supabase: 92f1750b-08df-47e3/20260205120000_sample.mp4
+
+=============================================================================
+의존성 (Dependencies)
+=============================================================================
+- src/db/adapters/base.py: BaseAdapter (s3_client, r2_bucket, r2_prefix_videos 제공)
+- mimetypes: MIME 타입 추론
+- pathlib: 파일 경로 처리
+"""
+
+# -----------------------------------------------------------------------------
+# Standard Library Imports
+# -----------------------------------------------------------------------------
 import os
 import mimetypes
 from pathlib import Path
@@ -172,37 +213,92 @@ class VideoAdapterMixin:
         video_path: Path,
         bucket: str = "videos",
     ) -> Dict[str, Any]:
-        """비디오 원본 파일을 Supabase Storage에 업로드하고 DB를 업데이트합니다.
+        """비디오 원본 파일을 스토리지에 업로드하고 DB를 업데이트합니다.
+        
+        ======================================================================
+        사용 파일 (Called By)
+        ======================================================================
+        - src/process_api.py → upload_video() 엔드포인트 (POST /api/videos/upload)
+        - src/run_preprocess_pipeline.py → 전처리 파이프라인에서 호출
+        
+        ======================================================================
+        연결 방식 (Connection)
+        ======================================================================
+        - R2 활성화 시: boto3 S3 클라이언트로 Cloudflare R2에 업로드
+        - R2 비활성화 시: Supabase Storage API로 업로드 (Fallback)
+        
+        ======================================================================
+        스토리지 경로 (Storage Path)
+        ======================================================================
+        R2 사용:     {video_id}/{R2_PREFIX_VIDEOS}/{filename}
+                     예: 92f1750b/videos/20260205_sample.mp4
+        
+        Supabase:    {video_id}/{filename}
+                     예: 92f1750b/20260205_sample.mp4
 
         Args:
-            video_id: 대상 비디오 UUID
-            video_path: 업로드할 로컬 비디오 파일 경로
-            bucket: 타겟 Storage 버킷 이름 (기본값: 'videos')
+            video_id (str): 대상 비디오 UUID.
+                videos 테이블의 id 컬럼 값.
+            video_path (Path): 업로드할 로컬 비디오 파일 경로.
+                파일이 존재하지 않으면 FileNotFoundError 발생.
+            bucket (str, optional): Supabase Storage 버킷 이름.
+                R2 사용 시 무시됨. Defaults to "videos".
 
         Returns:
-            Dict: 업로드 결과 및 업데이트된 스토리지 키
+            Dict[str, Any]: 업로드 결과
+                - video_id: 비디오 UUID
+                - storage_path: 저장된 경로
+                - updated_video: DB 업데이트 결과
+                
+        Raises:
+            FileNotFoundError: video_path 파일이 존재하지 않는 경우
+            Exception: R2 또는 Supabase 업로드 실패 시
+            
+        Note:
+            업로드 성공 시 videos.video_storage_key 컬럼이 자동 업데이트됩니다.
         """
+        # =====================================================================
+        # 1. 파일 존재 확인 및 MIME 타입 추론
+        # =====================================================================
         if not video_path.exists():
              raise FileNotFoundError(f"Video file not found: {video_path}")
 
         file_name = video_path.name
-        # 스토리지 경로 구조: {video_id}/{filename}
-        storage_path = f"{video_id}/{file_name}"
         
         mime_type, _ = mimetypes.guess_type(str(video_path))
         if not mime_type:
             mime_type = "video/mp4"
 
-        # 1. Storage에 파일 업로드
-        with open(video_path, "rb") as f:
-            # 큰 파일일 수 있으므로 그대로 넘김 (supabase-py가 내부에서 처리)
-            self.client.storage.from_(bucket).upload(
-                path=storage_path,
-                file=f,
-                file_options={"content-type": mime_type, "upsert": "true"}
-            )
+        # =====================================================================
+        # 2. 스토리지 업로드 (R2 우선, Supabase Fallback)
+        # =====================================================================
+        if self.s3_client:
+            # R2 Upload: {video_id}/{prefix}/{filename}
+            storage_path = f"{video_id}/{self.r2_prefix_videos}/{file_name}"
+            try:
+                self.s3_client.upload_file(
+                    str(video_path),
+                    self.r2_bucket,
+                    storage_path,
+                    ExtraArgs={"ContentType": mime_type}
+                )
+                print(f"[R2] Uploaded video to {self.r2_bucket}/{storage_path}")
+            except Exception as e:
+                print(f"[R2] Upload failed: {e}")
+                raise e
+        else:
+            # Supabase Fallback: {video_id}/{filename}
+            storage_path = f"{video_id}/{file_name}"
+            with open(video_path, "rb") as f:
+                self.client.storage.from_(bucket).upload(
+                    path=storage_path,
+                    file=f,
+                    file_options={"content-type": mime_type, "upsert": "true"}
+                )
         
-        # 2. DB 업데이트
+        # =====================================================================
+        # 3. DB 업데이트 (videos.video_storage_key)
+        # =====================================================================
         updated_video = self.update_video_storage_key(video_id, storage_path)
         
         return {
