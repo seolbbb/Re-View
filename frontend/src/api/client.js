@@ -1,3 +1,5 @@
+import { supabase } from '../lib/supabase';
+
 export const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 export class ApiError extends Error {
@@ -8,9 +10,23 @@ export class ApiError extends Error {
   }
 }
 
+async function getAuthHeaders() {
+  if (!supabase) return {};
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      return { Authorization: `Bearer ${session.access_token}` };
+    }
+  } catch {
+    // ignore auth header errors
+  }
+  return {};
+}
+
 async function request(url, options = {}) {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(BASE_URL + url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
+    headers: { 'Content-Type': 'application/json', ...authHeaders, ...options.headers },
     ...options,
   });
 
@@ -41,7 +57,9 @@ export function post(url, body) {
 }
 
 export function postForm(url, formData) {
-  return fetch(BASE_URL + url, { method: 'POST', body: formData }).then(async (res) => {
+  return getAuthHeaders().then((authHeaders) =>
+    fetch(BASE_URL + url, { method: 'POST', body: formData, headers: { ...authHeaders } })
+  ).then(async (res) => {
     if (!res.ok) {
       let message = res.statusText;
       try {

@@ -111,6 +111,15 @@
     gap: 12px;
 }
 
+.user-email {
+    font-size: 13px;
+    color: var(--text-secondary);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .theme-toggle {
     width: 42px;
     height: 42px;
