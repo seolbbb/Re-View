@@ -312,21 +312,23 @@ v1.5:
         "segment_id": 1,
         "summary": {
           "bullets": [
-             {"bullet_id": "1-1", "claim": "ELBO(Evidence Lower Bound) maximizes the lower bound of log-likelihood.", "source_type": "direct", "evidence_refs": ["stt_001"], "confidence": "high", "notes": ""}
+             {"bullet_id": "1-1", "claim": "ELBO(Evidence Lower Bound)는 log-likelihood의 하한선을 최대화하는 목적 함수이다.", "source_type": "direct", "evidence_refs": ["stt_001"], "confidence": "high", "notes": ""}
           ],
           "definitions": [
-             {"term": "ELBO", "definition": "Evidence Lower Bound. Optimization target roughly equivalent to log-likelihood.", "source_type": "background", "evidence_refs": ["cap_001"], "confidence": "high"},
-             {"term": "$p_{\\theta}(x)$", "definition": "Parametric probability distribution.", "source_type": "background", "evidence_refs": ["cap_001"], "confidence": "high"}
+             {"term": "ELBO", "definition": "Evidence Lower Bound. log-likelihood와 대략적으로 동등한 최적화 목표.", "source_type": "background", "evidence_refs": ["cap_001"], "confidence": "high"},
+             {"term": "$p_{\\theta}(x)$", "definition": "파라미터 $\\theta$를 갖는 확률 분포.", "source_type": "background", "evidence_refs": ["cap_001"], "confidence": "high"}
           ],
           "explanations": [
-             {"point": "(Type A) Math: The objective is $\\mathcal{L} = \\mathbb{E}[\\log p]$. This breaks down...", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"},
-             {"point": "(Type B) Motivation: We use ELBO because direct calculation is intractable.", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"},
-             {"point": "(Type C) Comparison: Unlike MLE, this method...", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"}
+             {"point": "[수식] 목적 함수는 $\\mathcal{L} = \\mathbb{E}[\\log p]$이다. 이 수식은 다음과 같이 분해된다...", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"},
+             {"point": "[동기] 직접적인 계산이 intractable하기 때문에 ELBO를 사용한다.", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"},
+             {"point": "[비교] MLE와 달리, 이 방법은...", "source_type": "inferred", "evidence_refs": ["stt_001"], "confidence": "high"}
           ],
           "open_questions": []
         }
       }
     ]
+
+
 
 # [Optimized] Performant Tutor (v1.7)
 # - Goal: Extreme Performance (Quality + Speed), Minimal Tokens.
