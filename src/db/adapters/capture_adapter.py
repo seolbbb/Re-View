@@ -1,7 +1,58 @@
-"""캡처 및 스토리지 관리 어댑터 모듈."""
+"""캡처 이미지 및 오디오 파일 스토리지 관리 어댑터 모듈.
+
+=============================================================================
+모듈 목적 (Purpose)
+=============================================================================
+이 모듈은 비디오 처리 과정에서 생성되는 캡처 이미지와 추출된 오디오 파일의
+스토리지 관리를 담당합니다. Cloudflare R2와 Supabase Storage 모두 지원합니다.
+
+=============================================================================
+활용처 (Usage Context)
+=============================================================================
+- src/db/supabase_adapter.py → SupabaseAdapter가 이 Mixin을 상속
+- src/db/pipeline_sync.py → sync_preprocess_artifacts_to_db()에서 캡처/오디오 업로드
+- src/pipeline/stages.py → VLM 처리 시 get_signed_url()로 이미지 URL 생성
+
+=============================================================================
+API 엔드포인트 연결 (Connected API Endpoints)
+=============================================================================
+- GET /api/videos/{video_id}/thumbnail → get_signed_url() 호출
+- 내부 파이프라인에서 DB 동기화 시 upload_capture_image(), upload_audio() 호출
+
+=============================================================================
+R2 스토리지 경로 구조 (Storage Path Structure)
+=============================================================================
+[캡처 이미지]
+  R2:       {video_id}/{R2_PREFIX_CAPTURES}/{filename}
+  Supabase: {video_id}/{filename}
+  예시: 92f1750b/captures/20260205_sample_001.jpg
+
+[오디오 파일]
+  R2:       {video_id}/{R2_PREFIX_AUDIOS}/{filename}
+  Supabase: {video_id}/{filename}
+  예시: 92f1750b/audios/20260205_sample.mp3
+
+=============================================================================
+주요 메서드 요약 (Key Methods)
+=============================================================================
+- upload_capture_image(): 캡처 이미지 업로드 및 signed URL 반환
+- upload_audio(): 오디오 파일 업로드
+- download_audio(): 오디오 파일 다운로드 (STT 처리용)
+- get_signed_url(): 프라이빗 파일 접근용 signed URL 생성
+
+=============================================================================
+의존성 (Dependencies)
+=============================================================================
+- src/db/adapters/base.py: BaseAdapter (s3_client, r2_bucket, r2_prefix_* 제공)
+- pathlib: 파일 경로 처리
+- json: manifest.json 파싱
+"""
 
 from __future__ import annotations
 
+# -----------------------------------------------------------------------------
+# Standard Library Imports
+# -----------------------------------------------------------------------------
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -75,43 +126,63 @@ class CaptureAdapterMixin:
         bucket: str = "captures",
         signed_url_expires: int = 3600,
     ) -> Dict[str, Any]:
-        """단일 캡처 이미지를 Supabase Storage에 업로드하고 접근 URL을 반환합니다.
+        """단일 캡처 이미지를 Storage에 업로드하고 접근 URL을 반환합니다.
         
-        보안을 위해 Private 버킷 사용을 권장하며, 이 경우 Signed URL을 발급받아야 합니다.
-        
+        R2가 설정된 경우:
+            Bucket: review-storage (env)
+            Path: {video_id}/{R2_PREFIX_CAPTURES}/{filename}
+            
         Args:
-            video_id: 비디오 ID (경로 구분용)
+            video_id: 비디오 ID
             image_path: 업로드할 로컬 이미지 파일 경로
-            bucket: 타겟 Storage 버킷 이름
-            signed_url_expires: Signed URL 유효 기간 (초단위, 기본 1시간)
+            bucket: 타겟 Storage 버킷 이름 (Legacy)
+            signed_url_expires: Signed URL 유효 기간
             
         Returns:
             Dict: 업로드 결과 정보
                 - file_name: 파일명
-                - storage_path: 버킷 내 저장 경로 ({video_id}/{filename})
+                - storage_path: 버킷 내 저장 경로
                 - signed_url: 접근 가능한 임시 URL
         """
         file_name = image_path.name
-        # 스토리지 경로 구조: video_id/filename.jpg
-        storage_path = f"{video_id}/{file_name}"
         
-        with open(image_path, "rb") as f:
-            file_data = f.read()
-        
-        # 1. Storage에 파일 업로드
-        # upsert=False가 기본이므로 중복 시 에러 발생 가능 (필요 시 file_options에 upsert=True 추가)
-        self.client.storage.from_(bucket).upload(
-            path=storage_path,
-            file=file_data,
-            file_options={"content-type": "image/jpeg", "upsert": "true"}
-        )
-        
-        # 2. Private 버킷 접근을 위한 Signed URL 생성
-        signed_result = self.client.storage.from_(bucket).create_signed_url(
-            path=storage_path,
-            expires_in=signed_url_expires
-        )
-        signed_url = signed_result.get("signedURL", "")
+        if self.s3_client:
+            # R2 Upload
+            storage_path = f"{video_id}/{self.r2_prefix_captures}/{file_name}"
+            try:
+                self.s3_client.upload_file(
+                    str(image_path),
+                    self.r2_bucket,
+                    storage_path,
+                    ExtraArgs={"ContentType": "image/jpeg"}
+                )
+                
+                # Generate Presigned URL
+                signed_url = self.s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': self.r2_bucket, 'Key': storage_path},
+                    ExpiresIn=signed_url_expires
+                )
+            except Exception as e:
+                print(f"[R2] Capture upload failed: {e}")
+                raise e
+        else:
+            # Legacy Supabase Upload
+            storage_path = f"{video_id}/{file_name}"
+            with open(image_path, "rb") as f:
+                file_data = f.read()
+            
+            self.client.storage.from_(bucket).upload(
+                path=storage_path,
+                file=file_data,
+                file_options={"content-type": "image/jpeg", "upsert": "true"}
+            )
+            
+            signed_result = self.client.storage.from_(bucket).create_signed_url(
+                path=storage_path,
+                expires_in=signed_url_expires
+            )
+            signed_url = signed_result.get("signedURL", "")
         
         return {
             "file_name": file_name,
@@ -126,20 +197,23 @@ class CaptureAdapterMixin:
         audio_path: Path,
         bucket: str = "audio",
     ) -> Dict[str, Any]:
-        """오디오 파일을 Supabase Storage에 업로드합니다.
+        """오디오 파일을 Storage에 업로드합니다.
         
+        R2가 설정된 경우:
+            Bucket: review-storage (env)
+            Path: {video_id}/{R2_PREFIX_AUDIOS}/{filename}
+
         Args:
-            video_id: 비디오 ID (경로 구분용)
-            audio_path: 업로드할 로컬 오디오 파일 경로 (.wav, .mp3 등)
-            bucket: 타겟 Storage 버킷 이름 (기본: audio)
+            video_id: 비디오 ID
+            audio_path: 업로드할 로컬 오디오 파일 경로
+            bucket: 타겟 Storage 버킷 이름 (Legacy)
             
         Returns:
-            Dict: 업로드 결과 정보
+            Dict: 업로드 결과
                 - file_name: 파일명
-                - storage_path: 버킷 내 저장 경로 ({video_id}/{filename})
+                - storage_path: 버킷 내 저장 경로
         """
         file_name = audio_path.name
-        storage_path = f"{video_id}/{file_name}"
         
         # Content-Type 결정
         suffix = audio_path.suffix.lower()
@@ -149,16 +223,32 @@ class CaptureAdapterMixin:
             ".m4a": "audio/mp4",
             ".flac": "audio/flac",
         }.get(suffix, "audio/wav")
-        
-        with open(audio_path, "rb") as f:
-            file_data = f.read()
-        
-        # Storage에 업로드 (upsert=True로 덮어쓰기 허용)
-        self.client.storage.from_(bucket).upload(
-            path=storage_path,
-            file=file_data,
-            file_options={"content-type": content_type, "upsert": "true"}
-        )
+
+        if self.s3_client:
+            # R2 Upload
+            storage_path = f"{video_id}/{self.r2_prefix_audios}/{file_name}"
+            try:
+                self.s3_client.upload_file(
+                    str(audio_path),
+                    self.r2_bucket,
+                    storage_path,
+                    ExtraArgs={"ContentType": content_type}
+                )
+                print(f"[R2] Uploaded audio to {self.r2_bucket}/{storage_path}")
+            except Exception as e:
+                print(f"[R2] Audio upload failed: {e}")
+                raise e
+        else:
+            # Legacy Supabase Upload
+            storage_path = f"{video_id}/{file_name}"
+            with open(audio_path, "rb") as f:
+                file_data = f.read()
+            
+            self.client.storage.from_(bucket).upload(
+                path=storage_path,
+                file=file_data,
+                file_options={"content-type": content_type, "upsert": "true"}
+            )
         
         return {
             "file_name": file_name,
@@ -174,20 +264,27 @@ class CaptureAdapterMixin:
         """Storage에서 오디오 파일을 다운로드합니다.
         
         Args:
-            storage_path: Storage 내 경로 (예: {video_id}/audio.wav)
+            storage_path: Storage 내 경로
             local_path: 다운로드할 로컬 경로
-            bucket: Storage 버킷 이름 (기본: audio)
+            bucket: Storage 버킷 이름 (Legacy)
             
         Returns:
             Path: 다운로드된 파일의 로컬 경로
         """
-        # Storage에서 파일 다운로드
-        file_data = self.client.storage.from_(bucket).download(storage_path)
-        
-        # 로컬에 저장
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(local_path, "wb") as f:
-            f.write(file_data)
+        
+        if self.s3_client:
+            # R2 Download
+            try:
+                self.s3_client.download_file(self.r2_bucket, storage_path, str(local_path))
+            except Exception as e:
+                print(f"[R2] Download failed: {e}")
+                raise e
+        else:
+            # Legacy Supabase Download
+            file_data = self.client.storage.from_(bucket).download(storage_path)
+            with open(local_path, "wb") as f:
+                f.write(file_data)
         
         return local_path
     
@@ -197,21 +294,25 @@ class CaptureAdapterMixin:
         bucket: str = "captures",
         expires_in: int = 3600,
     ) -> str:
-        """이미 업로드된 파일에 대한 새로운 Signed URL을 발급합니다.
-        
-        Args:
-            storage_path: Storage 내부 경로 (예: uuid/image.jpg)
-            bucket: 버킷 이름
-            expires_in: 유효 기간 (초)
-            
-        Returns:
-            str: 생성된 Signed URL
-        """
-        result = self.client.storage.from_(bucket).create_signed_url(
-            path=storage_path,
-            expires_in=expires_in
-        )
-        return result.get("signedURL", "")
+        """이미 업로드된 파일에 대한 새로운 Signed URL을 발급합니다."""
+        if self.s3_client:
+            # R2 Presigned URL
+            try:
+                return self.s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': self.r2_bucket, 'Key': storage_path},
+                    ExpiresIn=expires_in
+                )
+            except Exception as e:
+                print(f"[R2] Signed URL gen failed: {e}")
+                return ""
+        else:
+            # Legacy Supabase
+            result = self.client.storage.from_(bucket).create_signed_url(
+                path=storage_path,
+                expires_in=expires_in
+            )
+            return result.get("signedURL", "")
     
     def upload_all_captures(
         self,
