@@ -288,7 +288,7 @@ def run_preprocess_pipeline(
                     preprocess_job_id=preprocess_job_id,
                     include_stt=(stage == "stt"),
                     include_captures=do_capture_sync,
-                    include_audio=(stage == "audio"),
+                    include_audio=False,  # [Fix] R2 오디오 업로드 비활성화
                     include_video=do_video_sync,
                     video_path=video_path,
                     **kwargs,

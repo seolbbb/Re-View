@@ -227,7 +227,7 @@ def sync_preprocess_artifacts_to_db(
     preprocess_job_id: Optional[str],
     include_stt: bool,
     include_captures: bool,
-    include_audio: bool = True,
+    include_audio: bool = False,
     include_video: bool = True,
     stt_payload: Optional[Any] = None,
     captures_payload: Optional[List[Dict[str, Any]]] = None,
