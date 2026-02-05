@@ -80,18 +80,8 @@ export async function getVideoSummary(videoId) {
 }
 
 export async function getVideoSummaries(videoId) {
-  if (!supabase) {
-    return get(`/videos/${videoId}/summaries`);
-  }
-
-  const { data, error } = await supabase
-    .from('summary_results')
-    .select('*')
-    .eq('video_id', videoId)
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-  return { summaries: data };
+  // 백엔드 API 사용 (segments 테이블과 적절히 JOIN 처리됨)
+  return get(`/videos/${videoId}/summaries`);
 }
 
 // ---------------------------------------------------------------------------
