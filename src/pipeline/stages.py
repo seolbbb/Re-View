@@ -922,11 +922,11 @@ def run_batch_fusion_pipeline(
         batch_dir.mkdir(parents=True, exist_ok=True)
         
         # [User Request] Unified Terminal Output
-        # 예: [VLM] DONE [DB] SYNCING [Judge] WAITING [Summarize] WAITING
+        # 예: [VLM] INFERENCE_DONE [DB] UPLOAD_DONE [Judge] WAITING [Summarize] WAITING
         
         status_map = {
-            "VLM": "WAITING",
-            "DB": "WAITING", 
+            "VLM": "PENDING",
+            "DB": "PENDING", 
             "Judge": "WAITING",
             "Summarize": "WAITING"
         }
@@ -951,21 +951,24 @@ def run_batch_fusion_pipeline(
 
         _print_status()
 
-        # 1. VLM Extraction
-        status_map["VLM"] = "RUNNING..."
-        _print_status()
-
-        # DB 상태 업데이트: VLM_RUNNING
-        if adapter and processing_job_id:
-            try:
-                adapter.update_processing_job_status(processing_job_id, "VLM_RUNNING")
-            except Exception:
-                pass
-
+        # 1. VLM Inference (skip_vlm=True이면 이미 만들어진 vlm.json을 재사용)
         vlm_info = {"image_count": 0}
         batch_vlm_elapsed = 0.0
 
-        if not skip_vlm:
+        if skip_vlm:
+            status_map["VLM"] = "SKIP (precomputed)"
+            _print_status()
+        else:
+            status_map["VLM"] = "INFERENCING..."
+            _print_status()
+
+            # processing_job 상태 코드 업데이트 (DB 업로드 상태가 아니라 처리 파이프라인 단계 상태)
+            if adapter and processing_job_id:
+                try:
+                    adapter.update_processing_job_status(processing_job_id, "VLM_RUNNING")
+                except Exception:
+                    pass
+
             t_vlm = time.perf_counter()
             vlm_info = run_vlm_for_batch(
                 captures_dir=captures_dir,
@@ -981,14 +984,14 @@ def run_batch_fusion_pipeline(
                 video_id=video_id,
             )
             batch_vlm_elapsed = time.perf_counter() - t_vlm
-        
+            status_map["VLM"] = "INFERENCE_DONE"
+            _print_status()
+
         total_vlm_elapsed += batch_vlm_elapsed
-        status_map["VLM"] = "DONE"
-        _print_status()
 
         # 2. DB Upload (VLM Results)
         if adapter and processing_job_id and sync_to_db:
-            status_map["DB"] = "SYNCING..."
+            status_map["DB"] = "UPLOAD..."
             _print_status()
             try:
                 upload_vlm_results_for_batch(
@@ -997,12 +1000,12 @@ def run_batch_fusion_pipeline(
                     processing_job_id,
                     batch_dir / "vlm.json",
                 )
-                status_map["DB"] = "DONE"
+                status_map["DB"] = "UPLOAD_DONE"
             except Exception:
-                status_map["DB"] = "FAIL"
+                status_map["DB"] = "UPLOAD_FAIL"
             _print_status()
         else:
-             status_map["DB"] = "SKIP"
+             status_map["DB"] = "UPLOAD_SKIP"
              _print_status()
 
         # 3. Fusion Config
@@ -1094,7 +1097,7 @@ def run_batch_fusion_pipeline(
                 limit=None, 
                 status_callback=_sum_status_cb,
                 verbose=True,
-                batch_label=f"Batch {start_batch_index + i + 1}",
+                batch_label=f"Batch {current_batch_global_idx}",
             )
             batch_summarizer_elapsed = time.perf_counter() - t_summarize
             total_summarizer_elapsed += batch_summarizer_elapsed
@@ -1132,7 +1135,7 @@ def run_batch_fusion_pipeline(
                 json_repair_attempts=getattr(config.judge, "json_repair_attempts", 3),
                 limit=limit, 
                 status_callback=_judge_status_cb,
-                batch_label=f"Batch {start_batch_index + i + 1}",
+                batch_label=f"Batch {current_batch_global_idx}",
             )
             batch_judge_elapsed = time.perf_counter() - t_judge
             total_judge_elapsed += batch_judge_elapsed
