@@ -47,9 +47,17 @@ export async function listVideos() {
     return get('/api/videos');
   }
 
+  // 현재 로그인한 사용자 세션 확인
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session?.user) {
+    return { videos: [] };
+  }
+
   const { data, error } = await supabase
     .from('videos')
     .select('*')
+    .eq('user_id', session.user.id)  // 로그인한 유저의 영상만 필터링
     .order('created_at', { ascending: false });
 
   if (error) throw error;
