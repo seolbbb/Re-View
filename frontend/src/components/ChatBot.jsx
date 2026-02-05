@@ -1,11 +1,18 @@
-import { useState, useRef, useEffect } from 'react';
-import { Sparkles, RotateCcw, Bot, Send, Loader2, Zap, Clock, ChevronDown } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Sparkles, RotateCcw, Bot, Send, Loader2, Zap, Clock, ChevronDown, GripVertical } from 'lucide-react';
 import { streamChatMessage } from '../api/chat';
 import { useVideo } from '../context/VideoContext';
 import MarkdownRenderer from './MarkdownRenderer';
 
+const MIN_WIDTH = 280;
+const MAX_WIDTH = 600;
+const DEFAULT_WIDTH = 360;
+
 function ChatBot({ videoId }) {
     const { chatSessionId, setChatSessionId } = useVideo();
+    const [width, setWidth] = useState(DEFAULT_WIDTH);
+    const [isResizing, setIsResizing] = useState(false);
+    const resizeRef = useRef(null);
     const [messages, setMessages] = useState([
         {
             id: 'welcome',
@@ -46,6 +53,44 @@ function ChatBot({ videoId }) {
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
+
+    // Resize handlers
+    const handleMouseDown = useCallback((e) => {
+        e.preventDefault();
+        setIsResizing(true);
+        resizeRef.current = {
+            startX: e.clientX,
+            startWidth: width,
+        };
+    }, [width]);
+
+    useEffect(() => {
+        const handleMouseMove = (e) => {
+            if (!isResizing || !resizeRef.current) return;
+            const delta = resizeRef.current.startX - e.clientX;
+            const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeRef.current.startWidth + delta));
+            setWidth(newWidth);
+        };
+
+        const handleMouseUp = () => {
+            setIsResizing(false);
+            resizeRef.current = null;
+        };
+
+        if (isResizing) {
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        }
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        };
+    }, [isResizing]);
 
     useEffect(() => {
         const container = messagesContainerRef.current;
@@ -162,7 +207,20 @@ function ChatBot({ videoId }) {
     };
 
     return (
-        <aside className="w-[360px] hidden lg:flex flex-col border-l border-[var(--border-color)] bg-surface shrink-0 h-full overflow-hidden">
+        <aside
+            className="hidden lg:flex flex-col border-l border-[var(--border-color)] bg-surface shrink-0 h-full overflow-hidden relative"
+            style={{ width: `${width}px` }}
+        >
+            {/* Resize Handle */}
+            <div
+                onMouseDown={handleMouseDown}
+                className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-20 group flex items-center justify-center hover:bg-primary/30 transition-colors ${isResizing ? 'bg-primary/40' : ''}`}
+            >
+                <div className={`absolute left-0 w-3 h-full`} /> {/* Larger hit area */}
+                <div className={`opacity-0 group-hover:opacity-100 transition-opacity ${isResizing ? 'opacity-100' : ''}`}>
+                    <GripVertical className="w-3 h-3 text-primary" />
+                </div>
+            </div>
             {/* Chat Header */}
             <div className="p-4 border-b border-[var(--border-color)] bg-surface z-10 shadow-sm flex items-center justify-between">
                 <div className="flex items-center gap-2">
