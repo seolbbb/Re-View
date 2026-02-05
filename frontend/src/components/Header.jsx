@@ -1,10 +1,22 @@
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import './Header.css';
 
 function Header() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
+  const { user, signOut } = useAuth();
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+      navigate('/login');
+    } catch (err) {
+      console.error('로그아웃 실패:', err);
+    }
+  };
 
   return (
     <header className="header">
@@ -25,6 +37,9 @@ function Header() {
         </nav>
 
         <div className="header-actions">
+          {user && (
+            <span className="user-email">{user.email}</span>
+          )}
           <button className="theme-toggle" onClick={toggleTheme} aria-label="테마 변경">
             {theme === 'dark' ? (
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -37,7 +52,7 @@ function Header() {
               </svg>
             )}
           </button>
-          <button className="btn-secondary">로그아웃</button>
+          <button className="btn-secondary" onClick={handleLogout}>로그아웃</button>
         </div>
       </div>
     </header>
