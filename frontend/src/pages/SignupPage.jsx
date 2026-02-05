@@ -3,30 +3,41 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import './LoginPage.css';
 
-function LoginPage() {
+function SignupPage() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const navigate = useNavigate();
-    const { signIn, signInWithGoogle } = useAuth();
+    const { signUp, signInWithGoogle } = useAuth();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
-        setLoading(true);
 
+        if (password !== confirmPassword) {
+            setError('비밀번호가 일치하지 않습니다.');
+            return;
+        }
+
+        if (password.length < 6) {
+            setError('비밀번호는 6자 이상이어야 합니다.');
+            return;
+        }
+
+        setLoading(true);
         try {
-            await signIn(email, password);
+            await signUp(email, password);
             navigate('/');
         } catch (err) {
-            setError(err.message || '로그인에 실패했습니다.');
+            setError(err.message || '회원가입에 실패했습니다.');
         } finally {
             setLoading(false);
         }
     };
 
-    const handleGoogleLogin = async () => {
+    const handleGoogleSignup = async () => {
         setError('');
         try {
             await signInWithGoogle();
@@ -61,9 +72,19 @@ function LoginPage() {
                         <label>비밀번호</label>
                         <input
                             type="password"
-                            placeholder="••••••••"
+                            placeholder="6자 이상"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
+                            required
+                        />
+                    </div>
+                    <div className="form-group">
+                        <label>비밀번호 확인</label>
+                        <input
+                            type="password"
+                            placeholder="비밀번호 재입력"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
                             required
                         />
                     </div>
@@ -72,7 +93,7 @@ function LoginPage() {
                         className="btn-primary login-btn"
                         disabled={loading}
                     >
-                        {loading ? '로그인 중...' : '로그인'}
+                        {loading ? '가입 중...' : '회원가입'}
                     </button>
                 </form>
 
@@ -82,7 +103,7 @@ function LoginPage() {
 
                 <button
                     className="btn-secondary google-btn"
-                    onClick={handleGoogleLogin}
+                    onClick={handleGoogleSignup}
                 >
                     <svg width="18" height="18" viewBox="0 0 24 24">
                         <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -94,11 +115,11 @@ function LoginPage() {
                 </button>
 
                 <p className="login-footer">
-                    계정이 없으신가요? <Link to="/signup">회원가입</Link>
+                    이미 계정이 있으신가요? <Link to="/login">로그인</Link>
                 </p>
             </div>
         </div>
     );
 }
 
-export default LoginPage;
+export default SignupPage;

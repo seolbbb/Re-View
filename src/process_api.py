@@ -54,7 +54,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -523,6 +523,7 @@ class UploadResponse(BaseModel):
 
 @app.post("/api/videos/upload", response_model=UploadResponse)
 async def upload_video(
+    http_request: Request,
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> UploadResponse:
@@ -544,9 +545,11 @@ async def upload_video(
         raise HTTPException(status_code=503, detail="Database not configured")
 
     video_name = Path(file.filename).stem
+    user_id = _get_user_id_from_request(adapter, http_request)
     video = adapter.create_video(
         name=video_name,
         original_filename=file.filename,
+        user_id=user_id,
     )
     video_id = video["id"]
     
@@ -585,18 +588,57 @@ class UploadInitResponse(BaseModel):
 
 
 @app.post("/api/videos/upload/init", response_model=UploadInitResponse)
-def init_upload(request: UploadInitRequest):
-    """Signed URL 발급 + 비디오 레코드 생성."""
+def init_upload(payload: UploadInitRequest, http_request: Request):
+    """
+    비디오 업로드를 위한 Presigned URL 발급 및 DB 레코드 생성.
+    
+    Purpose:
+        프론트엔드에서 비디오 파일을 직접 스토리지에 업로드할 수 있도록
+        Presigned URL을 발급합니다. R2 환경에서는 boto3 generate_presigned_url을,
+        Supabase 환경에서는 create_signed_upload_url을 사용합니다.
+    
+    Storage Path Structure:
+        - R2: {video_id}/{r2_prefix_videos}/{filename}
+          예: abc123/videos/sample.mp4
+        - Supabase: {video_id}/{filename}
+    
+    API Flow:
+        1. Frontend → POST /api/videos/upload/init (파일명 전달)
+        2. Backend → videos 테이블에 레코드 생성
+        3. Backend → Presigned URL 반환
+        4. Frontend → PUT {upload_url} (파일 직접 업로드)
+        5. Frontend → POST /api/videos/upload/complete (업로드 완료 알림)
+    
+    Args:
+        request (UploadInitRequest): 업로드할 파일명 포함
+            - filename: 원본 파일명 (확장자 포함)
+    
+    Returns:
+        UploadInitResponse:
+            - video_id: 생성된 비디오 ID (UUID)
+            - video_name: 파일명 (확장자 제외)
+            - upload_url: Presigned URL (1시간 유효)
+            - storage_key: 스토리지 경로
+    
+    Raises:
+        HTTPException(503): DB 연결 실패
+    
+    Related:
+        - complete_upload(): 업로드 완료 후 파이프라인 실행
+        - _run_full_pipeline_from_storage(): 전처리 및 처리 실행
+    """
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    video_name = Path(request.filename).stem
-    safe_name = _sanitize_filename(request.filename)
+    video_name = Path(payload.filename).stem
+    safe_name = _sanitize_filename(payload.filename)
+    user_id = _get_user_id_from_request(adapter, http_request)
     # 임시 ID 없이 레코드 먼저 생성하여 video_id 확보
     video = adapter.create_video(
         name=video_name,
-        original_filename=request.filename,
+        original_filename=payload.filename,
+        user_id=user_id,
     )
     video_id = video["id"]
 
@@ -851,6 +893,41 @@ def _get_or_create_chat_session(request: ChatRequest):
 
 def _format_sse_event(event: str, data: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _get_bearer_token(request: Request) -> Optional[str]:
+    auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if not auth:
+        return None
+    parts = auth.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts[0].lower(), parts[1].strip()
+    if scheme != "bearer" or not token:
+        return None
+    return token
+
+
+def _get_user_id_from_request(adapter, request: Request) -> Optional[str]:
+    """Authorization 헤더의 Supabase JWT로 user_id를 추출한다."""
+    token = _get_bearer_token(request)
+    if not token:
+        return None
+    try:
+        user_resp = adapter.client.auth.get_user(token)
+        # supabase-py v2: UserResponse.user.id
+        user_obj = getattr(user_resp, "user", None)
+        user_id = getattr(user_obj, "id", None) if user_obj else None
+        if user_id:
+            return user_id
+        # fallback: dict-style response
+        if isinstance(user_resp, dict):
+            user_dict = user_resp.get("user") or user_resp.get("data", {}).get("user")
+            if isinstance(user_dict, dict):
+                return user_dict.get("id")
+    except Exception:
+        return None
+    return None
 
 
 @app.post("/api/chat", response_model=ChatResponse)
