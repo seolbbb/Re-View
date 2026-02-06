@@ -25,7 +25,7 @@
 - R2_ENDPOINT_URL: R2 S3 호환 엔드포인트 (format: https://<ACCOUNT_ID>.r2.cloudflarestorage.com)
 - R2_ACCESS_KEY_ID: R2 API 토큰 Access Key
 - R2_SECRET_ACCESS_KEY: R2 API 토큰 Secret Key
-- R2_BUCKET_VIDEOS: R2 버킷 이름 (default: review-storage)
+- R2_BUCKET: R2 버킷 이름 (default: review-storage, fallback: R2_BUCKET_VIDEOS)
 - R2_PREFIX_VIDEOS: 비디오 파일 prefix (default: videos)
 - R2_PREFIX_CAPTURES: 캡처 이미지 prefix (default: captures)
 - R2_PREFIX_AUDIOS: 오디오 파일 prefix (default: audios)
@@ -96,6 +96,9 @@ class BaseAdapter:
     r2_prefix_videos (str): 비디오 파일 경로 prefix
     r2_prefix_captures (str): 캡처 이미지 경로 prefix
     r2_prefix_audios (str): 오디오 파일 경로 prefix
+    
+    NOTE: R2 자격 증명(endpoint, access_key, secret_key)은 보안상
+          인스턴스 속성으로 저장하지 않습니다.
     
     ==========================================================================
     사용 예시 (Usage Example)
@@ -186,24 +189,24 @@ class BaseAdapter:
             print("Warning: 'boto3' not installed. R2 storage features will be unavailable.")
             return
             
-        # R2 환경변수 로드
-        self.r2_endpoint = os.getenv("R2_ENDPOINT_URL")
-        self.r2_access_key = os.getenv("R2_ACCESS_KEY_ID")
-        self.r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
+        # R2 환경변수 로드 (로컬 변수로만 사용 - 보안상 인스턴스 속성 저장 X)
+        r2_endpoint = os.getenv("R2_ENDPOINT_URL")
+        r2_access_key = os.getenv("R2_ACCESS_KEY_ID")
+        r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
         
         # R2 설정이 완전한 경우에만 클라이언트 초기화
-        if self.r2_endpoint and self.r2_access_key and self.r2_secret_key:
+        if r2_endpoint and r2_access_key and r2_secret_key:
             self.s3_client = boto3.client(
                 's3',
-                endpoint_url=self.r2_endpoint,
-                aws_access_key_id=self.r2_access_key,
-                aws_secret_access_key=self.r2_secret_key,
+                endpoint_url=r2_endpoint,
+                aws_access_key_id=r2_access_key,
+                aws_secret_access_key=r2_secret_key,
                 config=Config(signature_version='s3v4'),
                 region_name='auto'  # R2는 region을 요구하지만 'auto' 사용 가능
             )
             
-            # 버킷 및 경로 prefix 설정
-            self.r2_bucket = os.getenv("R2_BUCKET_VIDEOS", "review-storage")
+            # 버킷 및 경로 prefix 설정 (R2_BUCKET 우선, R2_BUCKET_VIDEOS fallback)
+            self.r2_bucket = os.getenv("R2_BUCKET") or os.getenv("R2_BUCKET_VIDEOS", "review-storage")
             self.r2_prefix_videos = os.getenv("R2_PREFIX_VIDEOS", "videos")
             self.r2_prefix_captures = os.getenv("R2_PREFIX_CAPTURES", "captures")
             self.r2_prefix_audios = os.getenv("R2_PREFIX_AUDIOS", "audios")
