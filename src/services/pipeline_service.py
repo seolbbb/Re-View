@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.adk_pipeline.agent import root_agent
-from src.adk_pipeline.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
-from src.adk_pipeline.store import VideoStore
-from src.pre_adk_pipeline import run_pre_adk
+from src.adk_chatbot.agent import root_agent as chatbot_root_agent
+from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
+from src.adk_chatbot.store import VideoStore
+from src.run_preprocess_pipeline import run_preprocess_pipeline as run_preprocess_pipeline_job
 
 from .adk_session import AdkMessage, AdkSession
+from .langgraph_session import LangGraphSession
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_ROOT = (PROJECT_ROOT / DEFAULT_OUTPUT_BASE).resolve()
@@ -21,7 +22,7 @@ def get_default_output_base() -> Path:
     return DEFAULT_OUTPUT_ROOT
 
 
-def _clear_pre_adk_artifacts(
+def _clear_preprocess_artifacts(
     *,
     output_base: Path,
     video_name: str,
@@ -37,12 +38,14 @@ def _clear_pre_adk_artifacts(
     if captures_dir.exists():
         shutil.rmtree(captures_dir)
 
-    audio_path = store.video_root() / f"{raw_stem}.wav"
-    if audio_path.exists():
-        audio_path.unlink()
+    # 다중 오디오 포맷 지원: wav, flac, mp3 모두 삭제
+    for ext in (".wav", ".flac", ".mp3"):
+        audio_path = store.video_root() / f"{raw_stem}{ext}"
+        if audio_path.exists():
+            audio_path.unlink()
 
 
-def run_pre_adk_pipeline(
+def run_preprocess_pipeline(
     *,
     video_path: Path,
     output_base: Path,
@@ -57,40 +60,36 @@ def run_pre_adk_pipeline(
     output_base = output_base.resolve()
 
     if force:
-        _clear_pre_adk_artifacts(
+        _clear_preprocess_artifacts(
             output_base=output_base,
             video_name=video_name,
             raw_stem=video_path.stem,
         )
 
-    result = run_pre_adk(
-        video_path=video_path,
-        video_name=video_name,
-        output_base=output_base,
+    video_id = run_preprocess_pipeline_job(
+        video=str(video_path),
+        output_base=str(output_base),
         stt_backend=stt_backend,
         parallel=parallel,
         capture_threshold=capture_threshold,
         capture_dedupe_threshold=capture_dedupe_threshold,
         capture_min_interval=capture_min_interval,
+        sync_to_db=True, # DB sync is required to get video_id
     )
     store = VideoStore(output_base=output_base, video_name=video_name)
     meta_path = store.pipeline_run_json()
-    meta_payload = {
-        "schema_version": 1,
-        "stage": "pre_adk",
-        "status": "ok",
+    meta_payload: Dict[str, Any] = {}
+    if meta_path.exists():
+        try:
+            meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta_payload = {}
+    return {
         "video_name": video_name,
         "video_root": str(store.video_root()),
-        "output_base": str(output_base),
-        "artifacts": result.get("artifacts", {}),
-        "elapsed_sec": result.get("elapsed_sec"),
-        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "run_meta": meta_payload,
+        "video_id": video_id,
     }
-    meta_path.write_text(
-        json.dumps(meta_payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return result
 
 
 def build_adk_state(
@@ -121,12 +120,49 @@ def start_adk_session(
     user_id: str = "streamlit",
 ) -> AdkSession:
     return AdkSession(
-        root_agent=root_agent,
+        root_agent=chatbot_root_agent,
         app_name=app_name,
         user_id=user_id,
         initial_state=state,
     )
 
 
+def _normalize_chat_backend(backend: Optional[str]) -> str:
+    value = (backend or os.getenv("CHATBOT_BACKEND", "adk")).strip().lower()
+    if value in {"langgraph", "lg", "langgraph-agent"}:
+        return "langgraph" 
+    return "adk"
+
+
+def start_chatbot_session(
+    *,
+    state: Dict[str, Any],
+    app_name: str = "screentime_pipeline",
+    user_id: str = "streamlit",
+    backend: Optional[str] = None,
+) -> Any:
+    selected = _normalize_chat_backend(backend)
+    if selected == "langgraph":
+        if not state.get("video_id"):
+            raise ValueError("video_id is required for LangGraph backend. Run preprocess with DB sync.")
+        return LangGraphSession(app_name=app_name, user_id=user_id, initial_state=state)
+    return AdkSession(
+        root_agent=chatbot_root_agent,
+        app_name=app_name,
+        user_id=user_id,
+        initial_state=state,
+    )
+
+
+def send_chat_message(session: Any, message: str) -> List[Any]:
+    return session.send_message(message)
+
+
 def send_adk_message(session: AdkSession, message: str) -> List[AdkMessage]:
+    return send_chat_message(session, message)
+
+
+def stream_chat_message(session: Any, message: str) -> Any:
+    if hasattr(session, "stream_message"):
+        return session.stream_message(message)
     return session.send_message(message)

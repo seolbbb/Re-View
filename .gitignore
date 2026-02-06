@@ -35,6 +35,8 @@ SUMMARY.md
 .agent/
 *_readable.txt
 *_frames/
+logs/
+test.json
 
 # IDE
 .vscode/
@@ -54,4 +56,18 @@ src/data/output/grid_search
 
 # capture benchmark
 temp_bench/
-src/db
+.gemini/
+
+# Node.js
+node_modules/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.development
+frontend/.env.production

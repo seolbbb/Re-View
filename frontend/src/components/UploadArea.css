@@ -1,0 +1,115 @@
+.upload-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius-2xl);
+    background: var(--glass-bg);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    cursor: pointer;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Animated gradient border on hover */
+.upload-area::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    background: linear-gradient(45deg,
+            var(--accent-coral),
+            var(--accent-coral-light),
+            var(--accent-coral),
+            var(--accent-coral-dark),
+            var(--accent-coral));
+    background-size: 300% 300%;
+    border-radius: var(--radius-2xl);
+    z-index: -1;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    animation: gradientShift 3s ease infinite;
+}
+
+.upload-area::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    background: var(--bg-secondary);
+    border-radius: calc(var(--radius-2xl) - 2px);
+    z-index: -1;
+    transition: background-color 0.3s ease;
+}
+
+.upload-area:hover,
+.upload-area.dragging {
+    border-color: transparent;
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-glow);
+}
+
+.upload-area:hover::before,
+.upload-area.dragging::before {
+    opacity: 1;
+}
+
+.upload-area:hover::after,
+.upload-area.dragging::after {
+    background: var(--bg-tertiary);
+}
+
+.upload-icon {
+    color: var(--accent-coral);
+    margin-bottom: 24px;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+}
+
+/* Glow effect behind icon */
+.upload-icon::before {
+    content: '';
+    position: absolute;
+    inset: -20px;
+    background: radial-gradient(circle, rgba(224, 126, 99, 0.2) 0%, transparent 70%);
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+}
+
+.upload-area:hover .upload-icon {
+    transform: translateY(-8px) scale(1.1);
+}
+
+.upload-area:hover .upload-icon::before {
+    opacity: 1;
+}
+
+.upload-text {
+    font-size: 17px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    font-weight: 500;
+    transition: color 0.3s ease;
+}
+
+.upload-area:hover .upload-text {
+    color: var(--text-primary);
+}
+
+.upload-hint {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 16px;
+    padding: 8px 16px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+    transition: all 0.3s ease;
+}
+
+.upload-area:hover .upload-hint {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
