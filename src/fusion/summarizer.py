@@ -662,6 +662,7 @@ def run_batch_summarizer(
     status_callback: Optional[Callable[[int], None]] = None,
     verbose: bool = False,
     batch_label: Optional[str] = None,
+    write_output: bool = True, # segment_summaries.jsonl 로컬 저장 여부
 ) -> Dict[str, Any]:
     """배치별 세그먼트 요약을 생성합니다.
 
@@ -700,7 +701,7 @@ def run_batch_summarizer(
         output_jsonl.write_text("", encoding="utf-8")
         return {
             "success": True,
-            "segment_summaries_jsonl": str(output_jsonl),
+            "segment_summaries_jsonl": str(output_jsonl) if write_output else "",
             "segments_count": 0,
             "context": "",
         }
@@ -776,7 +777,8 @@ def run_batch_summarizer(
                         item.get("summary", {}), sid, bullets_max
                     )
 
-                # 파일에 기록
+                # 결과 레코드 생성 및 기록
+                summary_records = []
                 for segment in segments:
                     segment_id = int(segment.get("segment_id"))
                     if verbose:
@@ -797,10 +799,13 @@ def run_batch_summarizer(
                             "backend": config.raw.llm_gemini.backend,
                         },
                     }
-                    output_handle.write(
-                        json.dumps(record, ensure_ascii=False)
-                    )
-                    output_handle.write("\n")
+                    summary_records.append(record)
+                    
+                    if write_output and output_handle:
+                        output_handle.write(
+                            json.dumps(record, ensure_ascii=False)
+                        )
+                        output_handle.write("\n")
 
                 last_error = None
                 break
@@ -809,6 +814,9 @@ def run_batch_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
+                if verbose:
+                    prefix = f"{batch_label}: " if batch_label else "      "
+                    print(f"{_get_timestamp()} {prefix}- [Summarizer] JSON repair attempt {_ + 1}", flush=True)
                 llm_text, tokens = run_with_retries(
                     client_bundle,
                     repair_prompt,
@@ -818,7 +826,7 @@ def run_batch_summarizer(
                     config.raw.llm_gemini.timeout_sec,
                     config.raw.llm_gemini.max_retries,
                     config.raw.llm_gemini.backoff_sec,
-                    context="Summarizer",
+                    context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
                     verbose=verbose,
                 )
                 total_tokens += tokens
@@ -828,12 +836,13 @@ def run_batch_summarizer(
         if output_handle:
             output_handle.close()
 
-    # 다음 배치를 위한 context 추출
-    next_context = extract_batch_context(output_jsonl)
+    # 다음 배치 컨텍스트 생성 (간단히 누적 요약)
+    next_context = _create_next_context(previous_context, list(summary_map.values()))
 
     return {
         "success": True,
-        "segment_summaries_jsonl": str(output_jsonl),
+        "segment_summaries_jsonl": str(output_jsonl) if write_output else "",
+        "segment_summaries_data": summary_records,
         "segments_count": len(segments),
         "context": next_context,
         "token_usage": {"total_tokens": total_tokens},
@@ -867,6 +876,45 @@ def extract_batch_context(summaries_jsonl: Path, max_chars: int = 500) -> str:
                 context_parts.append(f"[Seg {segment_id}] {first_claim}")
 
     context = "\n".join(context_parts)
+    if len(context) > max_chars:
+        context = context[:max_chars] + "..."
+    return context
+
+
+def _create_next_context(
+    previous_context: Optional[str],
+    summaries: List[Dict[str, Any]],
+    max_chars: int = 500,
+) -> str:
+    """배치 요약 결과를 기반으로 다음 배치용 context를 생성한다.
+
+    Args:
+        previous_context: 이전 배치에서 전달된 context (없으면 None)
+        summaries: 요약 결과 목록 (summary dict들의 리스트)
+        max_chars: 최대 길이 제한
+
+    Returns:
+        context 문자열
+    """
+    parts: List[str] = []
+    if previous_context:
+        prev = str(previous_context).strip()
+        if prev:
+            parts.append(prev)
+
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        bullets = summary.get("bullets", [])
+        if not bullets:
+            continue
+        first = bullets[0]
+        if isinstance(first, dict):
+            claim = str(first.get("claim", "")).strip()
+            if claim:
+                parts.append(claim)
+
+    context = "\n".join(parts).strip()
     if len(context) > max_chars:
         context = context[:max_chars] + "..."
     return context

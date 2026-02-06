@@ -47,6 +47,10 @@ class FusionWorkerConfig:
     vlm_show_progress: bool = False
     limit: Optional[int] = None
     strict_batch_order: bool = True
+    # 로컬 저장 제어
+    write_local_fusion: bool = True
+    write_local_summary: bool = True
+    write_local_judge: bool = True
 
     def __post_init__(self) -> None:
         if not self.video_name.strip():
@@ -190,6 +194,9 @@ class AsyncFusionSummaryJudgeWorker:
                 video_id=self.context.video_id,
                 sync_to_db=self.context.sync_to_db,
                 adapter=adapter,
+                write_local_fusion=self.config.write_local_fusion,
+                write_local_summary=self.config.write_local_summary,
+                write_local_judge=self.config.write_local_judge,
             )
 
             batch_dir = self.config.video_root / "batches" / f"batch_{event.batch_index}"

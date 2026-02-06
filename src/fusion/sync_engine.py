@@ -492,6 +492,12 @@ def run_batch_sync_engine(
     sync_config: Dict[str, object],
     segment_id_offset: int = 0,
     run_id_override: Optional[str] = None,
+    # Phase 2: DB 우선 VLM 조회 파라미터
+    video_id: Optional[str] = None,
+    processing_job_id: Optional[str] = None,
+    sync_to_db: bool = False,
+    adapter: Optional[Any] = None,
+    write_output: bool = True, # segments_units.jsonl 로컬 저장 여부
 ) -> Dict[str, object]:
     """배치 단위로 Sync를 실행합니다.
 
@@ -506,6 +512,10 @@ def run_batch_sync_engine(
         time_range: (start_ms, end_ms) 시간 범위
         sync_config: sync_engine 설정 (min_segment_sec, max_segment_sec 등)
         segment_id_offset: segment_id 오프셋 (배치 병합 시 사용)
+        video_id: 비디오 ID (DB 조회용)
+        processing_job_id: 처리 작업 ID (DB 조회용)
+        sync_to_db: DB 동기화 활성화 여부
+        adapter: Supabase 어댑터
 
     Returns:
         segments_count: 생성된 segment 수
@@ -520,8 +530,53 @@ def run_batch_sync_engine(
         if seg["end_ms"] > start_ms and seg["start_ms"] < end_ms
     ]
 
-    # VLM 로드 (이미 배치별로 필터링된 상태)
-    vlm_items, vlm_duration_ms = _load_vlm_items(vlm_json)
+    # VLM 로드: DB 우선, 로컬 fallback
+    vlm_items: List[Dict[str, object]] = []
+    vlm_duration_ms: Optional[int] = None
+    vlm_source = "local"
+
+    if sync_to_db and video_id and processing_job_id:
+        try:
+            if adapter is None:
+                from src.db import get_supabase_adapter
+                adapter = get_supabase_adapter()
+
+            if adapter:
+                # DB에서 VLM 결과 조회
+                query = adapter.client.table("vlm_results").select("*").eq("video_id", video_id)
+                query = query.eq("processing_job_id", processing_job_id)
+                result = query.execute()
+
+                if result.data:
+                    # DB 결과를 vlm_items 형식으로 변환
+                    for row in result.data:
+                        time_ranges = row.get("time_ranges")
+                        cap_id = row.get("cap_id")
+                        extracted_text = row.get("extracted_text", "")
+                        item_id = row.get("id")
+
+                        if time_ranges and isinstance(time_ranges, list):
+                            for rng in time_ranges:
+                                if isinstance(rng, dict) and "start_ms" in rng:
+                                    vlm_items.append({
+                                        "timestamp_ms": int(rng["start_ms"]),
+                                        "extracted_text": extracted_text,
+                                        "id": item_id,
+                                        "cap_id": cap_id,
+                                        "time_range": rng,
+                                    })
+                    if vlm_items:
+                        vlm_source = "db"
+                        vlm_items = sorted(vlm_items, key=lambda x: x["timestamp_ms"])
+        except Exception as db_err:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[sync_engine] DB VLM lookup failed, falling back to local: %s", db_err
+            )
+
+    # DB에서 못 가져오면 로컬 파일에서 로드
+    if not vlm_items:
+        vlm_items, vlm_duration_ms = _load_vlm_items(vlm_json)
 
     # manifest scores 로드 (captures_data 우선, 없으면 manifest_json 사용)
     manifest_scores = _load_manifest_scores(path=manifest_json, captures_data=captures_data)
@@ -542,10 +597,12 @@ def run_batch_sync_engine(
     if not vlm_items and not filtered_stt_segments:
         output_dir.mkdir(parents=True, exist_ok=True)
         segments_units_path = output_dir / "segments_units.jsonl"
-        segments_units_path.write_text("", encoding="utf-8")
+        if write_output:
+            segments_units_path.write_text("", encoding="utf-8")
         return {
             "segments_count": 0,
-            "segments_units_jsonl": str(segments_units_path),
+            "segments_units_jsonl": str(segments_units_path) if write_output else "",
+            "segments_units_data": [],
         }
 
     # 초기 세그먼트 생성 (VLM 타임스탬프 기반)
@@ -597,23 +654,69 @@ def run_batch_sync_engine(
     output_dir.mkdir(parents=True, exist_ok=True)
     segments_units_path = output_dir / "segments_units.jsonl"
 
+    segments_data = [] # 메모리 반환용 데이터 수집
     # 결과 생성
-    with open(segments_units_path, "w", encoding="utf-8") as f:
+    if write_output:
+        with open(segments_units_path, "w", encoding="utf-8") as f:
+            for idx, segment in enumerate(refined_segments, start=1):
+                # ... (중복 코드는 함수로 분리하면 좋겠지만 일단 유지) ...
+                # 배치 내 조정된 시간을 원래 시간으로 복원
+                actual_start_ms = segment.start_ms + start_ms
+                actual_end_ms = segment.end_ms + start_ms
+    
+                transcript_units, transcript_text = _build_transcript_units(
+                    adjusted_stt_segments, segment.start_ms, segment.end_ms
+                )
+                for unit in transcript_units:
+                    unit["start_ms"] = int(unit["start_ms"]) + start_ms
+                    unit["end_ms"] = int(unit["end_ms"]) + start_ms
+    
+                adjusted_scores = {int(k) - start_ms: v for k, v in manifest_scores.items() if start_ms <= int(k) < end_ms}
+                selected_vlm_items = _select_vlm_items(
+                    adjusted_vlm_items,
+                    adjusted_scores,
+                    segment.start_ms,
+                    segment.end_ms,
+                    max_visual_items,
+                )
+                visual_units, visual_text = _extract_visual_units(
+                    selected_vlm_items,
+                    dedup_similarity_threshold,
+                    max_visual_chars,
+                )
+                for unit in visual_units:
+                    unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
+    
+                stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
+                vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
+    
+                record = {
+                    "run_id": run_id,
+                    "segment_id": idx + segment_id_offset,
+                    "start_ms": actual_start_ms,
+                    "end_ms": actual_end_ms,
+                    "transcript_units": transcript_units,
+                    "visual_units": visual_units,
+                    "source_refs": {
+                        "stt_ids": stt_ids,
+                        "vlm_ids": vlm_ids
+                    },
+                }
+                f.write(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n")
+                segments_data.append(record)
+    else:
+        # 파일 쓰지 않고 데이터만 생성
         for idx, segment in enumerate(refined_segments, start=1):
-            # 배치 내 조정된 시간을 원래 시간으로 복원
             actual_start_ms = segment.start_ms + start_ms
             actual_end_ms = segment.end_ms + start_ms
 
             transcript_units, transcript_text = _build_transcript_units(
                 adjusted_stt_segments, segment.start_ms, segment.end_ms
             )
-            # transcript_units의 시간도 원래 시간으로 복원
             for unit in transcript_units:
                 unit["start_ms"] = int(unit["start_ms"]) + start_ms
                 unit["end_ms"] = int(unit["end_ms"]) + start_ms
 
-            # VLM 아이템 선택 (조정된 시간 기준)
-            # manifest_scores도 배치 상대 시간으로 조정하여 전달
             adjusted_scores = {int(k) - start_ms: v for k, v in manifest_scores.items() if start_ms <= int(k) < end_ms}
             selected_vlm_items = _select_vlm_items(
                 adjusted_vlm_items,
@@ -627,7 +730,6 @@ def run_batch_sync_engine(
                 dedup_similarity_threshold,
                 max_visual_chars,
             )
-            # visual_units의 시간도 원래 시간으로 복원
             for unit in visual_units:
                 unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
 
@@ -646,9 +748,10 @@ def run_batch_sync_engine(
                     "vlm_ids": vlm_ids
                 },
             }
-            f.write(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n")
+            segments_data.append(record)
 
     return {
         "segments_count": len(refined_segments),
-        "segments_units_jsonl": str(segments_units_path),
+        "segments_units_jsonl": str(segments_units_path) if write_output else "",
+        "segments_units_data": segments_data,
     }

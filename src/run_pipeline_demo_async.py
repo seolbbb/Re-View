@@ -275,6 +275,10 @@ async def run_async_demo(
     sync_to_db: bool,
     upload_video_to_r2: bool,
     upload_audio_to_r2: bool,
+    write_local_vlm: bool = True,
+    write_local_fusion: bool = True,
+    write_local_summary: bool = True,
+    write_local_judge: bool = True,
 ) -> AsyncDemoResult:
     output_base.mkdir(parents=True, exist_ok=True)
     video_name = _sanitize_video_name(video_path.stem)
@@ -402,6 +406,7 @@ async def run_async_demo(
             vlm_inner_concurrency=vlm_inner_concurrency,
             vlm_show_progress=vlm_show_progress,
             max_inflight_chunks=max_inflight_chunks,
+            write_local_json=write_local_vlm,
         ),
     )
     fusion_worker = AsyncFusionSummaryJudgeWorker(
@@ -417,6 +422,9 @@ async def run_async_demo(
             vlm_concurrency=vlm_inner_concurrency,
             vlm_show_progress=False,
             strict_batch_order=strict_batch_order,
+            write_local_fusion=write_local_fusion,
+            write_local_summary=write_local_summary,
+            write_local_judge=write_local_judge,
         ),
     )
 
@@ -588,8 +596,31 @@ def _build_parser(defaults: Dict[str, Any]) -> argparse.ArgumentParser:
     parser.add_argument(
         "--upload-audio-to-r2",
         action=argparse.BooleanOptionalAction,
-        default=False,
         help="Upload extracted audio to R2 when sync_to_db is enabled",
+    )
+    parser.add_argument(
+        "--local-vlm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save VLM results to local JSON (vlm.json)",
+    )
+    parser.add_argument(
+        "--local-fusion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save Fusion results to local JSONL (segments_units.jsonl)",
+    )
+    parser.add_argument(
+        "--local-summary",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save Summary results to local JSONL (segment_summaries.jsonl)",
+    )
+    parser.add_argument(
+        "--local-judge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save Judge results to local JSONL/JSON (judge_segments.jsonl, judge.json)",
     )
     return parser
 
@@ -624,8 +655,15 @@ def main() -> None:
     )
     _log(
         f"sync_to_db={args.sync_to_db} "
+        f"sync_to_db={args.sync_to_db} "
         f"upload_video_to_r2={args.upload_video_to_r2} "
         f"upload_audio_to_r2={args.upload_audio_to_r2}"
+    )
+    _log(
+        f"local_vlm={args.local_vlm} "
+        f"local_fusion={args.local_fusion} "
+        f"local_summary={args.local_summary} "
+        f"local_judge={args.local_judge}"
     )
     _log("=" * 72)
 
@@ -650,6 +688,10 @@ def main() -> None:
                 sync_to_db=args.sync_to_db,
                 upload_video_to_r2=args.upload_video_to_r2,
                 upload_audio_to_r2=args.upload_audio_to_r2,
+                write_local_vlm=args.local_vlm,
+                write_local_fusion=args.local_fusion,
+                write_local_summary=args.local_summary,
+                write_local_judge=args.local_judge,
             )
         )
     except KeyboardInterrupt:

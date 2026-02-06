@@ -194,7 +194,7 @@ def upload_vlm_results_for_batch(
     adapter: "SupabaseAdapter",
     video_id: str,
     processing_job_id: str,
-    vlm_json_path: Path,
+    vlm_data_or_path: Union[Path, Dict[str, Any]],
 ) -> int:
     """배치의 VLM 결과를 DB에 업로드한다.
 
@@ -202,17 +202,22 @@ def upload_vlm_results_for_batch(
         adapter: Supabase 어댑터
         video_id: 비디오 ID
         processing_job_id: 처리 작업 ID
-        vlm_json_path: vlm.json 파일 경로
+        vlm_data_or_path: vlm.json 파일 경로 또는 데이터 딕셔너리
 
     Returns:
         업로드된 레코드 수
     """
-    if not vlm_json_path.exists():
-        return 0
-
-    vlm_payload = json.loads(vlm_json_path.read_text(encoding="utf-8"))
-    vlm_items = vlm_payload.get("items", [])
-
+    vlm_items = []
+    
+    if isinstance(vlm_data_or_path, (str, Path)):
+        path = Path(vlm_data_or_path)
+        if not path.exists():
+            return 0
+        vlm_payload = json.loads(path.read_text(encoding="utf-8"))
+        vlm_items = vlm_payload.get("items", [])
+    elif isinstance(vlm_data_or_path, dict):
+        vlm_items = vlm_data_or_path.get("items", [])
+    
     if not vlm_items:
         return 0
 
@@ -236,7 +241,7 @@ def upload_segments_for_batch(
     adapter: "SupabaseAdapter",
     video_id: str,
     processing_job_id: str,
-    segments_path: Path,
+    segments_data_or_path: Union[Path, List[Dict[str, Any]]],
     offset: int = 0,
 ) -> Dict[int, str]:
     """배치의 Segments를 DB에 업로드하고 segment_index -> DB ID 매핑을 반환한다.
@@ -245,30 +250,30 @@ def upload_segments_for_batch(
         adapter: Supabase 어댑터
         video_id: 비디오 ID
         processing_job_id: 처리 작업 ID
-        segments_path: segments_units.jsonl 파일 경로
-        offset: segment_index 오프셋 (이전 배치들의 세그먼트 수)
+        segments_data_or_path: segments_units.jsonl 파일 경로 또는 데이터 리스트
+        offset: segment_index 오프셋
 
     Returns:
-        segment_index(int) -> segment_id(uuid) 매핑 딕셔너리
+        Dict[int, str]: segment_index -> db_id 매핑
     """
     segment_map: Dict[int, str] = {}
-
-    if not segments_path.exists():
-        return segment_map
-
-    segments = []
-    with segments_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                segments.append(json.loads(line))
-
-    if not segments:
-        return segment_map
+    segments_payload = []
+    
+    if isinstance(segments_data_or_path, (str, Path)):
+        path = Path(segments_data_or_path)
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    segments_payload.append(json.loads(line))
+    elif isinstance(segments_data_or_path, list):
+         segments_payload = segments_data_or_path
+            
+    if not segments_payload:
+        return {}
 
     # Apply offset to segment_index to avoid collisions across batches
     if offset:
-        for seg in segments:
+        for seg in segments_payload:
             idx = seg.get("segment_id")
             if idx is not None:
                 try:
@@ -279,7 +284,7 @@ def upload_segments_for_batch(
     try:
         saved_segments = adapter.save_segments(
             video_id,
-            segments,
+            segments_payload,
             processing_job_id=processing_job_id,
         )
     except Exception as e:
@@ -302,9 +307,9 @@ def upload_summaries_for_batch(
     adapter: "SupabaseAdapter",
     video_id: str,
     processing_job_id: str,
-    summaries_path: Path,
+    summaries_data_or_path: Union[Path, List[Dict[str, Any]]],
     segment_map: Dict[int, str],
-    batch_index: Optional[int] = None,
+    batch_index: int = 0,
 ) -> int:
     """배치의 Summaries를 DB에 업로드한다.
 
@@ -312,30 +317,31 @@ def upload_summaries_for_batch(
         adapter: Supabase 어댑터
         video_id: 비디오 ID
         processing_job_id: 처리 작업 ID
-        summaries_path: segment_summaries.jsonl 파일 경로
-        segment_map: segment_index -> segment_id 매핑
-        batch_index: 배치 인덱스 (0-indexed)
+        summaries_data_or_path: segment_summaries.jsonl 파일 경로 또는 데이터 리스트
+        segment_map: segment_index -> DB ID 매핑
+        batch_index: 배치 인덱스 (로깅용)
 
     Returns:
-        업로드된 레코드 수
+        업로드된 요약 수
     """
-    if not summaries_path.exists():
-        return 0
+    summaries_payload = []
+    
+    if isinstance(summaries_data_or_path, (str, Path)):
+        path = Path(summaries_data_or_path)
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    summaries_payload.append(json.loads(line))
+    elif isinstance(summaries_data_or_path, list):
+        summaries_payload = summaries_data_or_path
 
-    summaries = []
-    with summaries_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                summaries.append(json.loads(line))
-
-    if not summaries:
+    if not summaries_payload:
         return 0
 
     try:
         saved_summaries = adapter.save_summaries(
             video_id,
-            summaries,
+            summaries_payload,
             segment_map=segment_map,
             processing_job_id=processing_job_id,
             batch_index=batch_index,

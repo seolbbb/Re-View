@@ -71,7 +71,7 @@ from src.fusion.sync_engine import run_sync_engine
 from src.judge.judge import run_judge
 from src.pipeline.benchmark import BenchmarkTimer
 from src.vlm.vlm_engine import QwenVlmExtractor, write_vlm_raw_json
-from src.vlm.vlm_fusion import convert_vlm_raw_to_fusion_vlm
+from src.vlm.vlm_fusion import build_fusion_vlm_payload, convert_vlm_raw_to_fusion_vlm
 from src.db.stage_uploader import (
     upload_vlm_results_for_batch,
     upload_segments_for_batch,
@@ -437,6 +437,7 @@ def run_vlm_for_batch(
     start_ms: Optional[int] = None,
     end_ms: Optional[int] = None,
     video_id: Optional[str] = None,
+    write_local_json: bool = True,  # vlm.json 로컬 저장 여부
 ) -> Dict[str, Any]:
     """배치 범위만 VLM 처리해 batch 단위의 vlm.json을 생성한다."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -587,29 +588,62 @@ def run_vlm_for_batch(
         concurrency=concurrency,
     )
 
-    raw_path = output_dir / "vlm_raw.json"
-    write_vlm_raw_json(results, raw_path)
-
-    temp_manifest_path = output_dir / "manifest_temp.json"
-    temp_manifest_path.write_text(
-        json.dumps(filtered_manifest_items, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
     vlm_json_path = output_dir / "vlm.json"
-    convert_vlm_raw_to_fusion_vlm(
-        manifest_json=temp_manifest_path,
-        vlm_raw_json=raw_path,
-        output_vlm_json=vlm_json_path,
-    )
-    temp_manifest_path.unlink(missing_ok=True)
-    raw_path.unlink(missing_ok=True)
+    vlm_items = []  # DB 업로드용 결과 저장
+
+    if write_local_json:
+        raw_path = output_dir / "vlm_raw.json"
+        write_vlm_raw_json(results, raw_path)
+
+        temp_manifest_path = output_dir / "manifest_temp.json"
+        temp_manifest_path.write_text(
+            json.dumps(filtered_manifest_items, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        convert_vlm_raw_to_fusion_vlm(
+            manifest_json=temp_manifest_path,
+            vlm_raw_json=raw_path,
+            output_vlm_json=vlm_json_path,
+        )
+        temp_manifest_path.unlink(missing_ok=True)
+        raw_path.unlink(missing_ok=True)
+    else:
+        # 로컬 저장 안함 - 메모리에만 결과 보관 (DB 업로드용)
+        # vlm_json_path는 존재하지 않지만 반환값에 경로 포함
+        pass
 
     return {
-        "vlm_raw_json": str(raw_path),
-        "vlm_json": str(vlm_json_path),
+        "vlm_raw_json": str(output_dir / "vlm_raw.json") if write_local_json else "",
+        "vlm_json": str(vlm_json_path) if write_local_json else "",
         "image_count": len(image_paths),
+        "results": results,  # DB 업로드용 raw results
+        "manifest_items": filtered_manifest_items,  # DB 업로드용 manifest
     }
+
+
+def convert_vlm_raw_to_fusion_vlm_in_memory(
+    manifest_items: List[Dict[str, Any]],
+    vlm_raw_payload: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """메모리 상의 manifest + vlm_raw를 fusion 입력(vlm.json) 구조로 변환한다.
+
+    Args:
+        manifest_items: 캡처 메니페스트(배치) 목록
+        vlm_raw_payload: VLM raw 결과 목록
+
+    Returns:
+        Dict[str, Any]: fusion 단계에서 사용할 vlm.json payload
+    """
+    if not isinstance(manifest_items, list) or not manifest_items:
+        raise ValueError("manifest_items must be a non-empty list")
+    if not isinstance(vlm_raw_payload, list) or not vlm_raw_payload:
+        raise ValueError("vlm_raw_payload must be a non-empty list")
+
+    return build_fusion_vlm_payload(
+        manifest_payload=manifest_items,
+        vlm_raw_payload=vlm_raw_payload,
+    )
 
 
 def run_fusion_pipeline(
@@ -791,6 +825,10 @@ def run_batch_fusion_pipeline(
     start_batch_index: int = 0,
     preserve_files: bool = False,
     forced_batch_end_ms: Optional[int] = None,
+    # 로컬 저장 제어
+    write_local_fusion: bool = True,
+    write_local_summary: bool = True,
+    write_local_judge: bool = True,
 ) -> Dict[str, Any]:
     """배치 단위로 동기화와 요약을 반복 실행한다.
 
@@ -802,6 +840,9 @@ def run_batch_fusion_pipeline(
         video_id: 비디오 ID (DB 동기화용)
         sync_to_db: DB 동기화 활성화 여부
         adapter: Supabase 어댑터 (sync_to_db=True일 때 필요)
+        write_local_fusion: fusion 결과(segments_units) 로컬 저장 여부
+        write_local_summary: summary 결과 로컬 저장 여부
+        write_local_judge: judge 결과 로컬 저장 여부
     """
     from src.fusion.summarizer import run_batch_summarizer
     from src.fusion.sync_engine import run_batch_sync_engine
@@ -1067,20 +1108,9 @@ def run_batch_fusion_pipeline(
 
         total_vlm_elapsed += batch_vlm_elapsed
 
-        # 2. DB Upload (VLM Results)
+        # 2. DB Upload Status (VLM Worker에서 이미 업로드됨)
         if adapter and processing_job_id and sync_to_db:
-            status_map["DB"] = "UPLOAD..."
-            _print_status()
-            try:
-                upload_vlm_results_for_batch(
-                    adapter,
-                    video_id,
-                    processing_job_id,
-                    batch_dir / "vlm.json",
-                )
-                status_map["DB"] = "UPLOAD_DONE"
-            except Exception:
-                status_map["DB"] = "UPLOAD_FAIL"
+            status_map["DB"] = "ALREADY_UPLOADED"
             _print_status()
         else:
              status_map["DB"] = "UPLOAD_SKIP"
@@ -1127,7 +1157,14 @@ def run_batch_fusion_pipeline(
             },
             segment_id_offset=cumulative_segment_count,
             run_id_override=processing_job_id or video_id,
+            # Phase 2: DB 우선 VLM 조회
+            video_id=video_id,
+            processing_job_id=processing_job_id,
+            sync_to_db=sync_to_db,
+            adapter=adapter,
+            write_output=write_local_fusion,
         )
+        segments_data = sync_result.get("segments_units_data", [])
         
         # [User Request] Track segment IDs
         # segments_units.jsonl을 읽거나 sync_result['segments_count']로 계산
@@ -1176,7 +1213,9 @@ def run_batch_fusion_pipeline(
                 status_callback=_sum_status_cb,
                 verbose=True,
                 batch_label=f"Batch {current_batch_global_idx}",
+                write_output=write_local_summary,
             )
+            summaries_data = summarizer_result.get("segment_summaries_data", [])
             batch_summarizer_elapsed = time.perf_counter() - t_summarize
             total_summarizer_elapsed += batch_summarizer_elapsed
             
@@ -1206,7 +1245,7 @@ def run_batch_fusion_pipeline(
                 segment_summaries_path=batch_dir / "fusion" / "segment_summaries.jsonl",
                 output_report_path=batch_dir / "judge_report.json",
                 output_segments_path=batch_dir / "judge_segments.jsonl",
-                write_outputs=True,
+                write_outputs=write_local_judge,
                 verbose=True,
                 batch_size=getattr(config.judge, "batch_size", 10),
                 workers=getattr(config.judge, "workers", 4),
@@ -1269,22 +1308,57 @@ def run_batch_fusion_pipeline(
             try:
                 segment_map = {}
                 batch_units_path = batch_dir / "fusion" / "segments_units.jsonl"
+                
+                # 우선순위: 로컬 파일 > 메모리 데이터
+                segments_source = None
                 if batch_units_path.exists():
+                    segments_source = batch_units_path
+                elif segments_data:
+                    segments_source = segments_data
+                
+                if segments_source:
                     segment_map = upload_segments_for_batch(
                         adapter,
                         video_id,
                         processing_job_id,
-                        batch_units_path,
+                        segments_source,
                         offset=0,
                     )
 
+                # Summaries Upload
+                batch_summaries_path = batch_dir / "fusion" / "segment_summaries.jsonl"
+                summaries_source = None
                 if batch_summaries_path.exists():
+                    summaries_source = batch_summaries_path
+                elif summaries_data:
+                    summaries_source = summaries_data
+                
+                if summaries_source:
                      upload_summaries_for_batch(
-                        adapter, video_id, processing_job_id, batch_summaries_path, segment_map, batch_index=current_batch_global_idx
+                        adapter, 
+                        video_id, 
+                        processing_job_id, 
+                        summaries_source, 
+                        segment_map, 
+                        batch_index=current_batch_global_idx
                      )
-                upload_judge_result(
-                    adapter, video_id, processing_job_id, batch_dir / "judge.json", current_batch_global_idx
-                )
+                
+                # Judge Upload
+                batch_judge_path = batch_dir / "judge.json"
+                judge_source = None
+                if batch_judge_path.exists():
+                    judge_source = batch_judge_path
+                elif latest_judge_result:
+                    judge_source = latest_judge_result
+
+                if judge_source:
+                    upload_judge_result(
+                        adapter, 
+                        video_id, 
+                        processing_job_id, 
+                        judge_source, 
+                        current_batch_global_idx
+                    )
             except Exception as e:
                 print(f"[DB] Error uploading batch fusion results: {e}")
 

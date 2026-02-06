@@ -31,7 +31,7 @@ llm_gemini:
   model: "gemini-3-flash-preview"    # 모델 이름
   timeout_sec: 50                    # 요청 타임아웃(초)
   max_retries: 1                     # 재시도 횟수
-  backoff_sec: [2, 5, 15, 30, 60]    # 재시도 백오프(초)
+  backoff_sec: [2, 2, 2, 2, 2]    # 재시도 백오프(초)
   response_mime_type: "application/json"  # 응답 MIME 타입
 
   developer_api:

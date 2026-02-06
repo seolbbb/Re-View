@@ -42,6 +42,7 @@ class VlmWorkerConfig:
     vlm_inner_concurrency: int = 1
     vlm_show_progress: bool = True
     max_inflight_chunks: int = 8
+    write_local_json: bool = True  # vlm.json 로컬 저장 여부
 
     def __post_init__(self) -> None:
         if not self.video_name.strip():
@@ -130,17 +131,65 @@ class AsyncVlmWorker:
                 start_ms=None,
                 end_ms=None,
                 video_id=self.config.video_id,
+                write_local_json=self.config.write_local_json,
             )
             elapsed = time.perf_counter() - t0
 
-            image_count_raw = vlm_info.get("image_count", len(event.captures)) if isinstance(vlm_info, dict) else len(event.captures)
-            try:
-                image_count = int(image_count_raw)
-            except (TypeError, ValueError):
-                image_count = len(event.captures)
+            # 결과 처리
+            image_count = 0
+            vlm_json_path = None
+            
+            if isinstance(vlm_info, dict):
+                image_count = int(vlm_info.get("image_count", len(event.captures)))
+                vlm_json_path_raw = vlm_info.get("vlm_json")
+                if vlm_json_path_raw:
+                    vlm_json_path = Path(vlm_json_path_raw)
+            else:
+                 image_count = len(event.captures)
+            
+            if not vlm_json_path and self.config.write_local_json:
+                vlm_json_path = batch_dir / "vlm.json"
 
-            vlm_json_path_raw = vlm_info.get("vlm_json") if isinstance(vlm_info, dict) else None
-            vlm_json_path = Path(vlm_json_path_raw) if vlm_json_path_raw else (batch_dir / "vlm.json")
+            # Phase 1: VLM 완료 즉시 DB 업로드 (로컬 파일 유무와 무관하게 동작)
+            if self.context.sync_to_db and self.context.video_id and self.context.processing_job_id:
+                try:
+                    from src.db import get_supabase_adapter, upload_vlm_results_for_batch
+
+                    adapter = get_supabase_adapter()
+                    
+                    # 업로드 데이터 준비: 로컬 파일 경로 또는 메모리 상의 결과
+                    upload_target = None
+                    if vlm_json_path and vlm_json_path.exists():
+                        upload_target = vlm_json_path
+                    elif isinstance(vlm_info, dict):
+                        # write_local_json=False인 경우, run_vlm_for_batch가 반환한 메모리 데이터를 사용
+                        raw_results = vlm_info.get("results", [])
+                        manifest_items = vlm_info.get("manifest_items", [])
+                        if raw_results:
+                            # raw results를 fusion 포맷으로 변환 (메모리에서 수행)
+                            from src.pipeline.stages import convert_vlm_raw_to_fusion_vlm_in_memory
+                            upload_target = convert_vlm_raw_to_fusion_vlm_in_memory(
+                                manifest_items, raw_results
+                            )
+                    
+                    if adapter and upload_target:
+                        upload_vlm_results_for_batch(
+                            adapter,
+                            self.context.video_id,
+                            self.context.processing_job_id,
+                            upload_target,
+                        )
+                        logger.info(
+                            "[VLM Worker] Batch %d: DB upload done (%d images)",
+                            event.batch_index,
+                            image_count,
+                        )
+                except Exception as db_exc:
+                    logger.warning(
+                        "[VLM Worker] Batch %d: DB upload failed: %s",
+                        event.batch_index,
+                        db_exc,
+                    )
 
             vlm_done_event = VlmDoneEvent(
                 run_id=self.context.run_id,
