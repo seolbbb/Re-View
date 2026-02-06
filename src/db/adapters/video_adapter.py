@@ -287,6 +287,8 @@ class VideoAdapterMixin:
                 print(f"[R2] Upload failed: {e}")
                 raise e
         else:
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (set R2_* env vars).")
             # Supabase Fallback: {video_id}/{filename}
             storage_path = f"{video_id}/{file_name}"
             with open(video_path, "rb") as f:

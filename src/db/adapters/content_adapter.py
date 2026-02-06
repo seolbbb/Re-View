@@ -58,9 +58,55 @@ class ContentAdapterMixin:
             })
 
         if rows:
-            # 대량 삽입 (Batch Insert)
-            result = self.client.table("stt_results").insert(rows).execute()
-            return result.data
+            stt_ids = [row.get("stt_id") for row in rows if row.get("stt_id")]
+            existing_map: Dict[str, str] = {}
+            if stt_ids:
+                query = self.client.table("stt_results").select("id, stt_id").eq("video_id", video_id)
+                if preprocess_job_id:
+                    query = query.eq("preprocess_job_id", preprocess_job_id)
+                in_method = getattr(query, "in_", None)
+                if callable(in_method):
+                    query = in_method("stt_id", stt_ids)
+                else:
+                    query = query.filter("stt_id", "in", f"({','.join(stt_ids)})")
+                result = query.execute()
+                if result.data:
+                    existing_map = {
+                        row.get("stt_id"): row.get("id")
+                        for row in result.data
+                        if row.get("stt_id") and row.get("id")
+                    }
+
+            updated_rows: List[Dict[str, Any]] = []
+            insert_rows: List[Dict[str, Any]] = []
+            for row in rows:
+                stt_id = row.get("stt_id")
+                if stt_id and stt_id in existing_map:
+                    payload = {
+                        "transcript": row.get("transcript"),
+                        "start_ms": row.get("start_ms"),
+                        "end_ms": row.get("end_ms"),
+                        "confidence": row.get("confidence"),
+                        "preprocess_job_id": row.get("preprocess_job_id"),
+                    }
+                    payload = {k: v for k, v in payload.items() if v is not None}
+                    result = (
+                        self.client.table("stt_results")
+                        .update(payload)
+                        .eq("id", existing_map[stt_id])
+                        .execute()
+                    )
+                    if result.data:
+                        updated_rows.extend(result.data)
+                else:
+                    insert_rows.append(row)
+
+            inserted_rows: List[Dict[str, Any]] = []
+            if insert_rows:
+                result = self.client.table("stt_results").insert(insert_rows).execute()
+                inserted_rows = result.data if result.data else []
+
+            return updated_rows + inserted_rows
         return []
     
     def save_stt_from_file(
@@ -161,8 +207,56 @@ class ContentAdapterMixin:
             })
         
         if rows:
-            result = self.client.table("segments").insert(rows).execute()
-            return result.data
+            indices = [row.get("segment_index") for row in rows if row.get("segment_index") is not None]
+            existing_map: Dict[int, str] = {}
+            if indices:
+                query = self.client.table("segments").select("id, segment_index").eq("video_id", video_id)
+                if processing_job_id:
+                    query = query.eq("processing_job_id", processing_job_id)
+                in_method = getattr(query, "in_", None)
+                if callable(in_method):
+                    query = in_method("segment_index", indices)
+                else:
+                    query = query.filter("segment_index", "in", f"({','.join(str(i) for i in indices)})")
+                result = query.execute()
+                if result.data:
+                    existing_map = {
+                        row.get("segment_index"): row.get("id")
+                        for row in result.data
+                        if row.get("segment_index") is not None and row.get("id")
+                    }
+
+            updated_rows: List[Dict[str, Any]] = []
+            insert_rows: List[Dict[str, Any]] = []
+            for row in rows:
+                idx = row.get("segment_index")
+                if idx is not None and idx in existing_map:
+                    payload = {
+                        "start_ms": row.get("start_ms"),
+                        "end_ms": row.get("end_ms"),
+                        "transcript_units": row.get("transcript_units"),
+                        "visual_units": row.get("visual_units"),
+                        "source_refs": row.get("source_refs"),
+                        "processing_job_id": row.get("processing_job_id"),
+                    }
+                    payload = {k: v for k, v in payload.items() if v is not None}
+                    result = (
+                        self.client.table("segments")
+                        .update(payload)
+                        .eq("id", existing_map[idx])
+                        .execute()
+                    )
+                    if result.data:
+                        updated_rows.extend(result.data)
+                else:
+                    insert_rows.append(row)
+
+            inserted_rows: List[Dict[str, Any]] = []
+            if insert_rows:
+                result = self.client.table("segments").insert(insert_rows).execute()
+                inserted_rows = result.data if result.data else []
+
+            return updated_rows + inserted_rows
         return []
     
     def save_segments_from_file(
@@ -275,8 +369,55 @@ class ContentAdapterMixin:
                 logger.warning(f"임베딩 생성 실패, 요약 저장은 계속 진행: {e}")
 
         if rows:
-            result = self.client.table("summaries").insert(rows).execute()
-            return result.data
+            segment_ids = [row.get("segment_id") for row in rows if row.get("segment_id")]
+            existing_map: Dict[str, str] = {}
+            if segment_ids:
+                query = self.client.table("summaries").select("id, segment_id").eq("video_id", video_id)
+                if processing_job_id:
+                    query = query.eq("processing_job_id", processing_job_id)
+                in_method = getattr(query, "in_", None)
+                if callable(in_method):
+                    query = in_method("segment_id", segment_ids)
+                else:
+                    query = query.filter("segment_id", "in", f"({','.join(segment_ids)})")
+                result = query.execute()
+                if result.data:
+                    existing_map = {
+                        row.get("segment_id"): row.get("id")
+                        for row in result.data
+                        if row.get("segment_id") and row.get("id")
+                    }
+
+            updated_rows: List[Dict[str, Any]] = []
+            insert_rows: List[Dict[str, Any]] = []
+            for row in rows:
+                seg_id = row.get("segment_id")
+                if seg_id and seg_id in existing_map:
+                    payload = {
+                        "summary": row.get("summary"),
+                        "version": row.get("version"),
+                        "embedding": row.get("embedding"),
+                        "batch_index": row.get("batch_index"),
+                        "processing_job_id": row.get("processing_job_id"),
+                    }
+                    payload = {k: v for k, v in payload.items() if v is not None}
+                    result = (
+                        self.client.table("summaries")
+                        .update(payload)
+                        .eq("id", existing_map[seg_id])
+                        .execute()
+                    )
+                    if result.data:
+                        updated_rows.extend(result.data)
+                else:
+                    insert_rows.append(row)
+
+            inserted_rows: List[Dict[str, Any]] = []
+            if insert_rows:
+                result = self.client.table("summaries").insert(insert_rows).execute()
+                inserted_rows = result.data if result.data else []
+
+            return updated_rows + inserted_rows
         return []
     
     def save_summaries_from_file(
