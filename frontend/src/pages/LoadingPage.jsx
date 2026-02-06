@@ -115,7 +115,7 @@ function LoadingPage() {
                     <span className="logo-view">View</span>
                 </div>
 
-                <div className="loading-spinner">
+                <div className="page-spinner-wrapper">
                     <div className="spinner"></div>
                 </div>
 
