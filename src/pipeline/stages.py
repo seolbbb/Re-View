@@ -968,6 +968,32 @@ def run_batch_fusion_pipeline(
             f"{_get_timestamp()} [Pipeline] Using DB max segment_index offset: {cumulative_segment_count}"
         )
     previous_context = ""
+    if start_batch_index > 0:
+        # Resume support: seed context from the most recent completed batch so the first
+        # processed batch can maintain terminology/consistency.
+        try:
+            from src.fusion.summarizer import extract_batch_context
+
+            for prev_idx in range(start_batch_index, 0, -1):
+                prev_summaries_path = (
+                    video_root
+                    / "batches"
+                    / f"batch_{prev_idx}"
+                    / "fusion"
+                    / "segment_summaries.jsonl"
+                )
+                if not prev_summaries_path.exists():
+                    continue
+                previous_context = extract_batch_context(prev_summaries_path) or ""
+                if previous_context:
+                    print(
+                        f"{_get_timestamp()} [Pipeline] Seeded previous_context from Batch {prev_idx}"
+                    )
+                break
+        except Exception as exc:
+            print(
+                f"{_get_timestamp()} [Pipeline] Warning: failed to seed previous_context: {exc}"
+            )
 
     accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
     if not preserve_files and accumulated_summaries_path.exists():
@@ -1146,7 +1172,9 @@ def run_batch_fusion_pipeline(
         feedback_map = {}
         batch_passed = False
         batch_score = 0.0
-        
+        batch_prev_context = previous_context or None
+        last_batch_context = ""
+
         for attempt in range(1, 3):
             if attempt > 1:
                 print(f"\n[Pipeline] Attempt {attempt}/2: Retrying fusion due to judge feedback...", flush=True)
@@ -1171,12 +1199,14 @@ def run_batch_fusion_pipeline(
                 segments_units_jsonl=batch_dir / "fusion" / "segments_units.jsonl",
                 output_dir=batch_dir / "fusion",
                 config=config,
+                previous_context=batch_prev_context,
                 feedback_map=feedback_map,
-                limit=None, 
+                limit=None,
                 status_callback=_sum_status_cb,
                 verbose=True,
                 batch_label=f"Batch {current_batch_global_idx}",
             )
+            last_batch_context = summarizer_result.get("context") or ""
             batch_summarizer_elapsed = time.perf_counter() - t_summarize
             total_summarizer_elapsed += batch_summarizer_elapsed
             
@@ -1241,6 +1271,9 @@ def run_batch_fusion_pipeline(
                 for item in segment_reports:
                     if item.get("segment_id") is not None:
                         feedback_map[int(item["segment_id"])] = str(item.get("feedback", "")).strip()
+
+        # Update context for the next batch using the latest summarizer output from this batch.
+        previous_context = last_batch_context
 
         status_map["Summarize"] = "DONE"
         status_map["Judge"] = f"DONE ({batch_score:.1f})" if batch_passed else f"FAIL ({batch_score:.1f})"
