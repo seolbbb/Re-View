@@ -1,33 +1,28 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Music, FileText, CheckCircle, AlertCircle } from 'lucide-react';
+import { Upload, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 import { useVideo } from '../context/VideoContext';
 import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import './LoadingPage.css';
 
 const STAGES = [
     { name: '영상 업로드 완료', Icon: Upload },
-    { name: '오디오 추출 중...', Icon: Music },
-    { name: 'STT 변환 중...', Icon: FileText },
-    { name: '전처리 완료!', Icon: CheckCircle },
+    { name: '분석 준비 중...', Icon: RefreshCw },
+    { name: '분석 시작!', Icon: CheckCircle },
 ];
 
 function statusToStage(videoStatus) {
     const vs = (videoStatus || '').toUpperCase();
-    if (vs === 'PREPROCESS_DONE' || vs === 'PROCESSING') return 3;
-    if (vs === 'DONE') return 3;
     if (vs === 'FAILED') return -1;
+    if (['PREPROCESS_DONE', 'PROCESSING', 'DONE'].includes(vs)) return 2;
     if (vs === 'PREPROCESSING') return 1;
-    if (vs === 'UPLOADED') return 0;
     return 0;
 }
 
 function stageToProgress(stage) {
     if (stage <= 0) return 5;
-    if (stage === 1) return 25;
-    if (stage === 2) return 55;
-    if (stage >= 3) return 100;
-    return 0;
+    if (stage === 1) return 40;
+    if (stage >= 2) return 100;
 }
 
 function LoadingPage() {
@@ -81,7 +76,7 @@ function LoadingPage() {
     // 전처리 완료 시 분석 페이지로 이동
     useEffect(() => {
         if (done && currentVideoId) {
-            const timer = setTimeout(() => navigate(`/analysis/${currentVideoId}`), 800);
+            const timer = setTimeout(() => navigate(`/analysis/${currentVideoId}`), 300);
             return () => clearTimeout(timer);
         }
     }, [done, currentVideoId, navigate]);
@@ -103,10 +98,9 @@ function LoadingPage() {
 
     useEffect(() => {
         if (!currentVideoId) {
-            if (progress < 25) setStage(0);
-            else if (progress < 55) setStage(1);
-            else if (progress < 85) setStage(2);
-            else setStage(3);
+            if (progress < 40) setStage(0);
+            else if (progress < 90) setStage(1);
+            else setStage(2);
         }
     }, [progress, currentVideoId]);
 
