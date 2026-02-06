@@ -931,16 +931,55 @@ def _build_suggestions_prompt(state: ChatState) -> str:
     answer = (state.get("response") or "").strip()
     return (
         "You generate follow-up question chips for a chat UI.\n"
-        "Return JSON only in this shape: {\"questions\": [\"...\", \"...\"]}.\n"
+        "Return JSON ONLY in this exact format: {\"questions\": [\"question1\", \"question2\"]}.\n"
+        "\n"
         "Rules:\n"
         "- Always write in Korean.\n"
         f"- Return 1 to {_SUGGESTION_MAX_ITEMS} concise questions.\n"
         f"- Keep each question within {_SUGGESTION_MAX_CHARS} characters.\n"
-        "- Questions must be natural next turns based on the assistant answer.\n"
+        "- Questions must be natural follow-ups based on the assistant's answer.\n"
         "- Avoid duplicates and generic prompts.\n"
         "\n"
+        "Punctuation Rules (CRITICAL):\n"
+        "1. Interrogative questions (의문문): Use ONLY '?' at the end\n"
+        "   - Question words: 왜, 무엇을, 뭐, 어디서, 언제, 어떻게, 누가\n"
+        "   - Question endings: ~인가요, ~나요, ~까요, ~인지, ~ㄹ까요\n"
+        "   - Examples: \"왜 그런가요?\", \"어떻게 사용하나요?\", \"차이점이 뭐예요?\"\n"
+        "2. Imperative/request sentences (명령문/청유문): Use ONLY '.' at the end\n"
+        "   - Request endings: ~해 주세요, ~알려 주세요, ~설명해 주세요, ~비교해 주세요\n"
+        "   - Examples: \"설명해 주세요.\", \"예시를 알려 주세요.\", \"비교해 주세요.\"\n"
+        "3. NEVER use mixed punctuation like '.?', '?.', '??', or '..' at the end\n"
+        "4. NEVER omit punctuation - every question must end with either '?' or '.'\n"
+        "\n"
+        "Few-shot Examples:\n"
+        "\n"
+        "Example 1:\n"
+        "User: \"Stable Diffusion이 뭐야?\"\n"
+        "Assistant: \"Stable Diffusion은 텍스트를 이미지로 변환하는 AI 모델입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"어떻게 사용하나요?\", \"다른 이미지 생성 AI와 비교해 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"어떻게 사용하나요??\", \"비교해 주세요?.\"]}\n"
+        "\n"
+        "Example 2:\n"
+        "User: \"파이썬 리스트 컴프리헨션 설명해줘\"\n"
+        "Assistant: \"리스트 컴프리헨션은 간결하게 리스트를 생성하는 문법입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"언제 사용하면 좋나요?\", \"실전 예제를 보여 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"언제 사용하면 좋나요.\", \"실전 예제를 보여 주세요?\"]}\n"
+        "\n"
+        "Example 3:\n"
+        "User: \"Docker와 VM의 차이는?\"\n"
+        "Assistant: \"Docker는 컨테이너 기반이고 VM은 하이퍼바이저 기반입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"어떤 상황에서 Docker를 쓰나요?\", \"성능 차이를 알려 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"어떤 상황에서 Docker를 쓰나요\", \"성능 차이를 알려 주세요??\"]}\n"
+        "\n"
         f"User question:\n{question}\n\n"
-        f"Assistant answer:\n{answer}\n"
+        f"Assistant answer:\n{answer}\n\n"
+        "Generate follow-up questions in JSON format:\n"
     )
 
 
@@ -980,16 +1019,52 @@ def _extract_questions_from_text(text: str) -> List[str]:
     elif candidate:
         raw_items = [line.strip("- ").strip() for line in candidate.splitlines() if line.strip()]
 
+    def _normalize_chip_text(value: str) -> str:
+        """
+        Minimal normalization for suggestion chips.
+        Relies on LLM prompt to generate correct punctuation.
+        This function acts as a safety net for edge cases.
+        """
+        # Basic whitespace normalization
+        text_value = re.sub(r"\s+", " ", value.strip())
+
+        # Remove surrounding quotes
+        text_value = text_value.strip("'\"""''")
+
+        if not text_value:
+            return ""
+
+        # Remove duplicate punctuation (e.g., "??" -> "?", ".." -> ".")
+        text_value = re.sub(r"([?!.])\1+$", r"\1", text_value)
+
+        # Enforce length limit
+        if len(text_value) > _SUGGESTION_MAX_CHARS:
+            text_value = text_value[:_SUGGESTION_MAX_CHARS].rstrip()
+
+        # Fix mixed punctuation (safety net for extreme cases)
+        if text_value.endswith(".?") or text_value.endswith("?."):
+            # Remove all trailing punctuation and add '?'
+            core = re.sub(r"[.!?]+$", "", text_value).strip()
+            if not core:
+                return ""
+            logger.warning(f"Mixed punctuation detected in suggestion: '{value}' -> fixed to '{core}?'")
+            return f"{core}?"
+
+        # If punctuation is missing, log a warning but don't add it automatically
+        # This helps us monitor LLM prompt effectiveness
+        if not text_value.endswith(("?", "!", ".")):
+            logger.warning(f"Missing punctuation in suggestion: '{text_value}' - relying on LLM to fix this")
+            # Add a fallback punctuation to avoid breaking UI
+            return f"{text_value}?"
+
+        return text_value
+
     questions: List[str] = []
     seen = set()
     for item in raw_items:
-        question = re.sub(r"\s+", " ", str(item or "").strip())
+        question = _normalize_chip_text(str(item or ""))
         if not question:
             continue
-        if len(question) > _SUGGESTION_MAX_CHARS:
-            question = question[:_SUGGESTION_MAX_CHARS].rstrip()
-        if not question.endswith("?"):
-            question = f"{question}?"
         if question in seen:
             continue
         seen.add(question)

@@ -302,14 +302,14 @@ function ChatBot({ videoId }) {
                                 )}
                             </div>
                             {msg.type === 'bot' && !msg.streaming && Array.isArray(msg.suggestions) && msg.suggestions.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5 pl-1">
+                                <div className="flex flex-wrap gap-2 pl-1">
                                     {msg.suggestions.map((question, index) => (
                                         <button
                                             key={`${msg.id}-suggestion-${index}`}
                                             type="button"
                                             onClick={() => handleSuggestionClick(question)}
                                             disabled={sending}
-                                            className="px-2.5 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary text-[11px] hover:bg-primary/20 transition-colors disabled:opacity-50"
+                                            className="px-3.5 py-2 rounded-lg border-2 border-[var(--chip-suggestion-border)] bg-[var(--chip-suggestion-bg)] text-[13px] leading-snug text-[var(--chip-suggestion-text)] font-medium shadow-sm hover:bg-[var(--chip-suggestion-hover-bg)] hover:border-[var(--chip-suggestion-hover-border)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                             {question}
                                         </button>
