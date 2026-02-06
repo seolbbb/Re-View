@@ -219,12 +219,12 @@ def _build_batch_prompt(
     jsonl_text = "\n".join(json.dumps(seg, ensure_ascii=False) for seg in segments)
 
     context_section = ""
-    if previous_context:
+    if previous_context and previous_context.strip():
         context_section = f"""
 ========================
 이전 배치 요약 (맥락 유지용)
 ========================
-{previous_context}
+{previous_context.strip()}
 
 위 내용은 이전 배치에서 다룬 핵심 내용입니다.
 - 현재 배치 요약 시 위 내용과 일관성을 유지하세요.
@@ -257,7 +257,19 @@ def _build_batch_prompt(
     ):
         prompt = f"{prompt}\n\n{segments_text}"
 
-    return f"{context_section}{prompt}"
+    # Keep stable instructions at the very beginning to maximize provider-side prefix caching.
+    # Place previous batch context AFTER the instruction prompt, but BEFORE the current batch input.
+    if context_section:
+        segment_marker = "--- Segment"
+        insert_at = prompt.find(segment_marker)
+        if insert_at != -1:
+            before = prompt[:insert_at].rstrip()
+            after = prompt[insert_at:].lstrip()
+            prompt = f"{before}\n\n{context_section.strip()}\n\n{after}"
+        else:
+            prompt = f"{prompt.rstrip()}\n\n{context_section.strip()}"
+
+    return prompt.strip()
 
 
 
