@@ -642,14 +642,37 @@ def init_upload(payload: UploadInitRequest, http_request: Request):
     )
     video_id = video["id"]
 
-    storage_key = f"{video_id}/{safe_name}"
-    adapter.update_video_storage_key(video_id, storage_key)
+    # MIME 타입 추론 (확장자 기반)
+    import mimetypes
+    content_type, _ = mimetypes.guess_type(safe_name)
+    if not content_type:
+        content_type = "video/mp4"  # fallback
 
-    # Supabase Storage signed upload URL 생성
-    signed = adapter.client.storage.from_("videos").create_signed_upload_url(
-        storage_key
-    )
-    upload_url = signed.get("signed_url") or signed.get("signedURL", "")
+    # R2 또는 Supabase Storage에 따라 경로 및 URL 생성
+    if adapter.s3_client:
+        # R2 presigned URL 생성
+        storage_key = f"{video_id}/{adapter.r2_prefix_videos}/{safe_name}"
+        adapter.update_video_storage_key(video_id, storage_key)
+        
+        upload_url = adapter.s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': adapter.r2_bucket,
+                'Key': storage_key,
+                'ContentType': content_type
+            },
+            ExpiresIn=3600  # 1시간 유효
+        )
+        print(f"[R2] Generated presigned upload URL for {storage_key} (ContentType: {content_type})")
+    else:
+        # Supabase Storage fallback
+        storage_key = f"{video_id}/{safe_name}"
+        adapter.update_video_storage_key(video_id, storage_key)
+        
+        signed = adapter.client.storage.from_("videos").create_signed_upload_url(
+            storage_key
+        )
+        upload_url = signed.get("signed_url") or signed.get("signedURL", "")
 
     return UploadInitResponse(
         video_id=video_id,
@@ -698,7 +721,46 @@ def complete_upload(
 
 
 def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
-    """Storage에서 비디오를 다운로드하여 전처리 → 처리 파이프라인을 순차 실행합니다."""
+    """
+    스토리지에서 비디오를 다운로드하여 전처리 → 처리 파이프라인을 순차 실행.
+    
+    Purpose:
+        프론트엔드에서 업로드 완료 후 백그라운드에서 실행되는 메인 파이프라인.
+        R2 또는 Supabase Storage에서 비디오를 다운로드하고, 전처리(캡처 추출,
+        STT) 및 처리(VLM, Fusion) 파이프라인을 순차적으로 실행합니다.
+    
+    Storage Integration (R2 Priority):
+        1. adapter.s3_client가 초기화되어 있으면 R2 사용
+        2. R2 미설정 시 Supabase Storage fallback
+        3. 다운로드 경로: {bucket}/{storage_key}
+    
+    Pipeline Flow:
+        1. 스토리지에서 임시 디렉토리로 비디오 다운로드
+        2. run_preprocess_pipeline() 실행 (캡처/오디오 추출, STT)
+        3. run_processing_pipeline() 실행 (VLM, Judge, Fusion)
+        4. 임시 디렉토리 정리
+    
+    Args:
+        video_id (str): 비디오 UUID (DB 레코드 ID)
+        storage_key (str): 스토리지 경로
+            - R2: {video_id}/videos/{filename}
+            - Supabase: {video_id}/{filename}
+    
+    Returns:
+        None (백그라운드 태스크로 실행)
+    
+    Side Effects:
+        - videos.status 업데이트 (PREPROCESSING → PREPROCESS_DONE → PROCESSING → DONE)
+        - captures, stt_results, segments, summaries 테이블에 결과 저장
+        - R2/Supabase Storage에 캡처 이미지, 오디오 업로드
+    
+    Error Handling:
+        - 예외 발생 시 videos.status를 FAILED로 업데이트
+        - 임시 디렉토리는 finally 블록에서 항상 정리
+    
+    Called By:
+        - complete_upload() 엔드포인트 (BackgroundTasks)
+    """
     from src.run_preprocess_pipeline import run_preprocess_pipeline
 
     adapter = get_supabase_adapter()
@@ -708,15 +770,21 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         print(f"  Re:View API Pipeline (Storage): {video_id}")
         print("=" * 60)
         
-        # 1. Storage에서 임시 디렉토리로 다운로드
+        # 1. Storage에서 임시 디렉토리로 다운로드 (R2 우선, Supabase fallback)
         tmp_dir = tempfile.mkdtemp()
         original_name = Path(storage_key).name
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         tmp_filename = f"{timestamp}_{original_name}"
         tmp_path = Path(tmp_dir) / tmp_filename
 
-        file_data = adapter.client.storage.from_("videos").download(storage_key)
-        tmp_path.write_bytes(file_data)
+        if adapter.s3_client:
+            # R2에서 다운로드
+            adapter.s3_client.download_file(adapter.r2_bucket, storage_key, str(tmp_path))
+            print(f"[R2] Downloaded video from {adapter.r2_bucket}/{storage_key}")
+        else:
+            # Supabase Storage fallback
+            file_data = adapter.client.storage.from_("videos").download(storage_key)
+            tmp_path.write_bytes(file_data)
 
         print(f"\n1. Starting 'Preprocessing'...")
         # 2. 전처리
@@ -782,9 +850,14 @@ def stream_video(video_id: str):
     if INPUT_DIR.exists():
         for f in sorted(INPUT_DIR.iterdir(), reverse=True):
             if f.name.endswith(original_filename) or original_filename in f.name:
+                # MIME 타입 추론 (확장자 기반)
+                import mimetypes
+                media_type, _ = mimetypes.guess_type(str(f))
+                if not media_type:
+                    media_type = "video/mp4"  # fallback
                 return FileResponse(
                     path=str(f),
-                    media_type="video/mp4",
+                    media_type=media_type,
                     filename=original_filename,
                 )
 

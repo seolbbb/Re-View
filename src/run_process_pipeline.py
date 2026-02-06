@@ -1,8 +1,14 @@
 """
 VLM + Fusion 처리 파이프라인 엔트리포인트 (Qwen 전용).
 
-전처리된 아티팩트(STT, 캡처)를 입력으로 받아 VLM 분석과 Fusion(요약+평가)을 수행합니다.
-로컬 아티팩트가 있으면 우선 사용하고, 없으면 DB에서 다운로드를 시도합니다.
+Purpose:
+    전처리된 아티팩트(STT, 캡처)를 입력으로 받아 VLM 분석과 Fusion(요약+평가)을 수행합니다.
+    로컬 아티팩트가 있으면 우선 사용하고, 없거나 force_db가 True이면 스토리지에서 다운로드합니다.
+
+Storage Integration (R2 Priority):
+    - 캡처 이미지 다운로드: adapter.s3_client 있으면 R2, 없으면 Supabase Storage
+    - 다운로드 경로: {video_id}/{r2_prefix_captures}/{filename}
+    - VLM 처리 시 R2 presigned URL 사용 (get_signed_url)
 
 Qwen 환경 변수:
     QWEN_API_KEY_1    (Required, round-robin 지원)
@@ -10,6 +16,13 @@ Qwen 환경 변수:
     QWEN_API_KEYS     (Optional, comma-separated)
     QWEN_BASE_URL     (Optional, default: https://dashscope-intl.aliyuncs.com/compatible-mode/v1)
     QWEN_MODEL_NAME   (Optional, default: qwen3-vl-32b-instruct)
+
+R2 환경 변수:
+    R2_ENDPOINT_URL       (Required for R2)
+    R2_ACCESS_KEY_ID      (Required for R2)
+    R2_SECRET_ACCESS_KEY  (Required for R2)
+    R2_BUCKET_CAPTURES    (Optional, default: review-storage)
+    R2_PREFIX_CAPTURES    (Optional, default: captures)
 
 Usage:
     python src/run_process_pipeline.py --video-name sample_video [options]
@@ -20,6 +33,7 @@ Arguments:
     --batch-mode       (Optional) 배치 처리 모드 활성화 (기본값: False)
     --limit            (Optional) 처리할 최대 세그먼트 수 (테스트용)
     --db-sync          (Optional) 처리 결과를 DB에 업로드
+    --force-db         (Optional) 로컬 아티팩트 무시하고 스토리지에서 다운로드
 
 Examples:
     # 기본 실행 (로컬 아티팩트 사용, 단일 모드)
@@ -30,6 +44,11 @@ Examples:
 
     # DB 강제 다운로드 + 결과 DB 업로드
     python src/run_process_pipeline.py --video-name sample4 --force-db --db-sync
+
+API Connections:
+    - Called by: process_api.py (_run_full_pipeline_from_storage)
+    - Supabase Tables: videos, captures, stt_results, segments, summaries
+    - R2 Storage: captures bucket for image download
 """
 
 from __future__ import annotations
@@ -471,7 +490,14 @@ def run_processing_pipeline(
                 continue
             
             try:
-                image_bytes = adapter.client.storage.from_("captures").download(storage_path)
+                # R2 우선, Supabase fallback
+                if adapter.s3_client:
+                    import io
+                    buffer = io.BytesIO()
+                    adapter.s3_client.download_fileobj(adapter.r2_bucket, storage_path, buffer)
+                    image_bytes = buffer.getvalue()
+                else:
+                    image_bytes = adapter.client.storage.from_("captures").download(storage_path)
                 image_path.write_bytes(image_bytes)
                 manifest_payload.append(manifest_item)
             except Exception as e:
@@ -766,8 +792,14 @@ def run_processing_pipeline(
                                     if file_name and storage_path:
                                         img_path = captures_dir / file_name
                                         if not img_path.exists():
-                                            # 다운로드
-                                            img_bytes = current_adapter.client.storage.from_("captures").download(storage_path)
+                                            # R2 우선, Supabase fallback
+                                            if current_adapter.s3_client:
+                                                import io
+                                                buffer = io.BytesIO()
+                                                current_adapter.s3_client.download_fileobj(current_adapter.r2_bucket, storage_path, buffer)
+                                                img_bytes = buffer.getvalue()
+                                            else:
+                                                img_bytes = current_adapter.client.storage.from_("captures").download(storage_path)
                                             img_path.write_bytes(img_bytes)
                                     
                                     # Manifest Item 구성
