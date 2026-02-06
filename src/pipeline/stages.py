@@ -1,18 +1,66 @@
-"""파이프라인 단계별 실행 함수를 모은 모듈."""
+"""비디오 처리 파이프라인 단계별 실행 함수 모듈.
+
+=============================================================================
+모듈 목적 (Purpose)
+=============================================================================
+이 모듈은 비디오 처리 파이프라인의 각 단계를 실행하는 함수들을 정의합니다.
+캡처 추출, STT, VLM 분석, 세그먼트화, 요약 등 전체 파이프라인을 관리합니다.
+
+=============================================================================
+파이프라인 흐름 (Pipeline Flow)
+=============================================================================
+1. run_capture_stage() → 비디오에서 프레임 캡처 추출
+2. run_stt_stage() → 오디오에서 텍스트 추출 (STT)
+3. run_vlm_for_batch() → VLM으로 이미지 분석 (R2 signed URL 활용)
+4. run_sync_stage() → STT와 VLM 결과 동기화
+5. run_summarizer_stage() → 세그먼트 요약 생성
+6. run_judge_stage() → 최종 품질 판정
+
+=============================================================================
+R2 스토리지 통합 (R2 Storage Integration)
+=============================================================================
+- run_vlm_for_batch(): R2에 저장된 캡처 이미지의 signed URL 생성
+  - adapter.r2_prefix_captures 사용하여 경로 구성
+  - adapter.get_signed_url()로 1시간 유효한 URL 생성
+
+=============================================================================
+활용처 (Usage Context)
+=============================================================================
+- src/run_processing_pipeline.py → 메인 파이프라인 실행
+- src/process_api.py → API 엔드포인트 백그라운드 태스크
+- src/db/pipeline_sync.py → DB 동기화 시 호출
+
+=============================================================================
+의존성 (Dependencies)
+=============================================================================
+- src/vlm/vlm_engine.py: VLM 추론 엔진
+- src/audio/stt_router.py: STT 라우터
+- src/fusion/sync_engine.py: 동기화 엔진
+- src/db/supabase_adapter.py: SupabaseAdapter (R2 클라이언트 포함)
+"""
 
 from __future__ import annotations
 
+# -----------------------------------------------------------------------------
+# Standard Library Imports
+# -----------------------------------------------------------------------------
 import json
 import math
+import os
 import time
+import yaml
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime
 
-import os
-import yaml
-
+# -----------------------------------------------------------------------------
+# Project Root Path
+# -----------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[2]
 
+# -----------------------------------------------------------------------------
+# Local Module Imports
+# -----------------------------------------------------------------------------
 from src.audio.stt_router import STTRouter
 from src.capture.process_content import process_single_video_capture
 from src.fusion.config import load_config
@@ -447,11 +495,16 @@ def run_vlm_for_batch(
                 adapter = get_supabase_adapter()
                 
             storage_path = item.get("storage_path")
-            # DB에 storage_path가 없으면 표준 경로(video_id/filename)로 추론
+            # DB에 storage_path가 없으면 표준 경로로 추론
             if not storage_path:
                 vid = item.get("video_id") or video_id # 전달받은 video_id 우선 사용
                 if vid:
-                    storage_path = f"{vid}/{file_name}"
+                    # R2 여부에 따라 경로 구조 결정
+                    if adapter and getattr(adapter, "s3_client", None):
+                        prefix = getattr(adapter, "r2_prefix_captures", "captures")
+                        storage_path = f"{vid}/{prefix}/{file_name}"
+                    else:
+                        storage_path = f"{vid}/{file_name}"
             
             if adapter and storage_path:
                 # Signed URL 생성 (기본 1시간)

@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, Pause, Maximize2, Volume2, VolumeX, Volume1, Captions, Settings, Maximize } from 'lucide-react';
+import { Play, Pause, Maximize2, Volume2, VolumeX, Volume1, Settings, Maximize, Minimize, Check } from 'lucide-react';
 import { getVideoStreamUrl } from '../api/videos';
 
 function formatTime(sec) {
@@ -18,8 +18,15 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     const [muted, setMuted] = useState(false);
     const [volume, setVolume] = useState(1);
     const [showVolumeSlider, setShowVolumeSlider] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [playbackRate, setPlaybackRate] = useState(1);
+    const [showSettings, setShowSettings] = useState(false);
     const volumeTimerRef = useRef(null);
+    const containerRef = useRef(null);
+    const settingsRef = useRef(null);
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+    const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
     // Thumbnail preview state
     const [hoverInfo, setHoverInfo] = useState(null); // { x, time }
@@ -108,6 +115,49 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     }, []);
 
     const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+
+    // --- Fullscreen ---
+    const toggleFullscreen = useCallback((e) => {
+        e.stopPropagation();
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        } else {
+            containerRef.current?.requestFullscreen();
+        }
+    }, []);
+
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            setIsFullscreen(!!document.fullscreenElement);
+        };
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        return () => {
+            document.removeEventListener('fullscreenchange', handleFullscreenChange);
+        };
+    }, []);
+
+    // --- Playback Rate ---
+    const changePlaybackRate = useCallback((rate) => {
+        const v = videoRef.current;
+        if (!v) return;
+        v.playbackRate = rate;
+        setPlaybackRate(rate);
+        setShowSettings(false);
+    }, []);
+
+    // Close settings menu on outside click
+    useEffect(() => {
+        if (!showSettings) return;
+        const handleClickOutside = (e) => {
+            if (settingsRef.current && !settingsRef.current.contains(e.target)) {
+                setShowSettings(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [showSettings]);
 
     // --- Thumbnail preview ---
     useEffect(() => {
@@ -253,7 +303,7 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     };
 
     return (
-        <div className={finalClasses}>
+        <div ref={containerRef} className={finalClasses}>
             {streamUrl ? (
                 <video
                     ref={videoRef}
@@ -404,9 +454,44 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
                                     <span className="text-xs font-medium text-white/90">{formatTime(currentTime)} / {formatTime(duration)}</span>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                    <button className="text-white hover:text-primary transition-colors"><Captions className="w-5 h-5" /></button>
-                                    <button className="text-white hover:text-primary transition-colors"><Settings className="w-5 h-5" /></button>
-                                    <button className="text-white hover:text-primary transition-colors"><Maximize className="w-5 h-5" /></button>
+                                    {/* Settings button with playback speed menu */}
+                                    <div className="relative flex items-center" ref={settingsRef}>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }}
+                                            className="text-white hover:text-primary transition-colors"
+                                        >
+                                            <Settings className="w-5 h-5" />
+                                        </button>
+
+                                        {/* Playback speed menu */}
+                                        {showSettings && (
+                                            <div className="absolute bottom-full right-0 mb-2 bg-black/90 backdrop-blur-md rounded-lg shadow-xl border border-white/10 overflow-hidden min-w-[140px]">
+                                                <div className="px-3 py-2 border-b border-white/10">
+                                                    <span className="text-xs text-white/70 font-medium">재생 속도</span>
+                                                </div>
+                                                <div className="py-1">
+                                                    {PLAYBACK_RATES.map((rate) => (
+                                                        <button
+                                                            key={rate}
+                                                            onClick={(e) => { e.stopPropagation(); changePlaybackRate(rate); }}
+                                                            className={`w-full flex items-center justify-between px-3 py-1.5 text-sm transition-colors ${playbackRate === rate ? 'text-primary bg-white/10' : 'text-white hover:bg-white/10'}`}
+                                                        >
+                                                            <span>{rate === 1 ? '1x (기본)' : `${rate}x`}</span>
+                                                            {playbackRate === rate && <Check className="w-4 h-4" />}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Fullscreen button */}
+                                    <button
+                                        onClick={toggleFullscreen}
+                                        className="text-white hover:text-primary transition-colors"
+                                    >
+                                        {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                                    </button>
                                 </div>
                             </>
                         )}

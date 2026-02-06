@@ -1,7 +1,8 @@
 import { get, post, BASE_URL } from './client';
+import { supabase } from '../lib/supabase';
 
 // ---------------------------------------------------------------------------
-// Signed URL 기반 3단계 업로드
+// Signed URL 기반 3단계 업로드 (FastAPI 경유)
 // ---------------------------------------------------------------------------
 
 export async function initUpload(file) {
@@ -37,12 +38,55 @@ export async function uploadVideo(file) {
 }
 
 // ---------------------------------------------------------------------------
-// 조회 API
+// 조회 API (Supabase 직접 쿼리 - RLS 적용)
 // ---------------------------------------------------------------------------
 
-export function listVideos() {
-  return get('/api/videos');
+export async function listVideos() {
+  if (!supabase) {
+    // Supabase 미설정 시 기존 FastAPI 사용
+    return get('/api/videos');
+  }
+
+  // 현재 로그인한 사용자 세션 확인
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session?.user) {
+    return { videos: [] };
+  }
+
+  const { data, error } = await supabase
+    .from('videos')
+    .select('*')
+    .eq('user_id', session.user.id)  // 로그인한 유저의 영상만 필터링
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return { videos: data };
 }
+
+export async function getVideoSummary(videoId) {
+  if (!supabase) {
+    return get(`/videos/${videoId}/summary`);
+  }
+
+  const { data, error } = await supabase
+    .from('summary_results')
+    .select('*')
+    .eq('video_id', videoId)
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function getVideoSummaries(videoId) {
+  // 백엔드 API 사용 (segments 테이블과 적절히 JOIN 처리됨)
+  return get(`/videos/${videoId}/summaries`);
+}
+
+// ---------------------------------------------------------------------------
+// 상태 조회 및 스트리밍 (FastAPI 유지)
+// ---------------------------------------------------------------------------
 
 export function getVideoStatus(videoId) {
   return get(`/videos/${videoId}/status`);
@@ -50,14 +94,6 @@ export function getVideoStatus(videoId) {
 
 export function getVideoProgress(videoId) {
   return get(`/videos/${videoId}/progress`);
-}
-
-export function getVideoSummary(videoId) {
-  return get(`/videos/${videoId}/summary`);
-}
-
-export function getVideoSummaries(videoId) {
-  return get(`/videos/${videoId}/summaries`);
 }
 
 export function getVideoStreamUrl(videoId) {
