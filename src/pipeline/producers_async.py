@@ -353,7 +353,6 @@ class AsyncCaptureSttProducer:
                 self.config.video_path,
                 self.capture_output_base,
                 threshold=self.config.capture_threshold,
-                dedupe_threshold=self.config.capture_dedupe_threshold,
                 min_interval=self.config.capture_min_interval,
                 verbose=self.config.capture_verbose,
                 video_name=self.config.video_name,
