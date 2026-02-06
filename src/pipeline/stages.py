@@ -923,9 +923,32 @@ def run_batch_fusion_pipeline(
     }
 
     cumulative_segment_count = 0
+    db_segment_offset = 0
+    use_db_offset = False
+
+    def _get_db_segment_offset() -> int:
+        if not adapter or not sync_to_db or not video_id:
+            return 0
+        try:
+            query = adapter.client.table("segments").select("segment_index").eq("video_id", video_id)
+            if processing_job_id:
+                query = query.eq("processing_job_id", processing_job_id)
+            query = query.order("segment_index", desc=True).limit(1)
+            result = query.execute()
+            if result.data:
+                return int(result.data[0].get("segment_index") or 0)
+        except Exception as exc:
+            print(f"{_get_timestamp()} [DB] Warning: failed to read max segment_index: {exc}")
+        return 0
+
+    if adapter and sync_to_db and processing_job_id:
+        db_segment_offset = _get_db_segment_offset()
+        if db_segment_offset > 0:
+            cumulative_segment_count = db_segment_offset
+            use_db_offset = True
     
     # [Fix] Resume Support: If starting from a later batch, count segments from previous batches
-    if start_batch_index > 0:
+    if start_batch_index > 0 and not use_db_offset:
         print(f"{_get_timestamp()} [Pipeline] Checking previous batches for segment offset...")
         for i in range(start_batch_index):
             prev_batch_idx = i + 1
@@ -942,6 +965,10 @@ def run_batch_fusion_pipeline(
             else:
                 print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: No segments file found (skipping count)")
         print(f"{_get_timestamp()} [Pipeline] Initial cumulative_segment_count set to {cumulative_segment_count}")
+    elif use_db_offset:
+        print(
+            f"{_get_timestamp()} [Pipeline] Using DB max segment_index offset: {cumulative_segment_count}"
+        )
     previous_context = ""
 
     accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
@@ -1250,7 +1277,7 @@ def run_batch_fusion_pipeline(
                         video_id,
                         processing_job_id,
                         batch_units_path,
-                        offset=cumulative_segment_count - current_batch_segments_count,
+                        offset=0,
                     )
 
                 if batch_summaries_path.exists():

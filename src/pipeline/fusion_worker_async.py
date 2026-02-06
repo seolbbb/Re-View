@@ -75,6 +75,7 @@ class AsyncFusionSummaryJudgeWorker:
 
         self.captures_dir = config.captures_dir or (config.video_root / "captures")
         self.repo_root = config.repo_root or Path(__file__).resolve().parents[2]
+        self._db_adapter = None
 
     async def run(self) -> int:
         """VLM 큐를 EOS까지 소비하고 처리한 배치 수를 반환한다."""
@@ -141,6 +142,31 @@ class AsyncFusionSummaryJudgeWorker:
         t0 = time.perf_counter()
 
         try:
+            adapter = None
+            if self.context.sync_to_db:
+                if self._db_adapter is None:
+                    from src.db import get_supabase_adapter
+
+                    self._db_adapter = get_supabase_adapter()
+                if not self._db_adapter:
+                    raise RuntimeError(
+                        "Supabase adapter not configured; DB sync requires SUPABASE_URL/SUPABASE_KEY."
+                    )
+                adapter = self._db_adapter
+
+                # 배치 시작 시점에 current_batch 업데이트
+                if self.context.processing_job_id:
+                    try:
+                        adapter.update_processing_job_progress(
+                            self.context.processing_job_id,
+                            event.batch_index,
+                            None,  # total_batch는 마지막에 설정
+                        )
+                    except Exception as progress_exc:
+                        logger.warning(
+                            "[FusionWorker] Failed to update progress: %s", progress_exc
+                        )
+
             await asyncio.to_thread(
                 run_batch_fusion_pipeline,
                 video_root=self.config.video_root,
@@ -162,8 +188,8 @@ class AsyncFusionSummaryJudgeWorker:
                 forced_batch_end_ms=forced_batch_end_ms,
                 processing_job_id=self.context.processing_job_id,
                 video_id=self.context.video_id,
-                sync_to_db=False,
-                adapter=None,
+                sync_to_db=self.context.sync_to_db,
+                adapter=adapter,
             )
 
             batch_dir = self.config.video_root / "batches" / f"batch_{event.batch_index}"
@@ -201,6 +227,8 @@ class AsyncFusionSummaryJudgeWorker:
                     output_path=judge_json_path,
                 )
             )
+
+
         except Exception as exc:
             await self.orchestrator.publish_error(
                 stage=f"fusion_worker.batch_{event.batch_index}",
@@ -259,4 +287,3 @@ __all__ = [
     "AsyncFusionSummaryJudgeWorker",
     "FusionWorkerConfig",
 ]
-
