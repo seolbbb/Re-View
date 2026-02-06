@@ -29,6 +29,12 @@ function ChatBot({ videoId }) {
     const abortRef = useRef(null);
     const modeMenuRef = useRef(null);
     const textareaRef = useRef(null);
+    const messageCounterRef = useRef(0);
+
+    const nextMessageId = (prefix) => {
+        messageCounterRef.current += 1;
+        return `${prefix}-${messageCounterRef.current}`;
+    };
 
     // Auto-resize textarea
     const adjustTextareaHeight = () => {
@@ -105,13 +111,13 @@ function ChatBot({ videoId }) {
         };
     }, []);
 
-    const handleSend = async () => {
-        const text = inputValue.trim();
+    const handleSend = async (presetText = null) => {
+        const text = (typeof presetText === 'string' ? presetText : inputValue).trim();
         if (!text || sending) return;
 
-        const botId = `bot-${Date.now()}`;
+        const botId = nextMessageId('bot');
         const userMsg = {
-            id: `user-${Date.now()}`,
+            id: nextMessageId('user'),
             type: 'user',
             text,
             timestamp: 'Now',
@@ -122,6 +128,8 @@ function ChatBot({ videoId }) {
             text: '',
             timestamp: 'Now',
             streaming: true,
+            suggestions: [],
+            messageId: null,
         };
         setMessages((prev) => [...prev, userMsg, botMsg]);
         setInputValue('');
@@ -139,7 +147,7 @@ function ChatBot({ videoId }) {
             onSessionId: (sessionId) => {
                 if (sessionId) setChatSessionId(sessionId);
             },
-            onChunk: (chunk, isFinal) => {
+            onChunk: (chunk, isFinal, payload) => {
                 if (!chunk && !isFinal) return;
                 setMessages((prev) =>
                     prev.map((msg) => {
@@ -149,12 +157,33 @@ function ChatBot({ videoId }) {
                             ...msg,
                             text: nextText,
                             streaming: !isFinal,
+                            messageId: payload?.message_id || msg.messageId || null,
                         };
                     })
                 );
                 if (isFinal) {
                     setSending(false);
                 }
+            },
+            onSuggestions: (payload) => {
+                const questions = Array.isArray(payload?.questions)
+                    ? payload.questions
+                        .map((item) => String(item || '').trim())
+                        .filter(Boolean)
+                        .slice(0, 2)
+                    : [];
+                if (!questions.length) return;
+                setMessages((prev) =>
+                    prev.map((msg) =>
+                        msg.id === botId
+                            ? {
+                                ...msg,
+                                suggestions: questions,
+                                messageId: payload?.message_id || msg.messageId || null,
+                            }
+                            : msg
+                    )
+                );
             },
             onDone: () => {
                 setMessages((prev) =>
@@ -171,7 +200,7 @@ function ChatBot({ videoId }) {
                         msg.id === botId ? { ...msg, streaming: false } : msg
                     );
                     next.push({
-                        id: `err-${Date.now()}`,
+                        id: nextMessageId('err'),
                         type: 'bot',
                         text: `오류가 발생했습니다: ${err.message || 'Unknown error'}`,
                         timestamp: 'Now',
@@ -182,6 +211,11 @@ function ChatBot({ videoId }) {
                 abortRef.current = null;
             },
         });
+    };
+
+    const handleSuggestionClick = (question) => {
+        if (!question || sending) return;
+        handleSend(question);
     };
 
     const handleKeyDown = (e) => {
@@ -267,6 +301,21 @@ function ChatBot({ videoId }) {
                                     <p className="whitespace-pre-wrap">{msg.text}</p>
                                 )}
                             </div>
+                            {msg.type === 'bot' && !msg.streaming && Array.isArray(msg.suggestions) && msg.suggestions.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 pl-1">
+                                    {msg.suggestions.map((question, index) => (
+                                        <button
+                                            key={`${msg.id}-suggestion-${index}`}
+                                            type="button"
+                                            onClick={() => handleSuggestionClick(question)}
+                                            disabled={sending}
+                                            className="px-2.5 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary text-[11px] hover:bg-primary/20 transition-colors disabled:opacity-50"
+                                        >
+                                            {question}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                             <span className={`text-[10px] text-gray-500 ${msg.type === 'user' ? 'pr-1' : 'pl-1'}`}>{msg.timestamp}</span>
                         </div>
                     </div>

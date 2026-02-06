@@ -15,6 +15,7 @@ export function streamChatMessage({
   sessionId,
   reasoningMode,
   onChunk,
+  onSuggestions,
   onSessionId,
   onDone,
   onError,
@@ -57,7 +58,12 @@ export function streamChatMessage({
       return;
     }
     if (event === 'message' && data && onChunk) {
-      onChunk(data.text || '', Boolean(data.is_final));
+      onChunk(data.text || '', Boolean(data.is_final), data);
+      return;
+    }
+    if (event === 'suggestions' && data && typeof data === 'object' && onSuggestions) {
+      const questions = Array.isArray(data.questions) ? data.questions : [];
+      onSuggestions({ ...data, questions });
       return;
     }
     if (event === 'done') {
