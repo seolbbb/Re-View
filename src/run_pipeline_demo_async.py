@@ -272,6 +272,9 @@ async def run_async_demo(
     max_inflight_chunks: int,
     queue_maxsize: int,
     strict_batch_order: bool,
+    sync_to_db: bool,
+    upload_video_to_r2: bool,
+    upload_audio_to_r2: bool,
 ) -> AsyncDemoResult:
     output_base.mkdir(parents=True, exist_ok=True)
     video_name = _sanitize_video_name(video_path.stem)
@@ -280,10 +283,86 @@ async def run_async_demo(
 
     capture_settings = load_capture_settings()
 
+    video_id = None
+    preprocess_job_id = None
+    processing_job_id = None
+    if sync_to_db:
+        from src.db import get_supabase_adapter
+        from src.db.adapters import compute_config_hash
+
+        adapter = get_supabase_adapter()
+        if not adapter:
+            raise RuntimeError("Supabase adapter not configured; set SUPABASE_URL/SUPABASE_KEY.")
+
+        existing = adapter.get_video_by_filename(None, video_path.name)
+        if existing:
+            video_id = existing.get("id")
+        else:
+            video = adapter.create_video(
+                name=video_name,
+                original_filename=video_path.name,
+            )
+            video_id = video.get("id")
+
+        if not video_id:
+            raise RuntimeError("Failed to resolve video_id for DB sync.")
+
+        if upload_video_to_r2:
+            try:
+                existing = adapter.get_video(video_id)
+                storage_key = existing.get("video_storage_key") if existing else None
+                if not storage_key:
+                    adapter.upload_video(video_id, video_path)
+            except Exception as exc:
+                raise RuntimeError(f"Video upload failed: {exc}") from exc
+
+        # Preprocess 관련 config 파일들의 해시 계산
+        preprocess_config_hash = compute_config_hash([
+            ROOT / "config" / "audio" / "settings.yaml",
+            ROOT / "config" / "capture" / "settings.yaml",
+        ])
+
+        preprocess_job = adapter.create_preprocessing_job(
+            video_id,
+            source="SERVER",
+            stt_backend=stt_backend,
+            config_hash=preprocess_config_hash,
+        )
+        preprocess_job_id = preprocess_job.get("id")
+        if preprocess_job_id:
+            adapter.update_preprocessing_job_status(preprocess_job_id, "RUNNING")
+
+        # Processing 관련 config 파일들의 해시 계산
+        processing_config_hash = compute_config_hash([
+            ROOT / "config" / "fusion" / "settings.yaml",
+            ROOT / "config" / "judge" / "settings.yaml",
+            ROOT / "config" / "pipeline" / "settings.yaml",
+            ROOT / "config" / "vlm" / "settings.yaml",
+        ])
+
+        job = adapter.create_processing_job(
+            video_id,
+            triggered_by="MANUAL",
+            config_hash=processing_config_hash,
+        )
+        processing_job_id = job.get("id")
+        if not processing_job_id:
+            raise RuntimeError("Failed to create processing_job for DB sync.")
+
+        # 시작 상태 설정
+        adapter.update_processing_job_status(processing_job_id, "VLM_RUNNING")
+        adapter.update_video_status(video_id, "PROCESSING")
+
     context = PipelineContext(
         run_id=run_id,
         video_name=video_name,
         output_root=video_root,
+        video_id=video_id,
+        preprocess_job_id=preprocess_job_id,
+        processing_job_id=processing_job_id,
+        sync_to_db=sync_to_db,
+        upload_video_to_r2=upload_video_to_r2,
+        upload_audio_to_r2=upload_audio_to_r2,
         batch_size=capture_batch_size,
         vlm_batch_size=vlm_batch_size,
         vlm_concurrency=vlm_parallelism,
@@ -318,6 +397,7 @@ async def run_async_demo(
             video_root=video_root,
             captures_dir=video_root / "captures",
             video_name=video_name,
+            video_id=video_id,
             vlm_batch_size=vlm_batch_size,
             vlm_inner_concurrency=vlm_inner_concurrency,
             vlm_show_progress=vlm_show_progress,
@@ -356,7 +436,7 @@ async def run_async_demo(
 
     try:
         producer_result, vlm_chunk_count, _fusion_processed = await asyncio.gather(*core_tasks)
-    except Exception:
+    except Exception as exc:
         for task in core_tasks:
             if not task.done():
                 task.cancel()
@@ -364,11 +444,55 @@ async def run_async_demo(
         await orchestrator.stop(reason="pipeline_failed")
         await fusion_consumer_task
         await error_consumer_task
+
+        # 실패 상태 업데이트
+        if sync_to_db and processing_job_id:
+            try:
+                from src.db import get_supabase_adapter
+                adapter = get_supabase_adapter()
+                if adapter:
+                    adapter.update_processing_job_status(
+                        processing_job_id, "FAILED", error_message=str(exc)
+                    )
+                    adapter.update_video_status(video_id, "FAILED", error=str(exc))
+            except Exception:
+                pass
         raise
     else:
         await orchestrator.stop(reason="pipeline_completed")
         fusion_stats = await fusion_consumer_task
         errors = await error_consumer_task
+
+        # 완료 상태 업데이트
+        if sync_to_db and processing_job_id:
+            try:
+                from src.db import get_supabase_adapter, upsert_final_summary_results
+                adapter = get_supabase_adapter()
+                if adapter:
+                    # total_batch를 최종 값으로 설정
+                    adapter.update_processing_job_progress(
+                        processing_job_id,
+                        fusion_stats.fusion_count,
+                        fusion_stats.fusion_count,  # total_batch 설정
+                    )
+                    adapter.update_processing_job_status(processing_job_id, "DONE")
+                    adapter.update_video_status(video_id, "DONE")
+
+                    # summary_results UPSERT (timeline, tldr 포맷 저장)
+                    try:
+                        fusion_dir = video_root / "fusion"
+                        summaries_path = fusion_dir / "segment_summaries.jsonl"
+                        upsert_final_summary_results(
+                            adapter=adapter,
+                            video_id=video_id,
+                            processing_job_id=processing_job_id,
+                            summaries_path=summaries_path,
+                            results_dir=video_root / "results",  # final_summary_*.md 파일 위치
+                        )
+                    except Exception as summary_exc:
+                        print(f"[DB] Warning: summary_results upsert failed: {summary_exc}")
+            except Exception:
+                pass
 
     return AsyncDemoResult(
         run_id=run_id,
@@ -449,6 +573,24 @@ def _build_parser(defaults: Dict[str, Any]) -> argparse.ArgumentParser:
         default=True,
         help="Keep strict batch index order in fusion worker",
     )
+    parser.add_argument(
+        "--sync-to-db",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable Supabase DB sync (requires SUPABASE_URL/SUPABASE_KEY)",
+    )
+    parser.add_argument(
+        "--upload-video-to-r2",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Upload source video to R2 when sync_to_db is enabled",
+    )
+    parser.add_argument(
+        "--upload-audio-to-r2",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Upload extracted audio to R2 when sync_to_db is enabled",
+    )
     return parser
 
 
@@ -480,6 +622,11 @@ def main() -> None:
         f"vlm_parallelism={args.vlm_parallelism} "
         f"vlm_inner_concurrency={args.vlm_inner_concurrency}"
     )
+    _log(
+        f"sync_to_db={args.sync_to_db} "
+        f"upload_video_to_r2={args.upload_video_to_r2} "
+        f"upload_audio_to_r2={args.upload_audio_to_r2}"
+    )
     _log("=" * 72)
 
     # 기존 run_process_pipeline.py와 동일하게 Qwen 모델/엔드포인트 override 적용
@@ -500,6 +647,9 @@ def main() -> None:
                 max_inflight_chunks=args.max_inflight_chunks,
                 queue_maxsize=args.queue_maxsize,
                 strict_batch_order=args.strict_batch_order,
+                sync_to_db=args.sync_to_db,
+                upload_video_to_r2=args.upload_video_to_r2,
+                upload_audio_to_r2=args.upload_audio_to_r2,
             )
         )
     except KeyboardInterrupt:

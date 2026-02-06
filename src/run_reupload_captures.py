@@ -83,6 +83,8 @@ def _upload_capture(adapter: Any, video_id: str, image_path: Path, bucket: str) 
     storage_path = f"{video_id}/{image_path.name}"
     with image_path.open("rb") as handle:
         file_data = handle.read()
+    if getattr(adapter, "r2_only", False):
+        raise RuntimeError("R2 storage is required (check R2_* env vars)")
     adapter.client.storage.from_(bucket).upload(
         path=storage_path,
         file=file_data,
