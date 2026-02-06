@@ -266,6 +266,16 @@ def upload_segments_for_batch(
     if not segments:
         return segment_map
 
+    # Apply offset to segment_index to avoid collisions across batches
+    if offset:
+        for seg in segments:
+            idx = seg.get("segment_id")
+            if idx is not None:
+                try:
+                    seg["segment_id"] = int(idx) + offset
+                except (TypeError, ValueError):
+                    pass
+
     try:
         saved_segments = adapter.save_segments(
             video_id,
