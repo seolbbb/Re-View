@@ -6,7 +6,12 @@
       "Bash(npm install:*)",
       "Bash(npm run build:*)",
       "Bash(node:*)",
-      "Bash(npx vite build)"
+      "Bash(npx vite build)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: Docker 환경에서 judge settings.yaml 경로 해석 실패 수정\n\n_find_repo_root\\(\\) 함수에 __file__ 기반 fallback 추가하여\nmulti-stage build runtime 이미지\\(.git/requirements.txt 부재\\)에서도\n프로젝트 루트를 정확히 찾도록 수정\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git restore:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat\\(chatbot\\): 예상 질문 기능 개선 - 프롬프트 강화 및 스타일 개선\n\n## 주요 변경사항\n\n### 백엔드 \\(LLM 프롬프트 개선\\)\n- LLM 프롬프트에 Few-shot 예시 3개 추가 \\(Good/Bad 쌍\\)\n- 문장부호 규칙 명확화 \\(의문문: ''?'', 명령문: ''.''\\)\n- 한국어 어미 패턴 명시 \\(~인가요, ~나요, ~까요 등\\)\n- 후처리 로직 간소화 및 경고 로그 추가\n- _looks_like_question 함수 제거 \\(LLM에 위임\\)\n\n### 프론트엔드 \\(시각적 개선\\)\n- 예상 질문 칩에 전용 색상 테마 적용 \\(연한 코랄\\)\n- CSS 변수 추가 \\(다크/라이트 모드 지원\\)\n- 호버 효과 개선 및 접근성 향상\n- 봇 메시지와 명확한 시각적 구분\n\n### 문서화\n- 전체 기능 문서 작성 \\(docs/chatbot_suggestions_feature.md\\)\n- 아키텍처 다이어그램 및 시퀀스 다이어그램 포함\n- 문제 해결 가이드 및 디버깅 팁 추가\n\n## 기술적 세부사항\n- 프롬프트 길이: ~500 토큰 \\(Few-shot 예시 포함\\)\n- 후처리: 안전장치로만 동작 \\(혼합 문장부호 수정\\)\n- 스타일: 시각적 계층 구조 명확화 \\(사용자 > 칩 > 봇\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)"
     ]
   }
 }

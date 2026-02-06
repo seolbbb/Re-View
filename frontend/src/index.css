@@ -55,6 +55,13 @@
 
   --glass-bg: rgba(22, 22, 26, 0.6);
   --glass-border: rgba(255, 255, 255, 0.08);
+
+  /* Suggestion Chip Colors */
+  --chip-suggestion-bg: rgba(224, 126, 99, 0.08);
+  --chip-suggestion-border: rgba(224, 126, 99, 0.25);
+  --chip-suggestion-text: #e07e63;
+  --chip-suggestion-hover-bg: rgba(224, 126, 99, 0.15);
+  --chip-suggestion-hover-border: rgba(224, 126, 99, 0.4);
 }
 
 /* Light Theme */
@@ -84,6 +91,13 @@
 
   --glass-bg: rgba(255, 255, 255, 0.7);
   --glass-border: rgba(0, 0, 0, 0.06);
+
+  /* Suggestion Chip Colors - Light Theme */
+  --chip-suggestion-bg: rgba(224, 126, 99, 0.06);
+  --chip-suggestion-border: rgba(224, 126, 99, 0.2);
+  --chip-suggestion-text: #c56a51;
+  --chip-suggestion-hover-bg: rgba(224, 126, 99, 0.12);
+  --chip-suggestion-hover-border: rgba(224, 126, 99, 0.35);
 }
 
 /* ========================================

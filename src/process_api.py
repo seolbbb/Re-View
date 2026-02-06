@@ -1027,12 +1027,33 @@ def chat_stream(request: ChatRequest):
     def event_generator():
         yield _format_sse_event("session", {"session_id": session.session_id})
         try:
+            last_message_id: Optional[str] = None
             for msg in session.stream_message(request.message):
                 payload = {
                     "text": getattr(msg, "text", ""),
                     "is_final": bool(getattr(msg, "is_final", False)),
                 }
+                message_id = getattr(msg, "message_id", None)
+                if message_id:
+                    payload["message_id"] = message_id
+                    last_message_id = message_id
                 yield _format_sse_event("message", payload)
+
+            suggestion_payload = None
+            if hasattr(session, "consume_latest_suggestions"):
+                suggestion_payload = session.consume_latest_suggestions()
+            if suggestion_payload:
+                questions = suggestion_payload.get("questions") or []
+                if isinstance(questions, list) and questions:
+                    yield _format_sse_event(
+                        "suggestions",
+                        {
+                            "session_id": session.session_id,
+                            "message_id": suggestion_payload.get("message_id") or last_message_id,
+                            "questions": questions,
+                            "source": suggestion_payload.get("source") or "graph_node",
+                        },
+                    )
             yield _format_sse_event("done", {"session_id": session.session_id})
         except Exception as exc:
             yield _format_sse_event("error", {"error": str(exc)})

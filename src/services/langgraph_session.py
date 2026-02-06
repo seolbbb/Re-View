@@ -49,6 +49,24 @@ _TRACE_SESSION_SEPARATOR = True
 _TRACE_SEPARATOR_TEXT = "--------------------------------------------------------------------------------"
 _TRACE_HISTORY_TAIL = 6
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+_ENABLE_GRAPH_SUGGESTIONS = os.getenv("CHATBOT_ENABLE_GRAPH_SUGGESTIONS", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+_SUGGESTION_MODEL = os.getenv("CHATBOT_SUGGESTION_MODEL", "gemini-2.5-flash")
+_SUGGESTION_MAX_ITEMS = max(1, _env_int("CHATBOT_SUGGESTION_MAX_ITEMS", 2))
+_SUGGESTION_MAX_CHARS = max(20, _env_int("CHATBOT_SUGGESTION_MAX_CHARS", 60))
+
 _OUT_OF_RANGE_MESSAGE = (
     "죄송합니다. 해당 시간에 대한 요약 정보가 아직 업데이트되지 않았습니다. "
     "요약 작업은 완료되었지만, 특정 시간대의 상세 내용을 제공해 드리지 못하고 있습니다."
@@ -220,6 +238,7 @@ def _trace_history(session_id: str, state: Dict[str, Any], *, reason: str) -> No
 
 class ChatState(TypedDict, total=False):
     message: str
+    message_id: str
     cleaned_message: str
     time_ms: Optional[int]
     chat_mode: Optional[str]
@@ -227,6 +246,9 @@ class ChatState(TypedDict, total=False):
     enrich_decision: str
     summary_decision: str
     response: str
+    suggestions: List[str]
+    suggestions_source: str
+    suggestions_error: Optional[str]
     streaming: bool
     prompt: str
     answer_records: List[Dict[str, Any]]
@@ -247,6 +269,7 @@ class LangGraphMessage:
     author: str
     text: str
     is_final: bool = True
+    message_id: Optional[str] = None
 
 
 def _normalize_reasoning_mode(text: str) -> Optional[str]:
@@ -900,16 +923,215 @@ def _generate_answer(state: ChatState) -> Dict[str, Any]:
             vlm_evidence=vlm_count,
         )
 
+    return {"response": response_text}
+
+
+def _build_suggestions_prompt(state: ChatState) -> str:
+    question = (state.get("cleaned_message") or "").strip()
+    answer = (state.get("response") or "").strip()
+    return (
+        "You generate follow-up question chips for a chat UI.\n"
+        "Return JSON ONLY in this exact format: {\"questions\": [\"question1\", \"question2\"]}.\n"
+        "\n"
+        "Rules:\n"
+        "- Always write in Korean.\n"
+        f"- Return 1 to {_SUGGESTION_MAX_ITEMS} concise questions.\n"
+        f"- Keep each question within {_SUGGESTION_MAX_CHARS} characters.\n"
+        "- Questions must be natural follow-ups based on the assistant's answer.\n"
+        "- Avoid duplicates and generic prompts.\n"
+        "\n"
+        "Punctuation Rules (CRITICAL):\n"
+        "1. Interrogative questions (의문문): Use ONLY '?' at the end\n"
+        "   - Question words: 왜, 무엇을, 뭐, 어디서, 언제, 어떻게, 누가\n"
+        "   - Question endings: ~인가요, ~나요, ~까요, ~인지, ~ㄹ까요\n"
+        "   - Examples: \"왜 그런가요?\", \"어떻게 사용하나요?\", \"차이점이 뭐예요?\"\n"
+        "2. Imperative/request sentences (명령문/청유문): Use ONLY '.' at the end\n"
+        "   - Request endings: ~해 주세요, ~알려 주세요, ~설명해 주세요, ~비교해 주세요\n"
+        "   - Examples: \"설명해 주세요.\", \"예시를 알려 주세요.\", \"비교해 주세요.\"\n"
+        "3. NEVER use mixed punctuation like '.?', '?.', '??', or '..' at the end\n"
+        "4. NEVER omit punctuation - every question must end with either '?' or '.'\n"
+        "\n"
+        "Few-shot Examples:\n"
+        "\n"
+        "Example 1:\n"
+        "User: \"Stable Diffusion이 뭐야?\"\n"
+        "Assistant: \"Stable Diffusion은 텍스트를 이미지로 변환하는 AI 모델입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"어떻게 사용하나요?\", \"다른 이미지 생성 AI와 비교해 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"어떻게 사용하나요??\", \"비교해 주세요?.\"]}\n"
+        "\n"
+        "Example 2:\n"
+        "User: \"파이썬 리스트 컴프리헨션 설명해줘\"\n"
+        "Assistant: \"리스트 컴프리헨션은 간결하게 리스트를 생성하는 문법입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"언제 사용하면 좋나요?\", \"실전 예제를 보여 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"언제 사용하면 좋나요.\", \"실전 예제를 보여 주세요?\"]}\n"
+        "\n"
+        "Example 3:\n"
+        "User: \"Docker와 VM의 차이는?\"\n"
+        "Assistant: \"Docker는 컨테이너 기반이고 VM은 하이퍼바이저 기반입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"어떤 상황에서 Docker를 쓰나요?\", \"성능 차이를 알려 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"어떤 상황에서 Docker를 쓰나요\", \"성능 차이를 알려 주세요??\"]}\n"
+        "\n"
+        f"User question:\n{question}\n\n"
+        f"Assistant answer:\n{answer}\n\n"
+        "Generate follow-up questions in JSON format:\n"
+    )
+
+
+def _extract_questions_from_text(text: str) -> List[str]:
+    stripped = (text or "").strip()
+    if not stripped:
+        return []
+    fence_match = re.search(r"```(?:json)?\s*(.+?)\s*```", stripped, re.IGNORECASE | re.DOTALL)
+    candidate = fence_match.group(1).strip() if fence_match else stripped
+
+    parsed: Any = None
+    brace_start = candidate.find("{")
+    brace_end = candidate.rfind("}")
+    bracket_start = candidate.find("[")
+    bracket_end = candidate.rfind("]")
+    for token in (
+        candidate,
+        candidate[brace_start : brace_end + 1] if brace_start != -1 and brace_end > brace_start else "",
+        candidate[bracket_start : bracket_end + 1] if bracket_start != -1 and bracket_end > bracket_start else "",
+    ):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            parsed = json.loads(token)
+            break
+        except json.JSONDecodeError:
+            continue
+
+    raw_items: List[Any] = []
+    if isinstance(parsed, dict):
+        items = parsed.get("questions")
+        if isinstance(items, list):
+            raw_items = items
+    elif isinstance(parsed, list):
+        raw_items = parsed
+    elif candidate:
+        raw_items = [line.strip("- ").strip() for line in candidate.splitlines() if line.strip()]
+
+    def _normalize_chip_text(value: str) -> str:
+        """
+        Minimal normalization for suggestion chips.
+        Relies on LLM prompt to generate correct punctuation.
+        This function acts as a safety net for edge cases.
+        """
+        # Basic whitespace normalization
+        text_value = re.sub(r"\s+", " ", value.strip())
+
+        # Remove surrounding quotes
+        text_value = text_value.strip("'\"""''")
+
+        if not text_value:
+            return ""
+
+        # Remove duplicate punctuation (e.g., "??" -> "?", ".." -> ".")
+        text_value = re.sub(r"([?!.])\1+$", r"\1", text_value)
+
+        # Enforce length limit
+        if len(text_value) > _SUGGESTION_MAX_CHARS:
+            text_value = text_value[:_SUGGESTION_MAX_CHARS].rstrip()
+
+        # Fix mixed punctuation (safety net for extreme cases)
+        if text_value.endswith(".?") or text_value.endswith("?."):
+            # Remove all trailing punctuation and add '?'
+            core = re.sub(r"[.!?]+$", "", text_value).strip()
+            if not core:
+                return ""
+            logger.warning(f"Mixed punctuation detected in suggestion: '{value}' -> fixed to '{core}?'")
+            return f"{core}?"
+
+        # If punctuation is missing, log a warning but don't add it automatically
+        # This helps us monitor LLM prompt effectiveness
+        if not text_value.endswith(("?", "!", ".")):
+            logger.warning(f"Missing punctuation in suggestion: '{text_value}' - relying on LLM to fix this")
+            # Add a fallback punctuation to avoid breaking UI
+            return f"{text_value}?"
+
+        return text_value
+
+    questions: List[str] = []
+    seen = set()
+    for item in raw_items:
+        question = _normalize_chip_text(str(item or ""))
+        if not question:
+            continue
+        if question in seen:
+            continue
+        seen.add(question)
+        questions.append(question)
+        if len(questions) >= _SUGGESTION_MAX_ITEMS:
+            break
+    return questions
+
+
+def _generate_suggestions(state: ChatState) -> Dict[str, Any]:
+    response_text = (state.get("response") or "").strip()
+    if not response_text or not _ENABLE_GRAPH_SUGGESTIONS:
+        return {"suggestions": [], "suggestions_source": "graph_node"}
+    prompt = _build_suggestions_prompt(state)
+    try:
+        started = time.monotonic()
+        raw = _generate_with_genai(prompt, model=_SUGGESTION_MODEL)
+        _trace(
+            "timing.suggestions",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            model=_SUGGESTION_MODEL,
+        )
+    except Exception as exc:
+        logger.warning("Suggestion generation failed: %s", exc)
+        _trace("suggestions.generate", status="error", error=str(exc))
+        return {
+            "suggestions": [],
+            "suggestions_source": "graph_node",
+            "suggestions_error": str(exc),
+        }
+
+    questions = _extract_questions_from_text(raw)
+    _trace("suggestions.generate", status="ok" if questions else "empty", count=len(questions))
+    return {
+        "suggestions": questions,
+        "suggestions_source": "graph_node",
+        "suggestions_error": None if questions else "empty",
+    }
+
+
+def _finalize_history(state: ChatState) -> Dict[str, Any]:
+    question_text = (state.get("cleaned_message") or "").strip()
+    response_text = (state.get("response") or "").strip()
+    if not question_text or not response_text:
+        return {}
+
     reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
     history_key = f"history_{reasoning_mode}"
     history = state.get(history_key, [])
     if not isinstance(history, list):
         history = []
+    if len(history) >= 2:
+        previous_user = history[-2]
+        previous_assistant = history[-1]
+        if (
+            previous_user.get("role") == "user"
+            and previous_assistant.get("role") == "assistant"
+            and previous_user.get("content") == question_text
+            and previous_assistant.get("content") == response_text
+        ):
+            return {history_key: history}
+
     history = history + [
-        {"role": "user", "content": state.get("cleaned_message", "")},
+        {"role": "user", "content": question_text},
         {"role": "assistant", "content": response_text},
     ]
-    return {"response": response_text, history_key: history}
+    return {history_key: history}
 
 
 def _build_agent_graph(backend: SummaryBackend) -> Any:
@@ -925,6 +1147,8 @@ def _build_agent_graph(backend: SummaryBackend) -> Any:
     graph.add_node("decide_summary", _decide_summary_sufficiency)
     graph.add_node("enrich_evidence", lambda state: _enrich_with_db_evidence(state, backend))
     graph.add_node("generate_answer", _generate_answer)
+    graph.add_node("generate_suggestions", _generate_suggestions)
+    graph.add_node("finalize_history", _finalize_history)
 
     graph.set_entry_point("parse_input")
     graph.add_edge("parse_input", "prepare_full")
@@ -932,7 +1156,7 @@ def _build_agent_graph(backend: SummaryBackend) -> Any:
         "prepare_full",
         _route_after_prepare,
         {
-            "respond": END,
+            "respond": "generate_suggestions",
             "llm": "decide_summary",
         },
     )
@@ -945,7 +1169,24 @@ def _build_agent_graph(backend: SummaryBackend) -> Any:
         },
     )
     graph.add_edge("enrich_evidence", "generate_answer")
-    graph.add_edge("generate_answer", END)
+    graph.add_edge("generate_answer", "generate_suggestions")
+    graph.add_edge("generate_suggestions", "finalize_history")
+    graph.add_edge("finalize_history", END)
+    return graph.compile()
+
+
+def _build_post_answer_graph() -> Any:
+    if _LANGGRAPH_IMPORT_ERROR:
+        raise RuntimeError(
+            "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
+        ) from _LANGGRAPH_IMPORT_ERROR
+
+    graph: Any = StateGraph(ChatState)
+    graph.add_node("generate_suggestions", _generate_suggestions)
+    graph.add_node("finalize_history", _finalize_history)
+    graph.set_entry_point("generate_suggestions")
+    graph.add_edge("generate_suggestions", "finalize_history")
+    graph.add_edge("finalize_history", END)
     return graph.compile()
 
 
@@ -966,6 +1207,8 @@ class LangGraphSession:
         state_seed = dict(initial_state or {})
         router_mode = (state_seed.get("router_mode") or _DEFAULT_ROUTER_MODE).strip().lower()
         self._graph = _build_agent_graph(self._backend)
+        self._post_answer_graph = _build_post_answer_graph()
+        self._last_suggestions: Optional[Dict[str, Any]] = None
         self._state = state_seed
         self._state.setdefault("summary_cache", [])
         self._state.setdefault("pending_updates", [])
@@ -1003,19 +1246,63 @@ class LangGraphSession:
     def session_id(self) -> str:
         return self._session_id
 
+    def consume_latest_suggestions(self) -> Optional[Dict[str, Any]]:
+        payload = self._last_suggestions
+        self._last_suggestions = None
+        return payload
+
+    @staticmethod
+    def _next_message_id() -> str:
+        return f"msg-{uuid.uuid4().hex[:12]}"
+
+    def _capture_suggestions(self, state: Dict[str, Any]) -> None:
+        raw_questions = state.get("suggestions") or []
+        if not isinstance(raw_questions, list):
+            raw_questions = []
+        questions = [str(item).strip() for item in raw_questions if str(item or "").strip()]
+        if not questions:
+            self._last_suggestions = None
+            return
+        message_id = str(state.get("message_id") or "").strip()
+        if not message_id:
+            self._last_suggestions = None
+            return
+        self._last_suggestions = {
+            "message_id": message_id,
+            "questions": questions[:_SUGGESTION_MAX_ITEMS],
+            "source": state.get("suggestions_source") or "graph_node",
+        }
+
+    def _run_post_answer_graph(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._post_answer_graph.invoke(state)
+        except Exception as exc:
+            logger.warning("Post-answer graph failed: %s", exc)
+            fallback = dict(state)
+            fallback.update(_finalize_history(fallback))
+            fallback["suggestions"] = []
+            fallback["suggestions_source"] = "graph_node"
+            fallback["suggestions_error"] = str(exc)
+            return fallback
+
     def send_message(self, text: str) -> List[LangGraphMessage]:
         started = time.monotonic()
+        message_id = self._next_message_id()
         input_state = dict(self._state)
         input_state["message"] = text
+        input_state["message_id"] = message_id
         _trace(
             "session.message",
             session_id=self._session_id,
             workflow="agent",
             router=self._state.get("router_mode"),
             streaming=False,
+            message_id=message_id,
             question=_shorten(text),
         )
         result = self._graph.invoke(input_state)
+        result["message_id"] = result.get("message_id") or message_id
+        self._capture_suggestions(result)
         response_text = result.get("response", "")
         self._state = self._prune_state(result)
         _trace_history(self._session_id, self._state, reason="send_message")
@@ -1025,12 +1312,21 @@ class LangGraphSession:
             session_id=self._session_id,
             duration_ms=int(elapsed * 1000),
         )
-        return [LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)]
+        return [
+            LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=result.get("message_id"),
+            )
+        ]
 
     def stream_message(self, text: str) -> Any:
-        started = time.monotonic()
+        session_started = time.monotonic()
+        message_id = self._next_message_id()
         input_state = dict(self._state)
         input_state["message"] = text
+        input_state["message_id"] = message_id
         input_state["streaming"] = True
         _trace(
             "session.message",
@@ -1038,48 +1334,74 @@ class LangGraphSession:
             workflow="agent",
             router=self._state.get("router_mode"),
             streaming=True,
+            message_id=message_id,
             question=_shorten(text),
         )
         result = self._graph.invoke(input_state)
         prompt = result.get("prompt")
         if not prompt:
             response_text = result.get("response", "")
+            result["message_id"] = result.get("message_id") or message_id
+            self._capture_suggestions(result)
             self._state = self._prune_state(result)
             _trace_history(self._session_id, self._state, reason="stream_message")
-            elapsed = time.monotonic() - started
+            elapsed = time.monotonic() - session_started
             _trace(
                 "session.complete",
                 session_id=self._session_id,
                 duration_ms=int(elapsed * 1000),
             )
-            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+            yield LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=result.get("message_id"),
+            )
             return
 
         stt_count, vlm_count = _count_evidence(result.get("answer_records") or [])
         response_text = ""
         try:
-            started = time.monotonic()
+            llm_started = time.monotonic()
             first_token_ms: Optional[int] = None
             for chunk in _generate_with_genai_stream(prompt):
                 if not chunk:
                     continue
                 if first_token_ms is None:
-                    first_token_ms = int((time.monotonic() - started) * 1000)
+                    first_token_ms = int((time.monotonic() - llm_started) * 1000)
                     _trace("llm.first_token", duration_ms=first_token_ms)
                 response_text += chunk
-                yield LangGraphMessage(author=_BACKEND_AUTHOR, text=chunk, is_final=False)
-            elapsed = time.monotonic() - started
+                yield LangGraphMessage(
+                    author=_BACKEND_AUTHOR,
+                    text=chunk,
+                    is_final=False,
+                    message_id=message_id,
+                )
+            elapsed = time.monotonic() - llm_started
         except Exception as exc:
             logger.warning("LangGraph streaming LLM call failed: %s", exc)
             response_text = _fallback_answer(result.get("answer_records") or [])
-            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
             result["response"] = response_text
+            result["message_id"] = message_id
+            result = self._run_post_answer_graph(result)
+            self._capture_suggestions(result)
             self._state = self._prune_state(result)
             _trace_history(self._session_id, self._state, reason="stream_error")
+            yield LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=message_id,
+            )
             return
         if not response_text:
             response_text = _fallback_answer(result.get("answer_records") or [])
-            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+            yield LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=message_id,
+            )
         else:
             _trace(
                 "llm.call",
@@ -1090,20 +1412,13 @@ class LangGraphSession:
                 vlm_evidence=vlm_count,
             )
 
-        reasoning_mode = _normalize_reasoning_mode(result.get("reasoning_mode") or "") or "flash"
-        history_key = f"history_{reasoning_mode}"
-        history = result.get(history_key, [])
-        if not isinstance(history, list):
-            history = []
-        history = history + [
-            {"role": "user", "content": result.get("cleaned_message", "")},
-            {"role": "assistant", "content": response_text},
-        ]
-        result[history_key] = history
         result["response"] = response_text
+        result["message_id"] = message_id
+        result = self._run_post_answer_graph(result)
+        self._capture_suggestions(result)
         self._state = self._prune_state(result)
         _trace_history(self._session_id, self._state, reason="stream_message")
-        total_elapsed = time.monotonic() - started
+        total_elapsed = time.monotonic() - session_started
         _trace(
             "session.complete",
             session_id=self._session_id,
@@ -1129,5 +1444,9 @@ class LangGraphSession:
             "prompt",
             "enrich_decision",
             "summary_decision",
+            "message_id",
+            "suggestions",
+            "suggestions_source",
+            "suggestions_error",
         }
         return {k: v for k, v in state.items() if k not in scratch_keys}
