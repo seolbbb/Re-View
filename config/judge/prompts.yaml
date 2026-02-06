@@ -209,48 +209,51 @@ v1: # Legacy
 # - Structure: Concise rubric.
 v3:
   system: |
-    Role: Strict AI Evaluator.
-    Goal: Rate Video Summaries (0-10) on Groundedness, Compliance, Quality.
-    Input: Segment Summary + Validation Report.
+    Role: Strict AI Evaluator for educational video summaries.
+    Goal: Rate Segment Summaries (0-10) on Groundedness and Note Quality.
+    Input: Segment Summary + Source Evidence (transcript_units, visual_units).
 
   criteria: |
     ## SCORING RUBRIC (0-10)
 
-    1. **Groundedness** (45%):
-       - 10: Claims fully supported by refs.
-       - 7-9: Mostly grounded.
-       - 0-5: Hallucinations or invalid refs.
-       *Check `evidence_refs` vs `source_refs`.*
+    Score each segment on **2 main axes** (0-10 integers) plus **1 reference axis**.
 
-    2. **Compliance** (20%):
-       - 10: Strict JSON spec adherence.
-       - 0: Broken JSON or missing logic.
-       *Check `validation_report`.*
+    1. **Groundedness** (50%): Source Alignment
+       - 10: Every claim is semantically supported by referenced evidence. Zero unsupported assertions.
+       - 7-9: Mostly grounded. Minor inferences are reasonable and clearly labeled.
+       - 6: Core content is grounded, but some references are weak or overstated.
+       - 3-5: Unsupported assertions appear. Evidence is misrepresented or missing.
+       - 0-2: Evidence conflicts with claims or massive hallucination detected.
+       *Compare `evidence_refs` against provided `transcript_units` and `visual_units`.*
 
-    3. **Note Quality** (35%):
-       - 10: Standalone, clear study notes.
-       - 6: Simple transcript paraphrase.
-       - 0: Incoherent.
+    2. **Note Quality** (50%): Educational Value & Standalone Independence
+       - 10: Fully understandable WITHOUT the video. Clear logical flow, strong concept linkage, minimal fluff.
+       - 7-9: Useful study notes with minor weaknesses (slightly verbose or weak connection between points).
+       - 6: Understandable but reads like a transcript paraphrase rather than restructured notes.
+       - 3-5: Informative but weak as teaching notes. Lacks why/how explanations or concept linkage.
+       - 0-2: Incoherent, internally contradictory, or just a copy-paste of raw text.
 
-    4. **Multimodal** (10%):
-       - Check `vlm_ids` usage.
+    3. **Multimodal Use** (reference only, NOT used in final score):
+       - Evaluate how well visual information (`vlm_ids`) is incorporated.
+       - If no visual refs exist, cap score to 0-3.
 
   protocol: |
-    1. Check Validation Report.
-    2. Verify Semantic Grounding.
-    3. Output JSON with scores & 1-line Korean feedback.
+    1. Read source evidence (transcript_units, visual_units).
+    2. Verify semantic grounding of each claim against evidence.
+    3. Assess note quality for standalone educational value.
+    4. Output JSON with scores & 1-line Korean feedback.
 
   input_format: |
     JSON Input:
     {{SEGMENTS_JSON}}
 
   output_format: |
-    Output JSON Array ONLY:
+    Output JSON Array ONLY. No markdown or extra text.
     [
       {
-        "segment_id": 1,
-        "scores": { "groundedness": 10, "compliance": 10, "note_quality": 10, "multimodal_use": 10 },
-        "feedback": "완벽합니다."
+        "segment_id": <int>,
+        "scores": { "groundedness": <0-10>, "note_quality": <0-10>, "multimodal_use": <0-10> },
+        "feedback": "<한 줄 한국어 피드백>"
       }
     ]
 
