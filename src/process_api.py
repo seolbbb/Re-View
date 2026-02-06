@@ -642,6 +642,12 @@ def init_upload(payload: UploadInitRequest, http_request: Request):
     )
     video_id = video["id"]
 
+    # MIME 타입 추론 (확장자 기반)
+    import mimetypes
+    content_type, _ = mimetypes.guess_type(safe_name)
+    if not content_type:
+        content_type = "video/mp4"  # fallback
+
     # R2 또는 Supabase Storage에 따라 경로 및 URL 생성
     if adapter.s3_client:
         # R2 presigned URL 생성
@@ -653,11 +659,11 @@ def init_upload(payload: UploadInitRequest, http_request: Request):
             Params={
                 'Bucket': adapter.r2_bucket,
                 'Key': storage_key,
-                'ContentType': 'video/mp4'
+                'ContentType': content_type
             },
             ExpiresIn=3600  # 1시간 유효
         )
-        print(f"[R2] Generated presigned upload URL for {storage_key}")
+        print(f"[R2] Generated presigned upload URL for {storage_key} (ContentType: {content_type})")
     else:
         # Supabase Storage fallback
         storage_key = f"{video_id}/{safe_name}"
@@ -844,9 +850,14 @@ def stream_video(video_id: str):
     if INPUT_DIR.exists():
         for f in sorted(INPUT_DIR.iterdir(), reverse=True):
             if f.name.endswith(original_filename) or original_filename in f.name:
+                # MIME 타입 추론 (확장자 기반)
+                import mimetypes
+                media_type, _ = mimetypes.guess_type(str(f))
+                if not media_type:
+                    media_type = "video/mp4"  # fallback
                 return FileResponse(
                     path=str(f),
-                    media_type="video/mp4",
+                    media_type=media_type,
                     filename=original_filename,
                 )
 
