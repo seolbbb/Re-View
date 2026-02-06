@@ -158,10 +158,16 @@ class ConfigBundle:
 
 
 def _find_repo_root(config_path: Path) -> Path:
-    """설정 파일 위치를 기준으로 상위 디렉토리를 탐색해 프로젝트 루트(rep_root)를 찾는다."""
+    """설정 파일 위치를 기준으로 상위 디렉토리를 탐색해 프로젝트 루트를 찾는다."""
+    # 1차: config_path에서 상위 탐색 (로컬 개발 환경)
     for parent in [config_path.parent, *config_path.parents]:
         if (parent / "requirements.txt").exists() or (parent / ".git").exists():
             return parent
+    # 2차: 이 모듈의 위치 기반 (Docker/배포 환경)
+    # config.py는 src/fusion/config.py → parents[2] = 프로젝트 루트
+    module_root = Path(__file__).resolve().parents[2]
+    if (module_root / "config").is_dir():
+        return module_root
     return config_path.parent
 
 
