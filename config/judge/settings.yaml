@@ -1,0 +1,7 @@
+batch_size: 4
+include_segments: false
+json_repair_attempts: 1
+min_score: 7.0
+prompt_version: v3
+verbose: true
+workers: 2

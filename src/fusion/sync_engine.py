@@ -8,22 +8,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ConfigBundle
-from .io_utils import compute_run_id, ensure_output_root, read_json, write_json, print_jsonl_head
+from .io_utils import compute_run_id, ensure_output_root, read_json, write_json
 
 
 @dataclass(frozen=True)
 class SegmentWindow:
+    """세그먼트 시간 구간을 표현한다."""
     start_ms: int
     end_ms: int
 
 
 def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]:
+    """stt.json을 표준 segment 리스트로 정리한다."""
     payload = read_json(path, "stt.json")
-    if payload.get("schema_version") != 1:
-        raise ValueError(f"stt.json schema_version이 1이 아닙니다: {path}")
     segments = payload.get("segments", [])
     if not isinstance(segments, list):
-        raise ValueError(f"stt.json segments 형식이 올바르지 않습니다: {path}")
+        raise ValueError(f"Invalid stt.json segments format: {path}")
 
     normalized: List[Dict[str, object]] = []
     for seg in segments:
@@ -32,12 +32,12 @@ def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[in
             end_ms = int(seg["end_ms"])
             text = str(seg["text"]).strip()
         except KeyError as exc:
-            raise ValueError(f"stt.json 필수 키 누락: {seg}") from exc
+            raise ValueError(f"Missing required keys in stt.json: {seg}") from exc
         if end_ms < start_ms:
-            raise ValueError(f"stt.json 구간 시간이 잘못되었습니다: {seg}")
+            raise ValueError(f"Invalid segment duration in stt.json: {seg}")
         if text:
             normalized.append(
-                {"start_ms": start_ms, "end_ms": end_ms, "text": text}
+                {"start_ms": start_ms, "end_ms": end_ms, "text": text, "id": seg.get("id")}
             )
     duration_ms = payload.get("duration_ms")
     duration_ms = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
@@ -45,42 +45,127 @@ def _load_stt_segments(path: Path) -> Tuple[List[Dict[str, object]], Optional[in
 
 
 def _load_vlm_items(path: Path) -> Tuple[List[Dict[str, object]], Optional[int]]:
+    """vlm.json을 표준 item 리스트로 정리한다.
+    
+    새 구조 (time_ranges 배열):
+        각 항목이 id, cap_id, extracted_text, time_ranges를 가짐
+    
+    Legacy 구조 (timestamp_ms):
+        각 항목이 timestamp_ms, extracted_text, id를 가짐
+    """
     payload = read_json(path, "vlm.json")
-    if payload.get("schema_version") != 1:
-        raise ValueError(f"vlm.json schema_version이 1이 아닙니다: {path}")
     items = payload.get("items", [])
     if not isinstance(items, list):
-        raise ValueError(f"vlm.json items 형식이 올바르지 않습니다: {path}")
+        raise ValueError(f"Invalid vlm.json items format: {path}")
 
     normalized: List[Dict[str, object]] = []
     for item in items:
-        try:
-            timestamp_ms = int(item["timestamp_ms"])
-            extracted_text = str(item.get("extracted_text", "")).strip()
-        except KeyError as exc:
-            raise ValueError(f"vlm.json 필수 키 누락: {item}") from exc
-        normalized.append({"timestamp_ms": timestamp_ms, "extracted_text": extracted_text})
+        extracted_text = str(item.get("extracted_text", "")).strip()
+        item_id = item.get("id")
+        cap_id = item.get("cap_id")
+        
+        # 새 구조: time_ranges 배열
+        time_ranges = item.get("time_ranges")
+        if time_ranges and isinstance(time_ranges, list):
+            for rng in time_ranges:
+                if not isinstance(rng, dict):
+                    continue
+                start_ms = rng.get("start_ms")
+                if start_ms is not None:
+                    normalized.append({
+                        "timestamp_ms": int(start_ms),
+                        "extracted_text": extracted_text,
+                        "id": item_id,
+                        "cap_id": cap_id,
+                        "time_range": rng  # 세그먼트 생성 시 활용
+                    })
+        # Legacy 구조: timestamp_ms
+        elif "timestamp_ms" in item:
+            try:
+                timestamp_ms = int(item["timestamp_ms"])
+                normalized.append({
+                    "timestamp_ms": timestamp_ms,
+                    "extracted_text": extracted_text,
+                    "id": item_id
+                })
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"Missing required keys in vlm.json: {item}") from exc
+    
     duration_ms = payload.get("duration_ms")
     duration_ms = int(duration_ms) if isinstance(duration_ms, (int, float)) else None
     return sorted(normalized, key=lambda x: x["timestamp_ms"]), duration_ms
 
 
-def _load_manifest_scores(path: Optional[Path]) -> Dict[int, float]:
+def _load_manifest_scores(
+    path: Optional[Path] = None,
+    captures_data: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[int, float]:
+    """manifest.json 또는 captures_data에서 diff_score 기준 점수 맵을 만든다.
+    
+    Args:
+        path: manifest.json 파일 경로 (선택)
+        captures_data: DB에서 가져온 captures 리스트 (선택, path보다 우선)
+    """
+    # captures_data가 제공되면 우선 사용
+    if captures_data is not None:
+        scores: Dict[int, float] = {}
+        for item in captures_data:
+            diff_score = float(item.get("diff_score", 0.0))
+            
+            # time_ranges 지원
+            time_ranges = item.get("time_ranges")
+            if isinstance(time_ranges, list) and time_ranges:
+                for rng in time_ranges:
+                     if isinstance(rng, dict) and "start_ms" in rng:
+                        try:
+                            start_ms = int(rng["start_ms"])
+                            if start_ms not in scores or diff_score > scores[start_ms]:
+                                scores[start_ms] = diff_score
+                        except (TypeError, ValueError):
+                            continue
+            
+            # fallback: top-level start_ms
+            if "start_ms" in item:
+                try:
+                    start_ms = int(item["start_ms"])
+                    if start_ms not in scores or diff_score > scores[start_ms]:
+                        scores[start_ms] = diff_score
+                except (TypeError, ValueError):
+                    pass
+        return scores
+    
+    # 파일 경로 기반 로드
     if not path:
         return {}
     if not path.exists():
         return {}
     payload = read_json(path, "captures/manifest.json")
     if not isinstance(payload, list):
-        raise ValueError(f"manifest.json 형식이 올바르지 않습니다: {path}")
-    scores: Dict[int, float] = {}
+        raise ValueError(f"Invalid manifest.json format: {path}")
+    scores = {}
     for item in payload:
-        if "start_ms" not in item:
-            continue
-        start_ms = int(item["start_ms"])
         diff_score = float(item.get("diff_score", 0.0))
-        if start_ms not in scores or diff_score > scores[start_ms]:
-            scores[start_ms] = diff_score
+
+        # time_ranges 지원
+        time_ranges = item.get("time_ranges")
+        if isinstance(time_ranges, list) and time_ranges:
+            for rng in time_ranges:
+                if isinstance(rng, dict) and "start_ms" in rng:
+                    try:
+                        start_ms = int(rng.get("start_ms") or 0)
+                        if start_ms not in scores or diff_score > scores[start_ms]:
+                            scores[start_ms] = diff_score
+                    except (TypeError, ValueError):
+                        continue
+
+        # fallback: top-level start_ms
+        if "start_ms" in item:
+            try:
+                start_ms = int(item.get("start_ms") or 0)
+                if start_ms not in scores or diff_score > scores[start_ms]:
+                    scores[start_ms] = diff_score
+            except (TypeError, ValueError):
+                continue
     return scores
 
 
@@ -90,13 +175,14 @@ def _compute_duration_ms(
     stt_duration_ms: Optional[int],
     vlm_duration_ms: Optional[int],
 ) -> int:
+    """STT/VLM 길이 정보를 조합해 전체 길이를 산출한다."""
     provided = [d for d in [stt_duration_ms, vlm_duration_ms] if d]
     if provided:
         return int(max(provided))
     max_stt = max([seg["end_ms"] for seg in stt_segments], default=0)
     max_vlm = max([item["timestamp_ms"] for item in vlm_items], default=0)
     if max_stt == 0 and max_vlm == 0:
-        raise ValueError("stt/vlm 입력이 비어 있어 duration_ms를 계산할 수 없습니다.")
+        raise ValueError("Cannot compute duration_ms: stt/vlm inputs are empty.")
     return int(max(max_stt, max_vlm) + 1000)
 
 
@@ -105,6 +191,7 @@ def _build_initial_segments(
     duration_ms: int,
     min_segment_ms: int,
 ) -> List[SegmentWindow]:
+    """VLM 타임스탬프를 기준으로 초기 세그먼트를 만든다."""
     timestamps = sorted({int(item["timestamp_ms"]) for item in vlm_items if item["timestamp_ms"] >= 0})
     boundaries = [0] + [ts for ts in timestamps if ts < duration_ms] + [duration_ms]
 
@@ -123,6 +210,7 @@ def _build_initial_segments(
 def _segments_in_range(
     stt_segments: List[Dict[str, object]], start_ms: int, end_ms: int
 ) -> List[Dict[str, object]]:
+    """지정 구간과 겹치는 STT 세그먼트를 반환한다."""
     return [
         seg
         for seg in stt_segments
@@ -131,6 +219,7 @@ def _segments_in_range(
 
 
 def _compute_transcript_chars(stt_segments: List[Dict[str, object]], start_ms: int, end_ms: int) -> int:
+    """구간 내 STT 텍스트 길이를 합산한다."""
     selected = _segments_in_range(stt_segments, start_ms, end_ms)
     if not selected:
         return 0
@@ -143,6 +232,7 @@ def _choose_split_point(
     end_ms: int,
     silence_gap_ms: int,
 ) -> int:
+    """침묵 구간 또는 경계에 기반해 분할 지점을 선택한다."""
     midpoint = (start_ms + end_ms) / 2
     gap_candidates: List[int] = []
     for idx in range(len(stt_segments) - 1):
@@ -176,6 +266,7 @@ def _split_segment_recursive(
     max_transcript_chars: int,
     silence_gap_ms: int,
 ) -> List[SegmentWindow]:
+    """세그먼트 길이/텍스트 제한을 만족할 때까지 재귀 분할한다."""
     if segment.end_ms - segment.start_ms <= 1:
         return [segment]
 
@@ -196,12 +287,14 @@ def _split_segment_recursive(
 
 
 def _char_ngrams(text: str, n: int = 3) -> set[str]:
+    """중복 제거용 n-gram을 만든다."""
     if len(text) < n:
         return {text}
     return {text[i : i + n] for i in range(len(text) - n + 1)}
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
+    """두 집합의 자카드 유사도를 계산한다."""
     if not a and not b:
         return 1.0
     if not a or not b:
@@ -216,6 +309,7 @@ def _select_vlm_items(
     end_ms: int,
     max_visual_items: int,
 ) -> List[Dict[str, object]]:
+    """구간 내 VLM 아이템을 선택하고 우선순위를 적용한다."""
     candidates = [item for item in vlm_items if start_ms <= item["timestamp_ms"] < end_ms]
     if not candidates:
         if not vlm_items:
@@ -238,6 +332,7 @@ def _extract_visual_units(
     dedup_threshold: float,
     max_visual_chars: int,
 ) -> Tuple[List[Dict[str, object]], str]:
+    """VLM 텍스트를 중복 제거해 visual_units를 만든다."""
     deduped_lines: List[str] = []
     item_buffers: List[Dict[str, object]] = []
     for item in selected_items:
@@ -254,13 +349,13 @@ def _extract_visual_units(
             kept_lines.append(text)
             deduped_lines.append(text)
         if kept_lines:
-            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines})
+            item_buffers.append({"timestamp_ms": timestamp_ms, "lines": kept_lines, "id": item.get("id"), "cap_id": item.get("cap_id")})
 
     visual_units: List[Dict[str, object]] = []
     for idx, item in enumerate(item_buffers, start=1):
         visual_units.append(
             {
-                "unit_id": f"v{idx}",
+                "unit_id": item.get("cap_id") or item.get("id") or f"v{idx}",
                 "timestamp_ms": int(item["timestamp_ms"]),
                 "text": "\n".join(item["lines"]),
             }
@@ -282,12 +377,13 @@ def _extract_visual_units(
 def _build_transcript_units(
     stt_segments: List[Dict[str, object]], start_ms: int, end_ms: int
 ) -> Tuple[List[Dict[str, object]], str]:
+    """STT 세그먼트를 단위별로 재구성한다."""
     selected = _segments_in_range(stt_segments, start_ms, end_ms)
     transcript_units: List[Dict[str, object]] = []
     for idx, seg in enumerate(selected, start=1):
         transcript_units.append(
             {
-                "unit_id": f"t{idx}",
+                "unit_id": seg.get("id") or f"t{idx}",
                 "start_ms": int(seg["start_ms"]),
                 "end_ms": int(seg["end_ms"]),
                 "text": seg["text"],
@@ -297,18 +393,22 @@ def _build_transcript_units(
     return transcript_units, transcript_text
 
 
-def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: bool = False) -> None:
+def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None) -> None:
+    """STT/VLM을 동기화해 segments_units.jsonl을 만든다."""
     paths = config.paths
     ensure_output_root(paths.output_root)
 
+    # 입력 로드
     stt_segments, stt_duration_ms = _load_stt_segments(paths.stt_json)
     vlm_items, vlm_duration_ms = _load_vlm_items(paths.vlm_json)
     manifest_scores = _load_manifest_scores(paths.captures_manifest_json)
 
+    # 전체 길이와 분할 기준 준비
     duration_ms = _compute_duration_ms(stt_segments, vlm_items, stt_duration_ms, vlm_duration_ms)
     min_segment_ms = config.raw.sync_engine.min_segment_sec * 1000
     max_segment_ms = config.raw.sync_engine.max_segment_sec * 1000
 
+    # VLM 타임스탬프 기반 초기 세그먼트 생성
     initial_segments = _build_initial_segments(vlm_items, duration_ms, min_segment_ms)
     refined_segments: List[SegmentWindow] = []
     for segment in initial_segments:
@@ -326,24 +426,21 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
     if limit is not None:
         refined_segments = refined_segments[:limit]
 
+    # 출력 경로 준비
     run_id = compute_run_id(config.config_path, paths.stt_json, paths.vlm_json, paths.captures_manifest_json)
     output_dir = paths.output_root / "fusion"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sync_segments: List[Dict[str, object]] = []
-    trace_map_segments: List[Dict[str, object]] = []
-    segments_handle = None
-    segments_units_handle = None
+    # segments_units.jsonl 생성
+    segments_units_handle = (output_dir / "segments_units.jsonl").open("w", encoding="utf-8")
 
     try:
-        if not dry_run:
-            segments_handle = (output_dir / "segments.jsonl").open("w", encoding="utf-8")
-            segments_units_handle = (output_dir / "segments_units.jsonl").open("w", encoding="utf-8")
-
         for idx, segment in enumerate(refined_segments, start=1):
+            # STT 유닛 구성
             transcript_units, transcript_text = _build_transcript_units(
                 stt_segments, segment.start_ms, segment.end_ms
             )
+            # 시각 정보 후보 선택
             selected_vlm_items = _select_vlm_items(
                 vlm_items,
                 manifest_scores,
@@ -351,84 +448,50 @@ def run_sync_engine(config: ConfigBundle, limit: Optional[int] = None, dry_run: 
                 segment.end_ms,
                 config.raw.sync_engine.max_visual_items,
             )
+            # 시각 텍스트 중복 제거/제한 적용
             visual_units, visual_text = _extract_visual_units(
                 selected_vlm_items,
                 config.raw.sync_engine.dedup_similarity_threshold,
                 config.raw.sync_engine.max_visual_chars,
             )
 
-            sync_segments.append(
-                {
-                    "segment_id": idx,
-                    "start_ms": segment.start_ms,
-                    "end_ms": segment.end_ms,
-                    "transcript_text": transcript_text,
-                    "visual_text": visual_text,
-                }
-            )
-            trace_map_segments.append(
-                {
-                    "segment_id": idx,
-                    "vlm_timestamps": [int(item["timestamp_ms"]) for item in selected_vlm_items],
-                }
-            )
+            stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
 
-            if not dry_run:
-                segments_handle.write(
-                    json.dumps(
-                        {
-                            "run_id": run_id,
-                            "segment_id": idx,
-                            "start_ms": segment.start_ms,
-                            "end_ms": segment.end_ms,
-                            "transcript_text": transcript_text,
-                            "visual_text": visual_text,
+            segments_units_handle.write(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "segment_id": idx,
+                        "start_ms": segment.start_ms,
+                        "end_ms": segment.end_ms,
+                        "transcript_units": transcript_units,
+                        "visual_units": visual_units,
+                        "source_refs": {
+                            "stt_ids": stt_ids,
+                            "vlm_ids": vlm_ids
                         },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
+                    },
+                    ensure_ascii=False,
+                    sort_keys=False,
                 )
-                segments_units_handle.write(
-                    json.dumps(
-                        {
-                            "run_id": run_id,
-                            "segment_id": idx,
-                            "start_ms": segment.start_ms,
-                            "end_ms": segment.end_ms,
-                            "transcript_units": transcript_units,
-                            "visual_units": visual_units,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
-                    + "\n"
-                )
+                + "\n"
+            )
     finally:
-        if segments_handle:
-            segments_handle.close()
-        if segments_units_handle:
-            segments_units_handle.close()
-
-    if dry_run:
-        print(f"[DRY RUN] segments={len(sync_segments)} (출력 미생성)")
-        return
-
-    write_json(output_dir / "sync.json", {"schema_version": 1, "segments": sync_segments})
-    write_json(output_dir / "trace_map.json", {"run_id": run_id, "segments": trace_map_segments})
-
-    print_jsonl_head(output_dir / "segments.jsonl", max_lines=2)
+        segments_units_handle.close()
 
 
 def run_batch_sync_engine(
     *,
     stt_json: Path,
     vlm_json: Path,
-    manifest_json: Optional[Path],
+    manifest_json: Optional[Path] = None,
+    captures_data: Optional[List[Dict[str, Any]]] = None,
     output_dir: Path,
     time_range: Tuple[int, int],
     sync_config: Dict[str, object],
     segment_id_offset: int = 0,
+    run_id_override: Optional[str] = None,
 ) -> Dict[str, object]:
     """배치 단위로 Sync를 실행합니다.
 
@@ -437,7 +500,8 @@ def run_batch_sync_engine(
     Args:
         stt_json: stt.json 경로
         vlm_json: 배치별 vlm.json 경로
-        manifest_json: manifest.json 경로 (선택)
+        manifest_json: manifest.json 경로 (선택, captures_data가 없을 때 사용)
+        captures_data: DB에서 가져온 captures 리스트 (선택, manifest_json보다 우선)
         output_dir: 출력 디렉토리 (배치별 디렉토리)
         time_range: (start_ms, end_ms) 시간 범위
         sync_config: sync_engine 설정 (min_segment_sec, max_segment_sec 등)
@@ -459,8 +523,8 @@ def run_batch_sync_engine(
     # VLM 로드 (이미 배치별로 필터링된 상태)
     vlm_items, vlm_duration_ms = _load_vlm_items(vlm_json)
 
-    # manifest scores 로드
-    manifest_scores = _load_manifest_scores(manifest_json) if manifest_json else {}
+    # manifest scores 로드 (captures_data 우선, 없으면 manifest_json 사용)
+    manifest_scores = _load_manifest_scores(path=manifest_json, captures_data=captures_data)
 
     # 설정 값 추출
     min_segment_ms = int(sync_config.get("min_segment_sec", 30)) * 1000
@@ -474,7 +538,7 @@ def run_batch_sync_engine(
     # duration 계산 (배치 범위 내)
     duration_ms = end_ms - start_ms
 
-    # VLM 아이템이 없으면 빈 결과 반환
+    # VLM/STT가 모두 없으면 빈 결과 반환
     if not vlm_items and not filtered_stt_segments:
         output_dir.mkdir(parents=True, exist_ok=True)
         segments_units_path = output_dir / "segments_units.jsonl"
@@ -523,8 +587,11 @@ def run_batch_sync_engine(
 
     refined_segments = sorted(refined_segments, key=lambda x: (x.start_ms, x.end_ms))
 
-    # run_id 생성
-    run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
+    # run_id 생성 (override가 있으면 우선 사용)
+    if run_id_override:
+        run_id = run_id_override
+    else:
+        run_id = compute_run_id(None, stt_json, vlm_json, manifest_json)
 
     # 출력 디렉토리 생성
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -546,9 +613,11 @@ def run_batch_sync_engine(
                 unit["end_ms"] = int(unit["end_ms"]) + start_ms
 
             # VLM 아이템 선택 (조정된 시간 기준)
+            # manifest_scores도 배치 상대 시간으로 조정하여 전달
+            adjusted_scores = {int(k) - start_ms: v for k, v in manifest_scores.items() if start_ms <= int(k) < end_ms}
             selected_vlm_items = _select_vlm_items(
                 adjusted_vlm_items,
-                {},  # manifest_scores는 원래 시간 기준이라 사용 안 함
+                adjusted_scores,
                 segment.start_ms,
                 segment.end_ms,
                 max_visual_items,
@@ -562,6 +631,9 @@ def run_batch_sync_engine(
             for unit in visual_units:
                 unit["timestamp_ms"] = int(unit["timestamp_ms"]) + start_ms
 
+            stt_ids = [u["unit_id"] for u in transcript_units if isinstance(u["unit_id"], str) and u["unit_id"].startswith("stt_")]
+            vlm_ids = [u["unit_id"] for u in visual_units if isinstance(u["unit_id"], str)]
+
             record = {
                 "run_id": run_id,
                 "segment_id": idx + segment_id_offset,
@@ -569,8 +641,12 @@ def run_batch_sync_engine(
                 "end_ms": actual_end_ms,
                 "transcript_units": transcript_units,
                 "visual_units": visual_units,
+                "source_refs": {
+                    "stt_ids": stt_ids,
+                    "vlm_ids": vlm_ids
+                },
             }
-            f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False, sort_keys=False) + "\n")
 
     return {
         "segments_count": len(refined_segments),

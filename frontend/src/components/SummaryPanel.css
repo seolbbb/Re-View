@@ -1,0 +1,173 @@
+.summary-panel {
+    background: var(--bg-card);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    transition: all 0.4s ease;
+}
+
+.summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--glass-bg);
+    transition: all 0.3s ease;
+}
+
+.summary-header h3 {
+    font-size: 16px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.progress-info {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.mini-progress {
+    width: 100px;
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+.mini-progress-fill {
+    height: 100%;
+    background: var(--gradient-coral);
+    border-radius: 4px;
+    transition: width 0.5s ease;
+    position: relative;
+}
+
+.mini-progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    animation: shimmer 2s infinite;
+    background-size: 200% 100%;
+}
+
+.summary-timeline {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    max-height: 350px;
+    overflow-y: auto;
+}
+
+.segment {
+    display: flex;
+    gap: 18px;
+    animation: fadeIn 0.4s ease-out;
+    padding: 16px;
+    border-radius: var(--radius-lg);
+    transition: all 0.3s ease;
+}
+
+.segment:hover {
+    background: var(--glass-bg);
+}
+
+.segment-marker {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    border: 2px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+}
+
+.segment.done .segment-marker {
+    background: var(--gradient-coral);
+    border-color: transparent;
+    color: white;
+    box-shadow: 0 4px 15px rgba(224, 126, 99, 0.3);
+}
+
+.segment.progress .segment-marker {
+    border-color: var(--accent-coral);
+    animation: borderGlow 2s ease infinite;
+}
+
+.loading-dot {
+    width: 10px;
+    height: 10px;
+    background: var(--accent-coral);
+    border-radius: 50%;
+    animation: pulse 1.2s infinite;
+    box-shadow: 0 0 10px rgba(224, 126, 99, 0.5);
+}
+
+.segment-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.segment-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.segment-time {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-coral);
+    font-variant-numeric: tabular-nums;
+    background: rgba(224, 126, 99, 0.1);
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(224, 126, 99, 0.2);
+}
+
+.segment-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.segment-summary {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+}
+
+.segment-pending {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.segment.pending {
+    opacity: 0.5;
+}
+
+.segment.pending:hover {
+    opacity: 0.7;
+}

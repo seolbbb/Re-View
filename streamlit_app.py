@@ -1,0 +1,1111 @@
+from __future__ import annotations
+
+import json
+import os
+import urllib.request
+import urllib.error
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from dotenv import load_dotenv
+
+# Load .env at the very beginning before any imports that might use env vars
+_ROOT = Path(__file__).resolve().parent
+_ENV_PATH = _ROOT / ".env"
+if _ENV_PATH.exists():
+    load_dotenv(_ENV_PATH)
+else:
+    load_dotenv()
+
+import streamlit as st
+import yaml
+
+from src.adk_chatbot.paths import DEFAULT_OUTPUT_BASE, sanitize_video_name
+from src.services.pipeline_service import (
+    get_default_output_base,
+    run_preprocess_pipeline,
+    send_chat_message,
+    stream_chat_message,
+    start_chatbot_session,
+)
+
+ROOT = Path(__file__).resolve().parent
+INPUT_DIR = ROOT / "data" / "inputs"
+CONFIG_ROOT = ROOT / "config"
+DEFAULT_OUTPUT_BASE_STR = str(DEFAULT_OUTPUT_BASE)
+ADK_OUTPUT_BASE = get_default_output_base()
+VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"]
+DEFAULT_CHATBOT_BACKEND = os.environ.get("CHATBOT_BACKEND", "langgraph").strip().lower()
+
+# API base URL for process API
+PROCESS_API_URL = os.environ.get("PROCESS_API_URL", "http://localhost:8000").rstrip("/")
+
+
+def _normalize_chat_backend(backend: Optional[str]) -> str:
+    value = (backend or os.environ.get("CHATBOT_BACKEND", "adk")).strip().lower()
+    if value in {"langgraph", "lg", "langgraph-agent"}:
+        return "langgraph"
+    return "adk"
+
+
+def _reset_chat_sessions() -> None:
+    st.session_state.chat_sessions = []
+    st.session_state.active_chat_session_id = None
+    st.session_state.adk_session = None
+    st.session_state.chat_messages = []
+    st.session_state.chat_mode_signature = None
+    st.session_state.chat_reasoning_signature = None
+
+
+def _get_chat_session(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not session_id:
+        return None
+    for session in st.session_state.get("chat_sessions", []):
+        if session.get("id") == session_id:
+            return session
+    return None
+
+
+def _call_api(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Call process API and return JSON response."""
+    url = f"{PROCESS_API_URL}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method.upper(),
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+        return None
+
+
+def _get_video_progress(video_id: str) -> Optional[Dict[str, Any]]:
+    """Get processing progress from API."""
+    return _call_api("GET", f"/videos/{video_id}/progress")
+
+
+def _get_video_status(video_id: str) -> Optional[Dict[str, Any]]:
+    """Get video status from API."""
+    return _call_api("GET", f"/videos/{video_id}/status")
+
+
+def _get_video_summary(video_id: str) -> Optional[Dict[str, Any]]:
+    """Get latest summary from API."""
+    return _call_api("GET", f"/videos/{video_id}/summary")
+
+
+def _start_processing(video_name: str, video_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Start processing job via API."""
+    payload = {"video_name": video_name}
+    if video_id:
+        payload["video_id"] = video_id
+    return _call_api("POST", "/process", payload)
+
+
+def _read_text(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _read_json(path: Path) -> Optional[Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _read_yaml(path: Path) -> Optional[Any]:
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+
+
+def _load_config(
+    path: Path,
+    overrides: Dict[str, Any],
+    use_override: bool,
+) -> Dict[str, Any]:
+    payload = _read_yaml(path)
+    if not isinstance(payload, dict):
+        payload = {}
+    if use_override:
+        override = overrides.get(str(path))
+        if isinstance(override, dict):
+            return override
+    return payload
+
+
+def _write_yaml(path: Path, payload: Any) -> None:
+    path.write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _normalize_config_key(value: str) -> str:
+    return "".join(char if char.isalnum() else "_" for char in value)
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _render_config_fields(data: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    updated: Dict[str, Any] = {}
+    for key, value in data.items():
+        field_key = f"{prefix}_{_normalize_config_key(str(key))}"
+        if isinstance(value, dict):
+            with st.expander(str(key), expanded=False):
+                updated[key] = _render_config_fields(value, field_key)
+            continue
+        if isinstance(value, bool):
+            updated[key] = st.checkbox(str(key), value=value, key=field_key)
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            new_value = st.number_input(
+                str(key),
+                value=value,
+                step=1,
+                key=field_key,
+            )
+            updated[key] = int(new_value)
+            continue
+        if isinstance(value, float):
+            new_value = st.number_input(
+                str(key),
+                value=value,
+                step=0.1,
+                format="%.4f",
+                key=field_key,
+            )
+            updated[key] = float(new_value)
+            continue
+        if isinstance(value, list):
+            raw = st.text_area(
+                str(key),
+                value=yaml.safe_dump(value, allow_unicode=True, sort_keys=False).strip(),
+                height=120,
+                key=field_key,
+            )
+            try:
+                parsed = yaml.safe_load(raw)
+                updated[key] = parsed if isinstance(parsed, list) else value
+            except yaml.YAMLError:
+                updated[key] = value
+                st.caption("Invalid list YAML; keeping previous value.")
+            continue
+        updated[key] = st.text_input(
+            str(key),
+            value="" if value is None else str(value),
+            key=field_key,
+        )
+    return updated
+
+
+def _save_upload(uploaded_file) -> Path:
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(uploaded_file.name).suffix or ".mp4"
+    stem = Path(uploaded_file.name).stem or "video"
+    safe_stem = sanitize_video_name(stem)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    destination = INPUT_DIR / f"{timestamp}_{safe_stem}{suffix}"
+    destination.write_bytes(uploaded_file.getbuffer())
+    return destination
+
+
+@st.cache_data(show_spinner=False)
+def _load_video_bytes(path: str) -> bytes:
+    return Path(path).read_bytes()
+
+
+def _load_manifest(video_root: Path) -> List[Dict[str, Any]]:
+    payload = _read_json(video_root / "manifest.json")
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def _list_output_names(output_base: Path) -> List[str]:
+    if not output_base.exists():
+        return []
+    return sorted([path.name for path in output_base.iterdir() if path.is_dir()])
+
+
+def _find_existing_video(video_name: str) -> Optional[Path]:
+    if not video_name:
+        return None
+    for base_dir in (INPUT_DIR,):
+        if not base_dir.exists():
+            continue
+        for ext in VIDEO_EXTENSIONS:
+            candidate = base_dir / f"{video_name}{ext}"
+            if candidate.exists():
+                return candidate
+        for path in base_dir.glob(f"{video_name}.*"):
+            if path.suffix.lower() in VIDEO_EXTENSIONS:
+                return path
+    return None
+
+
+def _has_preprocess_outputs(video_root: Path) -> bool:
+    return (
+        (video_root / "stt.json").exists()
+        and (video_root / "manifest.json").exists()
+        and (video_root / "captures").exists()
+    )
+
+
+def _resolve_video_name(
+    video_path: Optional[Path],
+    video_root_value: Optional[str],
+) -> Optional[str]:
+    if video_path:
+        return sanitize_video_name(video_path.stem)
+    if video_root_value:
+        return Path(video_root_value).name
+    return None
+
+
+def _render_final_summaries(video_root: Path, *, scroll_height: int = 600) -> None:
+    results_dir = video_root / "results"
+    summaries_dir = results_dir if results_dir.exists() else video_root / "fusion" / "outputs"
+    summary_paths = sorted(summaries_dir.glob("final_summary_*.md")) if summaries_dir.exists() else []
+    if not summary_paths:
+        st.info("No final summaries found.")
+        return
+    scroll_container = st.container(height=scroll_height)
+    with scroll_container:
+        for path in summary_paths:
+            content = _read_text(path)
+            if not content:
+                continue
+            st.markdown(f"#### {path.name}")
+            st.markdown(content)
+            st.markdown("---")
+
+
+def _render_segment_summaries(video_root: Path) -> None:
+    output_dir = video_root / "fusion"
+    candidates = [
+        output_dir / "segment_summaries.md",
+        output_dir / "segment_summaries_nl.md",
+    ]
+    shown = False
+    for path in candidates:
+        content = _read_text(path)
+        if not content:
+            continue
+        shown = True
+        with st.expander(path.name, expanded=False):
+            st.markdown(content)
+    if not shown:
+        st.info("No segment summaries found.")
+
+
+def _extract_manifest_timestamp_ms(item: Dict[str, Any]) -> Optional[int]:
+    for key in ("timestamp_ms", "start_ms", "start"):
+        if key not in item:
+            continue
+        try:
+            return int(item[key])
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _parse_time_to_ms(raw_value: str) -> Optional[int]:
+    value = raw_value.strip()
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        numbers = [int(part) for part in parts]
+    except ValueError:
+        return None
+    if any(number < 0 for number in numbers):
+        return None
+    if len(numbers) == 2:
+        minutes, seconds = numbers
+        if seconds >= 60:
+            return None
+        total_seconds = minutes * 60 + seconds
+    else:
+        hours, minutes, seconds = numbers
+        if minutes >= 60 or seconds >= 60:
+            return None
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+    return total_seconds * 1000
+
+
+def _render_captures(video_root: Path) -> None:
+    manifest = _load_manifest(video_root)
+    if not manifest:
+        st.info("No capture manifest found.")
+        return
+
+    vlm_lookup: Dict[int, str] = {}
+    vlm_lookup_by_id: Dict[str, str] = {}
+    vlm_paths: List[Path] = []
+    vlm_root = video_root / "vlm.json"
+    if vlm_root.exists():
+        vlm_paths.append(vlm_root)
+    batches_dir = video_root / "batches"
+    if batches_dir.exists():
+        vlm_paths.extend(sorted(batches_dir.glob("batch_*/vlm.json")))
+
+    for vlm_path in vlm_paths:
+        vlm_payload = _read_json(vlm_path)
+        if not isinstance(vlm_payload, dict):
+            continue
+        for item in vlm_payload.get("items", []):
+            try:
+                timestamp = int(item.get("timestamp_ms"))
+            except (TypeError, ValueError):
+                continue
+            text = item.get("extracted_text")
+            if isinstance(text, str) and text.strip():
+                vlm_lookup.setdefault(timestamp, text.strip())
+            cap_id = item.get("id") or item.get("cap_id")
+            if isinstance(cap_id, str) and cap_id.strip():
+                if isinstance(text, str) and text.strip():
+                    vlm_lookup_by_id.setdefault(cap_id, text.strip())
+
+    expanded_manifest: List[Dict[str, Any]] = []
+    for item in manifest:
+        if not isinstance(item, dict):
+            continue
+        file_name = str(item.get("file_name", "")).strip()
+        if not file_name:
+            continue
+        capture_id = item.get("id") or item.get("capture_id")
+        time_ranges = item.get("time_ranges")
+        if isinstance(time_ranges, list) and time_ranges:
+            for rng in time_ranges:
+                if not isinstance(rng, dict):
+                    continue
+                try:
+                    start_ms = int(rng.get("start_ms"))
+                except (TypeError, ValueError):
+                    continue
+                expanded_manifest.append(
+                    {
+                        "file_name": file_name,
+                        "timestamp_ms": start_ms,
+                        "timestamp_human": item.get("timestamp_human"),
+                        "capture_id": capture_id,
+                    }
+                )
+        else:
+            timestamp_ms = _extract_manifest_timestamp_ms(item)
+            if timestamp_ms is None:
+                continue
+            expanded_manifest.append(
+                {
+                    "file_name": file_name,
+                    "timestamp_ms": timestamp_ms,
+                    "timestamp_human": item.get("timestamp_human"),
+                    "capture_id": capture_id,
+                }
+            )
+
+    expanded_manifest = sorted(
+        expanded_manifest,
+        key=lambda item: int(item.get("timestamp_ms", 0)),
+    )
+    max_items = st.slider(
+        "Max captures",
+        min_value=1,
+        max_value=len(expanded_manifest),
+        value=min(24, len(expanded_manifest)),
+    )
+    show_vlm = st.checkbox("Show VLM text above captures", value=True)
+    show_full_vlm = False
+    if show_vlm:
+        show_full_vlm = st.checkbox("Show full VLM text (Markdown)", value=False)
+    columns = st.slider("Columns", min_value=2, max_value=5, value=3)
+    cols = st.columns(columns)
+
+    for idx, item in enumerate(expanded_manifest[:max_items]):
+        file_name = str(item.get("file_name", "")).strip()
+        if not file_name:
+            continue
+        image_path = video_root / "captures" / file_name
+        if not image_path.exists():
+            continue
+        timestamp_ms = item.get("timestamp_ms")
+        capture_id = item.get("capture_id")
+        caption = item.get("timestamp_human")
+        if not caption and timestamp_ms is not None:
+            caption = f"{timestamp_ms / 1000:.2f}s"
+        if not caption:
+            caption = file_name
+        with cols[idx % columns]:
+            if show_vlm:
+                vlm_text = None
+                if isinstance(capture_id, str) and capture_id:
+                    vlm_text = vlm_lookup_by_id.get(capture_id)
+                if not vlm_text and timestamp_ms is not None:
+                    try:
+                        vlm_text = vlm_lookup.get(int(timestamp_ms))
+                    except (TypeError, ValueError):
+                        vlm_text = None
+                if vlm_text:
+                    if show_full_vlm:
+                        st.text(vlm_text)
+                    else:
+                        preview = " ".join(vlm_text.split())
+                        preview = preview[:200] + ("..." if len(preview) > 200 else "")
+                        st.text(preview)
+                else:
+                    st.caption("VLM: (no text)")
+            st.image(str(image_path), caption=caption, width="stretch")
+
+    graph_path = next(video_root.glob("*_scene_analysis.png"), None)
+    if graph_path:
+        st.markdown("---")
+        st.markdown("#### Scene analysis")
+        st.image(str(graph_path), width="stretch")
+
+
+def main() -> None:
+    st.set_page_config(page_title="Screentime Pipeline", layout="wide")
+    st.title("Screentime Video Pipeline")
+    st.toggle("Chat panel", value=True, key="show_chat")
+
+    if "video_root" not in st.session_state:
+        st.session_state.video_root = None
+    if "run_meta" not in st.session_state:
+        st.session_state.run_meta = None
+    if "selected_video" not in st.session_state:
+        st.session_state.selected_video = None
+    if "uploaded_video_path" not in st.session_state:
+        st.session_state.uploaded_video_path = None
+    if "uploaded_video_signature" not in st.session_state:
+        st.session_state.uploaded_video_signature = None
+    if "preprocess_status" not in st.session_state:
+        st.session_state.preprocess_status = "idle"
+    if "preprocess_error" not in st.session_state:
+        st.session_state.preprocess_error = None
+    if "preprocess_signature" not in st.session_state:
+        st.session_state.preprocess_signature = None
+    if "preprocess_result" not in st.session_state:
+        st.session_state.preprocess_result = None
+    if "adk_session" not in st.session_state:
+        st.session_state.adk_session = None
+    if "chat_sessions" not in st.session_state:
+        st.session_state.chat_sessions = []
+    if "active_chat_session_id" not in st.session_state:
+        st.session_state.active_chat_session_id = None
+    if "chat_backend" not in st.session_state:
+        if DEFAULT_CHATBOT_BACKEND in {"langgraph", "lg"}:
+            st.session_state.chat_backend = "langgraph"
+        else:
+            st.session_state.chat_backend = DEFAULT_CHATBOT_BACKEND
+    if "chat_mode" not in st.session_state:
+        st.session_state.chat_mode = "full"
+    if "chat_mode_signature" not in st.session_state:
+        st.session_state.chat_mode_signature = None
+    if "chat_reasoning_mode" not in st.session_state:
+        st.session_state.chat_reasoning_mode = "flash"
+    if "chat_reasoning_signature" not in st.session_state:
+        st.session_state.chat_reasoning_signature = None
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "adk_busy" not in st.session_state:
+        st.session_state.adk_busy = False
+    if "selected_output_name" not in st.session_state:
+        st.session_state.selected_output_name = None
+    if "preview_video_path" not in st.session_state:
+        st.session_state.preview_video_path = None
+    if "selected_source" not in st.session_state:
+        st.session_state.selected_source = None
+    if "chat_session_video_name" not in st.session_state:
+        st.session_state.chat_session_video_name = None
+    if "config_overrides" not in st.session_state:
+        st.session_state.config_overrides = {}
+    if "use_config_override" not in st.session_state:
+        st.session_state.use_config_override = False
+    # DB-based status tracking
+    if "video_id" not in st.session_state:
+        st.session_state.video_id = None
+    if "processing_status" not in st.session_state:
+        st.session_state.processing_status = None
+    if "processing_progress" not in st.session_state:
+        st.session_state.processing_progress = None
+
+
+    source = st.radio(
+        "Video source",
+        ["Upload", "Existing output"],
+        horizontal=True,
+    )
+    if st.session_state.selected_source != source:
+        st.session_state.selected_source = source
+        st.session_state.selected_output_name = None
+    video_path: Optional[Path] = None
+
+    if source == "Upload":
+        uploaded = st.file_uploader("Upload a video", type=["mp4", "mov", "mkv", "avi"])
+        if uploaded:
+            signature = (uploaded.name, uploaded.size)
+            if st.session_state.uploaded_video_signature != signature:
+                saved_path = _save_upload(uploaded)
+                st.session_state.uploaded_video_path = str(saved_path)
+                st.session_state.uploaded_video_signature = signature
+            if st.session_state.uploaded_video_path:
+                video_path = Path(st.session_state.uploaded_video_path)
+    else:
+        available_outputs = _list_output_names(ADK_OUTPUT_BASE)
+        if not available_outputs:
+            st.info("No outputs found yet. Upload a video to create outputs.")
+        else:
+            selected_output = st.selectbox(
+                "Select existing output",
+                options=[""] + available_outputs,
+                index=0,
+            )
+            if selected_output and selected_output != st.session_state.selected_output_name:
+                candidate = ADK_OUTPUT_BASE / selected_output
+                if candidate.exists():
+                    st.session_state.video_root = str(candidate)
+                    run_meta = _read_json(candidate / "pipeline_run.json")
+                    st.session_state.run_meta = run_meta
+                    video_id = None
+                    if isinstance(run_meta, dict):
+                        video_id = run_meta.get("video_id")
+                        if not video_id:
+                            args_meta = run_meta.get("args")
+                            if isinstance(args_meta, dict):
+                                video_id = args_meta.get("video_id")
+                    st.session_state.video_id = video_id
+                    st.session_state.preprocess_status = "done"
+                    st.session_state.preprocess_error = None
+                    st.session_state.preprocess_signature = None
+                    st.session_state.preprocess_result = None
+                    _reset_chat_sessions()
+                    st.session_state.selected_output_name = selected_output
+                    preview_candidate = _find_existing_video(selected_output)
+                    st.session_state.preview_video_path = (
+                        str(preview_candidate) if preview_candidate else None
+                    )
+                else:
+                    st.error("Selected output folder does not exist.")
+
+    if video_path:
+        if str(video_path) != st.session_state.selected_video:
+            st.session_state.selected_video = str(video_path)
+            st.session_state.video_root = None
+            st.session_state.run_meta = None
+            st.session_state.preprocess_status = "idle"
+            st.session_state.preprocess_error = None
+            st.session_state.preprocess_signature = None
+            st.session_state.preprocess_result = None
+            _reset_chat_sessions()
+        st.session_state.preview_video_path = str(video_path)
+
+    with st.sidebar:
+        st.subheader("Chatbot")
+        backend_options = ["adk", "langgraph"]
+        backend_index = backend_options.index(st.session_state.chat_backend) if st.session_state.chat_backend in backend_options else 0
+        selected_backend = st.selectbox(
+            "Backend",
+            backend_options,
+            index=backend_index,
+        )
+        if selected_backend != st.session_state.chat_backend:
+            st.session_state.chat_backend = selected_backend
+            _reset_chat_sessions()
+            st.session_state.adk_busy = False
+            st.rerun()
+
+        use_override = st.toggle(
+            "Temporary override (session only)",
+            value=st.session_state.use_config_override,
+            key="use_config_override",
+        )
+        if use_override:
+            if st.button("Reset overrides"):
+                st.session_state.config_overrides = {}
+                st.rerun()
+        overrides = st.session_state.config_overrides
+
+        pipeline_settings_path = CONFIG_ROOT / "pipeline" / "settings.yaml"
+        pipeline_settings = _load_config(pipeline_settings_path, overrides, use_override)
+        pipeline_settings.setdefault("parallel", True)
+        capture_settings = _load_config(CONFIG_ROOT / "capture" / "settings.yaml", overrides, use_override)
+        if not isinstance(capture_settings, dict):
+            capture_settings = {}
+        audio_settings = _load_config(CONFIG_ROOT / "audio" / "settings.yaml", overrides, use_override)
+        stt_settings = audio_settings.get("stt", {})
+        if not isinstance(stt_settings, dict):
+            stt_settings = {}
+        stt_providers = [
+            key
+            for key, value in stt_settings.items()
+            if key != "default_provider" and isinstance(value, dict)
+        ]
+        if not stt_providers:
+            stt_providers = ["clova"]
+        default_provider = stt_settings.get("default_provider", stt_providers[0])
+        if default_provider not in stt_providers:
+            default_provider = stt_providers[0]
+
+        stt_backend = default_provider
+        parallel = bool(pipeline_settings.get("parallel", True))
+        capture_threshold = _coerce_float(capture_settings.get("sensitivity_diff"), 3.0)
+        capture_dedupe_threshold = _coerce_float(
+            capture_settings.get("sensitivity_sim"), 0.8
+        )
+        capture_min_interval = _coerce_float(
+            capture_settings.get("min_interval"), 0.5
+        )
+
+        st.header("Config")
+        if use_override:
+            st.caption("Overrides apply to this session only unless you save.")
+        else:
+            st.caption("Edit config settings below. Changes apply after saving.")
+        rerun_preprocess = False
+
+        settings_sections = {
+            "Pipeline settings": CONFIG_ROOT / "pipeline" / "settings.yaml",
+            "Audio settings": CONFIG_ROOT / "audio" / "settings.yaml",
+            "Capture settings": CONFIG_ROOT / "capture" / "settings.yaml",
+            "VLM settings": CONFIG_ROOT / "vlm" / "settings.yaml",
+            "Fusion settings": CONFIG_ROOT / "fusion" / "settings.yaml",
+            "Judge settings": CONFIG_ROOT / "judge" / "settings.yaml",
+        }
+        for section, path in settings_sections.items():
+            with st.expander(section, expanded=False):
+                if not path.exists():
+                    st.info(f"Missing: {path}")
+                    continue
+                payload = _load_config(path, overrides, use_override)
+                if not isinstance(payload, dict):
+                    st.info("Settings file is not a YAML mapping.")
+                    continue
+                editor_key = _normalize_config_key(str(path))
+                updated = _render_config_fields(payload, editor_key)
+                if section == "Pipeline settings":
+                    rerun_preprocess = st.button(
+                        "Rerun preprocess",
+                        disabled=video_path is None,
+                        key="rerun_preprocess",
+                    )
+                if use_override:
+                    if st.button(f"Apply {path.name}", key=f"apply_{editor_key}"):
+                        overrides[str(path)] = updated
+                        st.success(f"Applied {path.name} for this session.")
+                else:
+                    if st.button(f"Save {path.name}", key=f"save_{editor_key}"):
+                        _write_yaml(path, updated)
+                        st.success(f"Saved {path.name}.")
+
+        st.markdown("---")
+        st.subheader("Prompts (raw)")
+        prompt_sections = {
+            "VLM prompts": CONFIG_ROOT / "vlm" / "prompts.yaml",
+            "Fusion prompts": CONFIG_ROOT / "fusion" / "prompts.yaml",
+            "Judge prompts": CONFIG_ROOT / "judge" / "prompts.yaml",
+        }
+        for section, path in prompt_sections.items():
+            with st.expander(section, expanded=False):
+                if not path.exists():
+                    st.info(f"Missing: {path}")
+                    continue
+                raw_text = _read_text(path) or ""
+                field_key = f"prompt_{_normalize_config_key(str(path))}"
+                content = st.text_area(
+                    path.name,
+                    value=raw_text,
+                    height=220,
+                    key=field_key,
+                )
+                if st.button(f"Save {path.name}", key=f"save_{field_key}"):
+                    try:
+                        yaml.safe_load(content)
+                    except yaml.YAMLError as exc:
+                        st.error(f"YAML error: {exc}")
+                    else:
+                        path.write_text(content, encoding="utf-8")
+                        st.success(f"Saved {path.name}.")
+
+    video_root_value = st.session_state.video_root
+    video_name = _resolve_video_name(video_path, video_root_value)
+    if st.session_state.chat_session_video_name != video_name:
+        st.session_state.chat_session_video_name = video_name
+        _reset_chat_sessions()
+        st.session_state.adk_busy = False
+
+    if video_path:
+        preprocess_signature: Tuple[str] = (str(video_path),)
+        should_run_preprocess = st.session_state.preprocess_signature != preprocess_signature
+        if rerun_preprocess:
+            should_run_preprocess = True
+
+        if should_run_preprocess:
+            st.session_state.preprocess_status = "running"
+            st.session_state.preprocess_error = None
+            _reset_chat_sessions()
+            with st.spinner("Running preprocess..."):
+                try:
+                    result = run_preprocess_pipeline(
+                        video_path=video_path,
+                        output_base=ADK_OUTPUT_BASE,
+                        stt_backend=stt_backend,
+                        parallel=parallel,
+                        capture_threshold=capture_threshold,
+                        capture_dedupe_threshold=capture_dedupe_threshold,
+                        capture_min_interval=capture_min_interval,
+                        force=rerun_preprocess,
+                    )
+                except Exception as exc:
+                    st.session_state.preprocess_status = "error"
+                    st.session_state.preprocess_error = str(exc)
+                else:
+                    st.session_state.preprocess_status = "done"
+                    st.session_state.preprocess_signature = preprocess_signature
+                    st.session_state.preprocess_result = result
+                    st.session_state.video_root = result.get("video_root")
+                    if result.get("video_id"):
+                        st.session_state.video_id = result.get("video_id")
+                        st.success(f"Preprocessing complete. Video ID: {st.session_state.video_id}")
+                    video_root_value = st.session_state.video_root
+
+    if (
+        st.session_state.preprocess_status == "idle"
+        and video_root_value
+        and _has_preprocess_outputs(Path(video_root_value))
+    ):
+        st.session_state.preprocess_status = "done"
+
+    if st.session_state.preprocess_status == "running":
+        st.info("Preprocess is running. This can take a while for long videos.")
+    elif st.session_state.preprocess_status == "error":
+        st.error(f"Preprocess failed: {st.session_state.preprocess_error}")
+    elif st.session_state.preprocess_status == "done":
+        if not st.session_state.get("video_id"):
+            st.success("Preprocess completed.")
+        
+        # Processing controls and progress display
+        process_col1, process_col2 = st.columns([1, 3])
+        with process_col1:
+            if st.button("▶️ Start Processing", key="start_processing"):
+                result = _start_processing(video_name or "", st.session_state.video_id)
+                if result:
+                    st.session_state.processing_status = "started"
+                    st.rerun()
+                else:
+                    st.error("Failed to start processing")
+        
+        # Show processing progress if available
+        video_id = st.session_state.video_id
+        if video_id:
+            progress_data = _get_video_progress(video_id)
+            if progress_data and progress_data.get("has_processing_job"):
+                with process_col2:
+                    status = progress_data.get("status", "unknown")
+                    progress_pct = progress_data.get("progress_percent", 0)
+                    current = progress_data.get("progress_current", 0)
+                    total = progress_data.get("progress_total", 1)
+                    is_complete = progress_data.get("is_complete", False)
+                    
+                    if status == "DONE":
+                        st.success(f"✅ Processing completed ({current}/{total})")
+                    elif status == "FAILED":
+                        st.error("❌ Processing failed")
+                    else:
+                        st.progress(progress_pct / 100, text=f"Processing: {status} ({current}/{total} - {progress_pct}%)")
+                        if not is_complete:
+                            # Auto-refresh for progress polling
+                            st.info("🔄 Processing in progress... (auto-refreshing)")
+
+
+    if st.session_state.show_chat:
+        main_col, chat_col = st.columns([2, 1], gap="large")
+    else:
+        main_col = st.container()
+        chat_col = None
+
+    with main_col:
+        if video_path or video_root_value:
+            st.markdown("---")
+            st.markdown("### Video")
+            preview_path_value = st.session_state.preview_video_path
+            preview_path = Path(preview_path_value) if preview_path_value else None
+            if preview_path:
+                st.video(_load_video_bytes(str(preview_path)))
+                st.caption(f"Selected: {preview_path}")
+            else:
+                st.info("No video selected.")
+
+            if video_root_value:
+                st.markdown("---")
+                summary_height = st.slider(
+                    "Summary height",
+                    min_value=320,
+                    max_value=900,
+                    value=600,
+                    step=20,
+                )
+                _render_final_summaries(
+                    Path(video_root_value),
+                    scroll_height=summary_height,
+                )
+            else:
+                st.info("Run pipeline or load outputs to see summaries.")
+
+        if video_root_value:
+            video_root = Path(video_root_value)
+            st.markdown(f"Outputs: `{video_root}`")
+            tabs = st.tabs(["Segment summaries", "Captures"])
+            with tabs[0]:
+                _render_segment_summaries(video_root)
+            with tabs[1]:
+                _render_captures(video_root)
+
+    if chat_col:
+        with chat_col:
+            st.markdown("### Chatbot")
+            if not video_name:
+                st.info("Upload a video or load outputs to start.")
+                return
+            if st.session_state.preprocess_status == "running":
+                st.info("Preprocess is running. Chat will be ready after it finishes.")
+                return
+            if st.session_state.preprocess_status == "error":
+                st.error("Preprocess failed. Fix the error and rerun.")
+                return
+            if st.session_state.adk_busy:
+                st.info("Chatbot is running. Please wait for the current run to finish.")
+
+            chat_sessions = st.session_state.chat_sessions
+            active_session = _get_chat_session(st.session_state.active_chat_session_id)
+
+            with st.expander("New chat session", expanded=not chat_sessions):
+                session_name = st.text_input("Session name (optional)", value="")
+                chat_mode_label = st.radio(
+                    "Chat mode",
+                    ["전문 요약", "부분 요약"],
+                    horizontal=True,
+                    index=0 if st.session_state.chat_mode == "full" else 1,
+                    key="chat_mode_label",
+                )
+                chat_mode = "full" if chat_mode_label == "전문 요약" else "partial"
+                st.session_state.chat_mode = chat_mode
+                reasoning_mode = None
+                reasoning_label = None
+                if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                    reasoning_label = st.radio(
+                        "Reasoning mode",
+                        ["Flash", "Thinking"],
+                        horizontal=True,
+                        index=0 if st.session_state.chat_reasoning_mode == "flash" else 1,
+                        key="chat_reasoning_label",
+                    )
+                    reasoning_mode = "flash" if reasoning_label == "Flash" else "thinking"
+                    st.session_state.chat_reasoning_mode = reasoning_mode
+
+                if st.button("Create session", disabled=st.session_state.adk_busy):
+                    st.session_state.adk_busy = True
+                    try:
+                        if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                            if not st.session_state.get("video_id"):
+                                raise ValueError(
+                                    "LangGraph backend requires video_id. Run preprocess with DB sync enabled."
+                                )
+                        session_obj = start_chatbot_session(
+                            state={
+                                "video_name": video_name,
+                                "video_id": st.session_state.get("video_id"),
+                                "reasoning_mode": reasoning_mode,
+                            },
+                            app_name="screentime_chatbot",
+                            user_id="streamlit",
+                            backend=st.session_state.chat_backend,
+                        )
+                        messages: List[Dict[str, Any]] = []
+                        with st.spinner("Setting chat mode..."):
+                            responses = send_chat_message(session_obj, chat_mode)
+                        for response in responses:
+                            messages.append(
+                                {
+                                    "role": "assistant",
+                                    "author": response.author,
+                                    "content": response.text,
+                                }
+                            )
+                        session_id = uuid.uuid4().hex
+                        label_parts = [session_name.strip()] if session_name.strip() else []
+                        label_parts.append(chat_mode_label)
+                        if reasoning_label:
+                            label_parts.append(reasoning_label)
+                        label_parts.append(datetime.now().strftime("%H:%M"))
+                        label = " · ".join(label_parts)
+                        session_entry = {
+                            "id": session_id,
+                            "label": label,
+                            "backend": st.session_state.chat_backend,
+                            "chat_mode": chat_mode,
+                            "reasoning_mode": reasoning_mode,
+                            "session": session_obj,
+                            "messages": messages,
+                        }
+                        st.session_state.chat_sessions.append(session_entry)
+                        st.session_state.active_chat_session_id = session_id
+                        st.session_state.adk_session = session_obj
+                        st.session_state.chat_messages = session_entry["messages"]
+                    except Exception as exc:
+                        st.error(f"Chatbot session init failed: {exc}")
+                    finally:
+                        st.session_state.adk_busy = False
+                    st.rerun()
+
+            if chat_sessions:
+                session_ids = [session["id"] for session in chat_sessions]
+                label_map = {session["id"]: session["label"] for session in chat_sessions}
+                current_index = (
+                    session_ids.index(st.session_state.active_chat_session_id)
+                    if st.session_state.active_chat_session_id in session_ids
+                    else 0
+                )
+                selected_id = st.selectbox(
+                    "Chat sessions",
+                    options=session_ids,
+                    index=current_index,
+                    format_func=lambda sid: label_map.get(sid, sid),
+                )
+                if selected_id != st.session_state.active_chat_session_id:
+                    selected_session = _get_chat_session(selected_id)
+                    if selected_session:
+                        st.session_state.active_chat_session_id = selected_id
+                        st.session_state.adk_session = selected_session.get("session")
+                        st.session_state.chat_messages = selected_session.get("messages", [])
+                    st.rerun()
+            else:
+                st.info("Create a chat session to start.")
+                return
+
+            active_session = _get_chat_session(st.session_state.active_chat_session_id)
+            if not active_session:
+                st.info("Create a chat session to start.")
+                return
+
+            mode_label = "전문 요약" if active_session.get("chat_mode") == "full" else "부분 요약"
+            reasoning_label = None
+            if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                mode_value = active_session.get("reasoning_mode") or "flash"
+                reasoning_label = "Flash" if mode_value == "flash" else "Thinking"
+            label_suffix = f" · {reasoning_label}" if reasoning_label else ""
+            st.caption(f"Session: {active_session.get('label')} ({mode_label}{label_suffix})")
+
+            if st.button(
+                "Delete session",
+                disabled=st.session_state.adk_busy,
+            ):
+                st.session_state.chat_sessions = [
+                    session
+                    for session in st.session_state.chat_sessions
+                    if session.get("id") != st.session_state.active_chat_session_id
+                ]
+                st.session_state.active_chat_session_id = None
+                st.session_state.adk_session = None
+                st.session_state.chat_messages = []
+                st.rerun()
+
+            chat_container = st.container(height=520)
+            with chat_container:
+                messages_placeholder = st.container()
+                spinner_placeholder = st.empty()
+                with messages_placeholder:
+                    for message in st.session_state.chat_messages:
+                        role = message.get("role", "assistant")
+                        with st.chat_message(role):
+                            author = message.get("author")
+                            if author:
+                                st.caption(author)
+                            st.markdown(message.get("content", ""))
+                spinner_placeholder.empty()
+
+            time_input = st.text_input(
+                "Time (mm:ss)",
+                value="",
+                key="chat_time_input",
+                placeholder="예: 01:23",
+            )
+            prompt = st.chat_input("Message chatbot", disabled=st.session_state.adk_busy)
+            if prompt and not st.session_state.adk_busy:
+                raw_time = st.session_state.get("chat_time_input", "")
+                time_ms = _parse_time_to_ms(raw_time)
+                if raw_time and time_ms is None:
+                    st.warning("Time format should be mm:ss (예: 01:23). Sending without time.")
+                st.session_state.adk_busy = True
+                st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                user_message = prompt
+                if time_ms is not None:
+                    user_message = f"[time_ms={time_ms}] {prompt}"
+                try:
+                    with spinner_placeholder:
+                        with st.spinner("Waiting for chatbot..."):
+                            if _normalize_chat_backend(st.session_state.chat_backend) == "langgraph":
+                                full_text = ""
+                                author = "langgraph_chatbot"
+                                with messages_placeholder:
+                                    with st.chat_message("assistant"):
+                                        st.caption(author)
+                                        placeholder = st.empty()
+                                        for chunk in stream_chat_message(st.session_state.adk_session, user_message):
+                                            text = getattr(chunk, "text", "") or ""
+                                            if not text:
+                                                continue
+                                            full_text += text
+                                            placeholder.markdown(full_text)
+                                st.session_state.chat_messages.append(
+                                    {
+                                        "role": "assistant",
+                                        "author": author,
+                                        "content": full_text,
+                                    }
+                                )
+                            else:
+                                responses = send_chat_message(st.session_state.adk_session, user_message)
+                                for response in responses:
+                                    st.session_state.chat_messages.append(
+                                        {
+                                            "role": "assistant",
+                                            "author": response.author,
+                                            "content": response.text,
+                                        }
+                                    )
+                except Exception as exc:
+                    st.session_state.chat_messages.append(
+                        {
+                            "role": "assistant",
+                            "author": "system",
+                            "content": f"Chatbot error: {exc}",
+                        }
+                    )
+                finally:
+                    st.session_state.adk_busy = False
+                st.rerun()
+
+
+if __name__ == "__main__":
+    main()
