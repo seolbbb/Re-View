@@ -23,7 +23,7 @@ summarizer:
   claim_max_chars: 0           # claim 최대 글자수(0=제한 없음)
   temperature: 0.2             # 생성 다양성
   json_repair_attempts: 2      # JSON 복구 재시도 횟수
-  prompt_version: "v1.5"       # summarizer 프롬프트 버전 (Production: Benchmark Winner)
+  prompt_version: "v4.1"       # summarizer 프롬프트 버전 (Production: Benchmark Winner)
 
 # Gemini 호출 설정
 llm_gemini:
