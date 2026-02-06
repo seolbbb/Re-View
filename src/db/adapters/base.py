@@ -166,6 +166,9 @@ class BaseAdapter:
         # ---------------------------------------------------------------------
         # 2. Cloudflare R2 클라이언트 초기화 (선택적)
         # ---------------------------------------------------------------------
+        # R2 전용 모드: Supabase Storage fallback을 비활성화한다.
+        # - "1", "true", "yes" => True
+        self.r2_only = str(os.getenv("R2_ONLY_STORAGE", "1")).lower() in ("1", "true", "yes")
         self._init_r2_client()
 
     def _init_r2_client(self) -> None:

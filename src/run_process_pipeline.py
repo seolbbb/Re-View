@@ -497,6 +497,8 @@ def run_processing_pipeline(
                     adapter.s3_client.download_fileobj(adapter.r2_bucket, storage_path, buffer)
                     image_bytes = buffer.getvalue()
                 else:
+                    if getattr(adapter, "r2_only", False):
+                        raise RuntimeError("R2 storage is required (check R2_* env vars)")
                     image_bytes = adapter.client.storage.from_("captures").download(storage_path)
                 image_path.write_bytes(image_bytes)
                 manifest_payload.append(manifest_item)
@@ -799,6 +801,8 @@ def run_processing_pipeline(
                                                 current_adapter.s3_client.download_fileobj(current_adapter.r2_bucket, storage_path, buffer)
                                                 img_bytes = buffer.getvalue()
                                             else:
+                                                if getattr(current_adapter, "r2_only", False):
+                                                    raise RuntimeError("R2 storage is required (check R2_* env vars)")
                                                 img_bytes = current_adapter.client.storage.from_("captures").download(storage_path)
                                             img_path.write_bytes(img_bytes)
                                     

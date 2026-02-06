@@ -665,6 +665,8 @@ def init_upload(payload: UploadInitRequest, http_request: Request):
         )
         print(f"[R2] Generated presigned upload URL for {storage_key} (ContentType: {content_type})")
     else:
+        if getattr(adapter, "r2_only", False):
+            raise HTTPException(status_code=503, detail="R2 storage is required (check R2_* env vars)")
         # Supabase Storage fallback
         storage_key = f"{video_id}/{safe_name}"
         adapter.update_video_storage_key(video_id, storage_key)
@@ -782,6 +784,8 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
             adapter.s3_client.download_file(adapter.r2_bucket, storage_key, str(tmp_path))
             print(f"[R2] Downloaded video from {adapter.r2_bucket}/{storage_key}")
         else:
+            if getattr(adapter, "r2_only", False):
+                raise RuntimeError("R2 storage is required (check R2_* env vars)")
             # Supabase Storage fallback
             file_data = adapter.client.storage.from_("videos").download(storage_key)
             tmp_path.write_bytes(file_data)

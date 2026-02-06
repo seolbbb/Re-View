@@ -113,6 +113,7 @@ class AsyncCaptureSttProducer:
         self.captures_dir = config.video_root / "captures"
         self.stt_json_path = config.video_root / "stt.json"
         self.capture_output_base = config.capture_output_base or config.video_root.parent
+        self._db_adapter = None
 
         self._capture_event_count = 0
         self._capture_item_count = 0
@@ -132,7 +133,12 @@ class AsyncCaptureSttProducer:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(stt_task, capture_task, return_exceptions=True)
+            if self.context.sync_to_db:
+                self._mark_preprocess_failed("producer_failed")
             raise
+        else:
+            if self.context.sync_to_db:
+                self._mark_preprocess_done()
 
         return CaptureSttProducerResult(
             capture_event_count=self._capture_event_count,
@@ -140,6 +146,35 @@ class AsyncCaptureSttProducer:
             stt_segment_count=stt_event.segment_count,
             stt_json_path=stt_event.stt_json_path,
         )
+
+    def _ensure_db_adapter(self):
+        if self._db_adapter is None:
+            from src.db import get_supabase_adapter
+
+            self._db_adapter = get_supabase_adapter()
+        return self._db_adapter
+
+    def _mark_preprocess_done(self) -> None:
+        adapter = self._ensure_db_adapter()
+        if not adapter or not self.context.preprocess_job_id:
+            return
+        try:
+            adapter.update_preprocessing_job_status(self.context.preprocess_job_id, "DONE")
+        except Exception as exc:
+            pipeline_logger.log("DB", f"preprocess status update failed: {exc}")
+
+    def _mark_preprocess_failed(self, message: str) -> None:
+        adapter = self._ensure_db_adapter()
+        if not adapter or not self.context.preprocess_job_id:
+            return
+        try:
+            adapter.update_preprocessing_job_status(
+                self.context.preprocess_job_id,
+                "FAILED",
+                error_message=message,
+            )
+        except Exception as exc:
+            pipeline_logger.log("DB", f"preprocess failed update error: {exc}")
 
     async def _run_stt_chain(self) -> SttDoneEvent:
         """Audio 추출 후 STT를 실행하고 STT 완료 이벤트를 게시한다."""
@@ -168,6 +203,9 @@ class AsyncCaptureSttProducer:
             elapsed_audio = time.perf_counter() - t_audio
             pipeline_logger.log("Audio", f"DONE ({elapsed_audio:.1f}s)")
 
+            if self.context.sync_to_db and self.context.video_id and self.context.upload_audio_to_r2:
+                await asyncio.to_thread(self._upload_audio_sync, audio_path)
+
             pipeline_logger.log("STT", "Analyzing...")
             t0 = time.perf_counter()
             stt_payload = await asyncio.to_thread(
@@ -186,6 +224,9 @@ class AsyncCaptureSttProducer:
                 if isinstance(segments, list):
                     segment_count = len(segments)
 
+            if self.context.sync_to_db and self.context.video_id:
+                await asyncio.to_thread(self._upload_stt_sync, stt_payload)
+
             event = SttDoneEvent(
                 run_id=self.context.run_id,
                 stt_json_path=self.stt_json_path,
@@ -203,6 +244,43 @@ class AsyncCaptureSttProducer:
             )
             raise
 
+    def _upload_audio_sync(self, audio_path: Path) -> None:
+        adapter = self._ensure_db_adapter()
+        if not adapter or not self.context.video_id:
+            return
+        try:
+            upload_result = adapter.upload_audio(self.context.video_id, audio_path)
+            audio_storage_key = upload_result.get("storage_path") if isinstance(upload_result, dict) else None
+            if audio_storage_key and self.context.preprocess_job_id:
+                adapter.client.table("preprocessing_jobs").update(
+                    {"audio_storage_key": audio_storage_key}
+                ).eq("id", self.context.preprocess_job_id).execute()
+        except Exception as exc:
+            pipeline_logger.log("DB", f"audio upload failed: {exc}")
+
+    def _upload_stt_sync(self, stt_payload: Any) -> None:
+        adapter = self._ensure_db_adapter()
+        if not adapter or not self.context.video_id:
+            return
+        segments = []
+        if isinstance(stt_payload, dict):
+            segments = stt_payload.get("segments", [])
+            if isinstance(segments, dict):
+                segments = segments.get("segments", [])
+        elif isinstance(stt_payload, list):
+            segments = stt_payload
+        if not isinstance(segments, list):
+            segments = []
+        try:
+            adapter.save_stt_result(
+                self.context.video_id,
+                segments,
+                preprocess_job_id=self.context.preprocess_job_id,
+                provider=self.config.stt_backend,
+            )
+        except Exception as exc:
+            pipeline_logger.log("DB", f"stt upload failed: {exc}")
+
     async def _run_capture_loop(self) -> Tuple[int, int]:
         """Capture를 실행하고 chunk 단위로 capture 이벤트를 게시한다."""
         batch_size = self.config.capture_batch_size
@@ -215,9 +293,13 @@ class AsyncCaptureSttProducer:
             if not rows:
                 return
 
-            captures = tuple(CaptureUnit.from_mapping(row) for row in rows)
+            enriched_rows = rows
+            if self.context.sync_to_db and self.context.video_id:
+                enriched_rows = await asyncio.to_thread(self._upload_captures_sync, rows)
+
+            captures = tuple(CaptureUnit.from_mapping(row) for row in enriched_rows)
             start_ms = min(c.timestamp_ms for c in captures)
-            end_ms = max(_capture_end_ms(row) for row in rows)
+            end_ms = max(_capture_end_ms(row) for row in enriched_rows)
             if end_ms < start_ms:
                 end_ms = start_ms
             time_window = TimeWindow(start_ms=start_ms, end_ms=end_ms)
@@ -311,6 +393,39 @@ class AsyncCaptureSttProducer:
                 retriable=False,
             )
             raise
+
+    def _upload_captures_sync(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        adapter = self._ensure_db_adapter()
+        if not adapter or not self.context.video_id:
+            return rows
+
+        enriched: List[Dict[str, Any]] = []
+        for row in rows:
+            row_copy = dict(row)
+            file_name = row_copy.get("file_name")
+            storage_path = None
+            if file_name:
+                image_path = self.captures_dir / file_name
+                if image_path.exists():
+                    try:
+                        upload_result = adapter.upload_capture_image(self.context.video_id, image_path)
+                        storage_path = upload_result.get("storage_path") if isinstance(upload_result, dict) else None
+                    except Exception as exc:
+                        pipeline_logger.log("DB", f"capture upload failed ({file_name}): {exc}")
+            if storage_path:
+                row_copy["storage_path"] = storage_path
+            enriched.append(row_copy)
+
+        try:
+            adapter.save_captures(
+                self.context.video_id,
+                enriched,
+                preprocess_job_id=self.context.preprocess_job_id,
+            )
+        except Exception as exc:
+            pipeline_logger.log("DB", f"capture DB save failed: {exc}")
+
+        return enriched
 
 
 __all__ = [

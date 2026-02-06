@@ -108,7 +108,11 @@ class PipelineContext:
     video_name: str
     output_root: Path
     video_id: Optional[str] = None
+    preprocess_job_id: Optional[str] = None
     processing_job_id: Optional[str] = None
+    sync_to_db: bool = False
+    upload_video_to_r2: bool = True
+    upload_audio_to_r2: bool = False
     batch_size: int = 1
     vlm_batch_size: Optional[int] = None
     vlm_concurrency: int = 1
