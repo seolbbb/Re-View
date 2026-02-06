@@ -169,8 +169,8 @@ def generate_content(
     timeout_sec: int,
     *,
     client_override: Optional[Any] = None,
-) -> tuple[str, int]:
-    """Gemini 호출 결과의 텍스트와 토큰 사용량을 반환한다."""
+) -> tuple[str, int, int]:
+    """Gemini 호출 결과의 텍스트, 총 토큰 수, 캐시된 토큰 수를 반환한다."""
     client = client_override or client_bundle.client
     config = {
         "temperature": temperature,
@@ -205,10 +205,12 @@ def generate_content(
         
     text = extract_text_from_response(response)
     total_tokens = 0
+    cached_tokens = 0
     if hasattr(response, "usage_metadata") and response.usage_metadata:
         total_tokens = getattr(response.usage_metadata, "total_token_count", 0)
+        cached_tokens = getattr(response.usage_metadata, "cached_content_token_count", 0) or 0
     
-    return text, total_tokens
+    return text, total_tokens, cached_tokens
 
 
 def run_with_retries(
@@ -222,8 +224,8 @@ def run_with_retries(
     backoff_sec: List[int],
     context: str = "",
     verbose: bool = False,
-) -> tuple[str, int]:
-    """오류 시 Gemini 호출을 재시도하며 결과와 토큰 사용량을 반환한다."""
+) -> tuple[str, int, int]:
+    """오류 시 Gemini 호출을 재시도하며 결과, 총 토큰 수, 캐시된 토큰 수를 반환한다."""
     clients = getattr(client_bundle, "clients", None) or [client_bundle.client]
     total_clients = len(clients)
     last_error: Optional[Exception] = None

@@ -143,7 +143,7 @@ def _evaluate_batch(
     prompt = _build_prompt(prompt_template, batch)
     
     # 3. LLM 호출 (Retry 로직 포함)
-    llm_text, total_tokens = run_with_retries(
+    llm_text, total_tokens, _ = run_with_retries(
         client_bundle,
         prompt,
         response_schema,
@@ -178,7 +178,7 @@ def _evaluate_batch(
         except Exception as exc:
             last_error = exc
             # 수정 프롬프트로 재시도
-            llm_text, tokens = run_with_retries(
+            llm_text, tokens, _ = run_with_retries(
                 client_bundle,
                 _repair_prompt(llm_text),
                 response_schema,

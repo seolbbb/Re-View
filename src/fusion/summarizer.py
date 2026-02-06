@@ -573,7 +573,7 @@ def run_summarizer(
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text, tokens = run_with_retries(
+        llm_text, tokens, _ = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
@@ -645,7 +645,7 @@ def run_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text, tokens = run_with_retries(
+                llm_text, tokens, _ = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -752,10 +752,11 @@ def run_batch_summarizer(
     output_jsonl = output_dir / "segment_summaries.jsonl"
     output_handle = None
     total_tokens = 0
+    total_cached_tokens = 0
     try:
         output_handle = output_jsonl.open("w", encoding="utf-8")
 
-        llm_text, tokens = run_with_retries(
+        llm_text, tokens, cached_tokens = run_with_retries(
             client_bundle,
             prompt,
             response_schema,
@@ -768,6 +769,7 @@ def run_batch_summarizer(
             verbose=verbose,
         )
         total_tokens += tokens
+        total_cached_tokens += cached_tokens
 
         last_error: Optional[Exception] = None
         attempts = config.raw.summarizer.json_repair_attempts
@@ -821,7 +823,7 @@ def run_batch_summarizer(
                 repair_prompt = _repair_prompt(
                     llm_text, bullets_min, bullets_max, claim_max_chars
                 )
-                llm_text, tokens = run_with_retries(
+                llm_text, tokens, cached_tokens = run_with_retries(
                     client_bundle,
                     repair_prompt,
                     response_schema,
@@ -834,6 +836,7 @@ def run_batch_summarizer(
                     verbose=verbose,
                 )
                 total_tokens += tokens
+                total_cached_tokens += cached_tokens
         if last_error:
             raise RuntimeError(f"LLM JSON/검증 실패: {last_error}")
     finally:
@@ -843,12 +846,22 @@ def run_batch_summarizer(
     # 다음 배치를 위한 context 추출
     next_context = extract_batch_context(output_jsonl)
 
+    # 실행 후 캐시 정보 기록 (캐시된 토큰이 있는 경우)
+    if total_cached_tokens > 0:
+        update_token_usage(
+            output_dir=output_dir,
+            component="batch_summarizer_cache",
+            input_tokens=total_cached_tokens,
+            model=client_bundle.model,
+            extra={"cached_ratio": round(total_cached_tokens / total_tokens, 4) if total_tokens > 0 else 0}
+        )
+
     return {
         "success": True,
         "segment_summaries_jsonl": str(output_jsonl),
         "segments_count": len(segments),
         "context": next_context,
-        "token_usage": {"total_tokens": total_tokens},
+        "token_usage": {"total_tokens": total_tokens, "cached_tokens": total_cached_tokens},
     }
 
 
