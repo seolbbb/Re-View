@@ -30,9 +30,11 @@ summarizer:
 llm_gemini:
   backend: "developer_api"           # Gemini 호출 방식
   model: "gemini-3-flash-preview"    # 모델 이름
-  timeout_sec: 50                    # 요청 타임아웃(초)
-  max_retries: 1                     # 재시도 횟수
+  timeout_sec: 90                    # 요청 타임아웃(초)
+  max_retries: 2                     # 재시도 횟수
   backoff_sec: [2, 5, 15, 30, 60]    # 재시도 백오프(초)
+  global_max_concurrent: 8           # 프로세스-전역 Google LLM 동시 호출 제한
+  key_fail_cooldown_sec: 30          # retriable 실패 키 임시 제외 시간(초)
   response_mime_type: "application/json"  # 응답 MIME 타입
 
   developer_api:

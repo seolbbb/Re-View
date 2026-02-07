@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from src.services.chat_llm_config import load_chat_llm_settings
+import yaml
+
+from src.llm.global_limiter import acquire_google_slot, configure_google_global_limit
+from src.llm.google_key_routing import (
+    make_google_key_id,
+    mark_google_key_cooldown,
+    order_google_key_indices,
+)
 from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
 try:
@@ -60,11 +68,147 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
-
 _CHAT_LLM_SETTINGS = load_chat_llm_settings(_CHAT_SETTINGS_PATH, logger=logger)
 _CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
 _CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
 _CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
+
+def _env_int_list(name: str, default: str) -> List[int]:
+    raw = os.getenv(name, default)
+    values: List[int] = []
+    normalized = raw.replace(";", ",").replace(" ", ",")
+    for part in normalized.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except ValueError:
+            continue
+        if value >= 0:
+            values.append(value)
+    return values
+
+
+@dataclass(frozen=True)
+class ChatLLMSettings:
+    timeout_sec: int
+    max_retries: int
+    backoff_sec: List[int]
+    global_max_concurrent: int
+    key_fail_cooldown_sec: int
+
+
+def _coerce_non_negative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _coerce_backoff_list(value: Any, default: List[int]) -> List[int]:
+    if isinstance(value, list):
+        parsed = [_coerce_non_negative_int(item, -1) for item in value]
+        parsed = [item for item in parsed if item >= 0]
+        return parsed if parsed else default
+    if isinstance(value, str):
+        parsed: List[int] = []
+        normalized = value.replace(";", ",").replace(" ", ",")
+        for part in normalized.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                parsed_value = int(token)
+            except ValueError:
+                continue
+            if parsed_value >= 0:
+                parsed.append(parsed_value)
+        return parsed if parsed else default
+    return default
+
+
+def _load_chat_llm_settings() -> ChatLLMSettings:
+    default_timeout = max(1, _env_int("CHATBOT_LLM_TIMEOUT_SEC", 90))
+    default_retries = max(0, _env_int("CHATBOT_LLM_MAX_RETRIES", 2))
+    default_backoff = _env_int_list("CHATBOT_LLM_BACKOFF_SEC", "2,5,10") or [2, 5, 10]
+    default_global_max_concurrent = max(1, _env_int("CHATBOT_LLM_MAX_CONCURRENT", 8))
+    default_key_fail_cooldown_sec = max(0, _env_int("CHATBOT_LLM_KEY_COOLDOWN_SEC", 30))
+
+    if not _CHAT_SETTINGS_PATH.exists():
+        return ChatLLMSettings(
+            timeout_sec=default_timeout,
+            max_retries=default_retries,
+            backoff_sec=default_backoff,
+            global_max_concurrent=default_global_max_concurrent,
+            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
+        )
+
+    try:
+        payload = yaml.safe_load(_CHAT_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.warning("Failed to read chat settings yaml (%s): %s", _CHAT_SETTINGS_PATH, exc)
+        return ChatLLMSettings(
+            timeout_sec=default_timeout,
+            max_retries=default_retries,
+            backoff_sec=default_backoff,
+            global_max_concurrent=default_global_max_concurrent,
+            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
+        )
+
+    if not isinstance(payload, dict):
+        logger.warning("Invalid chat settings format in %s. Falling back to defaults.", _CHAT_SETTINGS_PATH)
+        return ChatLLMSettings(
+            timeout_sec=default_timeout,
+            max_retries=default_retries,
+            backoff_sec=default_backoff,
+            global_max_concurrent=default_global_max_concurrent,
+            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
+        )
+
+    llm_payload = payload.get("llm_gemini", {})
+    if not isinstance(llm_payload, dict):
+        llm_payload = {}
+
+    timeout_sec = max(1, _coerce_non_negative_int(llm_payload.get("timeout_sec"), default_timeout))
+    max_retries = max(0, _coerce_non_negative_int(llm_payload.get("max_retries"), default_retries))
+    backoff_sec = _coerce_backoff_list(llm_payload.get("backoff_sec"), default_backoff)
+    global_max_concurrent = max(
+        1,
+        _coerce_non_negative_int(
+            llm_payload.get("global_max_concurrent"),
+            default_global_max_concurrent,
+        ),
+    )
+    key_fail_cooldown_sec = max(
+        0,
+        _coerce_non_negative_int(
+            llm_payload.get("key_fail_cooldown_sec"),
+            default_key_fail_cooldown_sec,
+        ),
+    )
+
+    return ChatLLMSettings(
+        timeout_sec=timeout_sec,
+        max_retries=max_retries,
+        backoff_sec=backoff_sec,
+        global_max_concurrent=global_max_concurrent,
+        key_fail_cooldown_sec=key_fail_cooldown_sec,
+    )
+
+
+_CHAT_LLM_SETTINGS = _load_chat_llm_settings()
+_CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
+_CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
+_CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
+_CHAT_LLM_GLOBAL_MAX_CONCURRENT = _CHAT_LLM_SETTINGS.global_max_concurrent
+_CHAT_LLM_KEY_FAIL_COOLDOWN_SEC = _CHAT_LLM_SETTINGS.key_fail_cooldown_sec
+
+configure_google_global_limit(
+    _CHAT_LLM_GLOBAL_MAX_CONCURRENT,
+    source="chat.llm_gemini.global_max_concurrent",
+)
 
 
 _ENABLE_GRAPH_SUGGESTIONS = os.getenv("CHATBOT_ENABLE_GRAPH_SUGGESTIONS", "true").strip().lower() not in {

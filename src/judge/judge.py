@@ -154,6 +154,8 @@ def _evaluate_batch(
         backoff_sec=config.raw.llm_gemini.backoff_sec,
         context=f"{batch_label}: Judge" if batch_label else "Judge",
         verbose=verbose,
+        role="judge",
+        key_fail_cooldown_sec=config.raw.llm_gemini.key_fail_cooldown_sec,
     )
     
     last_error: Optional[Exception] = None
@@ -189,6 +191,8 @@ def _evaluate_batch(
                 backoff_sec=config.raw.llm_gemini.backoff_sec,
                 context=f"{batch_label}: [Judge]" if batch_label else "Judge",
                 verbose=verbose,
+                role="judge",
+                key_fail_cooldown_sec=config.raw.llm_gemini.key_fail_cooldown_sec,
             )
             total_tokens += tokens
     if last_error:

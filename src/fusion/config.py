@@ -86,6 +86,8 @@ class LlmGeminiConfig(BaseModel):
     timeout_sec: int = Field(..., ge=1)
     max_retries: int = Field(..., ge=0)
     backoff_sec: List[int]
+    global_max_concurrent: int = Field(8, ge=1)
+    key_fail_cooldown_sec: int = Field(30, ge=0)
     response_mime_type: str
     developer_api: DeveloperApiConfig
     vertex_ai: VertexAiConfig
