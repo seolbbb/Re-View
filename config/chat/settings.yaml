@@ -5,3 +5,5 @@ llm_gemini:
   timeout_sec: 90
   max_retries: 2
   backoff_sec: [2, 5, 10]
+  global_max_concurrent: 8
+  key_fail_cooldown_sec: 30

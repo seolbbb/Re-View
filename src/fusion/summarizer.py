@@ -577,6 +577,8 @@ def run_summarizer(
             config.raw.llm_gemini.max_retries,
             config.raw.llm_gemini.backoff_sec,
             context="Summarizer",
+            role="summarizer",
+            key_fail_cooldown_sec=config.raw.llm_gemini.key_fail_cooldown_sec,
         )
 
         last_error: Optional[Exception] = None
@@ -649,6 +651,8 @@ def run_summarizer(
                     config.raw.llm_gemini.max_retries,
                     config.raw.llm_gemini.backoff_sec,
                     context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
+                    role="summarizer",
+                    key_fail_cooldown_sec=config.raw.llm_gemini.key_fail_cooldown_sec,
                 )
         if last_error:
             raise RuntimeError(f"LLM JSON/Validation failed: {last_error}")
@@ -761,6 +765,8 @@ def run_batch_summarizer(
             config.raw.llm_gemini.backoff_sec,
             context=f"{batch_label}: Summarizer" if batch_label else "Summarizer",
             verbose=verbose,
+            role="summarizer",
+            key_fail_cooldown_sec=config.raw.llm_gemini.key_fail_cooldown_sec,
         )
         total_tokens += tokens
         total_cached_tokens += cached_tokens
@@ -828,6 +834,8 @@ def run_batch_summarizer(
                     config.raw.llm_gemini.backoff_sec,
                     context="Summarizer",
                     verbose=verbose,
+                    role="summarizer",
+                    key_fail_cooldown_sec=config.raw.llm_gemini.key_fail_cooldown_sec,
                 )
                 total_tokens += tokens
                 total_cached_tokens += cached_tokens

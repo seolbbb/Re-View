@@ -11,6 +11,7 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
 
     const statusConfig = {
         done: { label: '완료', color: '#22c55e' },
+        failed: { label: '요약 실패', color: '#ef4444' },
         progress: { label: '분석 중', color: '#f59e0b' },
         pending: { label: '대기', color: '#6b7280' },
     };
