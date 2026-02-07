@@ -136,6 +136,13 @@ def process_pipeline(
     if not request.video_name and not request.video_id:
         raise HTTPException(status_code=400, detail="video_name or video_id is required.")
 
+    # For DB-backed videos, default to syncing results back into DB unless explicitly disabled.
+    # Frontend restart calls historically omitted this flag, which caused "DONE but no summaries"
+    # because the pipeline ran without uploading artifacts.
+    sync_to_db = request.sync_to_db
+    if request.video_id and sync_to_db is None:
+        sync_to_db = True
+
     # video_id 기반 요청만 인증/권한 체크 (video_name-only는 기존 dev/local 사용을 위해 허용)
     if request.video_id:
         adapter = get_supabase_adapter()
@@ -155,6 +162,13 @@ def process_pipeline(
                 detail="Pipeline is already running for this video",
             )
 
+        # 재시작/재실행 요청은 즉시 상태를 PROCESSING으로 전환하고 기존 오류를 클리어한다.
+        # (SSE가 FAILED에서 즉시 종료되는 문제 및 stale error banner 방지)
+        try:
+            adapter.update_video_status(request.video_id, "PROCESSING")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to update video status: {exc}")
+
     background_tasks.add_task(
         run_processing_pipeline,
         video_name=request.video_name,
@@ -163,7 +177,7 @@ def process_pipeline(
         batch_mode=request.batch_mode,
         limit=request.limit,
         force_db=request.force_db,
-        sync_to_db=request.sync_to_db,
+        sync_to_db=sync_to_db,
     )
 
     return ProcessResponse(status="started", message="processing started")

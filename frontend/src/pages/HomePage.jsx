@@ -12,7 +12,7 @@ function mapStatus(dbStatus) {
     if (!dbStatus) return 'pending';
     const s = dbStatus.toUpperCase();
     if (s === 'DONE') return 'done';
-    if (s === 'FAILED') return 'done';
+    if (s === 'FAILED') return 'failed';
     if (['PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'VLM_RUNNING', 'SUMMARY_RUNNING', 'JUDGE_RUNNING'].includes(s))
         return 'progress';
     return 'pending';
@@ -78,7 +78,7 @@ function HomePage() {
     const filtered = videos.filter((v) => {
         if (filter === 'all') return true;
         const uiStatus = mapStatus(v.status);
-        if (filter === 'done') return uiStatus === 'done';
+        if (filter === 'done') return uiStatus === 'done' || uiStatus === 'failed';
         if (filter === 'progress') return uiStatus === 'progress' || uiStatus === 'pending';
         return true;
     });

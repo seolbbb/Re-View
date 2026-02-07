@@ -98,7 +98,8 @@ export function getVideoProgress(videoId) {
 }
 
 export function restartProcessing(videoId) {
-  return post('/process', { video_id: videoId });
+  // Ensure reruns publish results back into DB so the UI can read summaries.
+  return post('/process', { video_id: videoId, sync_to_db: true });
 }
 
 // ---------------------------------------------------------------------------

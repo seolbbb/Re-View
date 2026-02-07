@@ -148,9 +148,17 @@ class VideoAdapterMixin:
             Dict: 업데이트된 비디오 레코드 정보를 반환
         """
         # 1. 업데이트할 데이터 준비
-        data = {"status": status}
-        if error:
-            data["error_message"] = error
+        #
+        # UX/streaming consistency: FAILED 상태를 벗어나는 순간 기존 error_message를
+        # 지워야 프론트가 "실패 배너"를 계속 유지하지 않습니다.
+        status_upper = (status or "").upper()
+        data: Dict[str, Any] = {"status": status}
+        if status_upper == "FAILED":
+            # 명시적으로 에러가 주어진 경우에만 overwrite (그 외에는 기존 메시지 유지)
+            if error is not None:
+                data["error_message"] = error
+        else:
+            data["error_message"] = None
         
         # 2. 업데이트 실행 (ID 기준)
         result = self.client.table("videos").update(data).eq("id", video_id).execute()
