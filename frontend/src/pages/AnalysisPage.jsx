@@ -2,13 +2,138 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useVideo } from '../context/VideoContext';
-import { getVideoStatus } from '../api/videos';
+import { getVideoStatus, getVideoSummaries } from '../api/videos';
 import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import Sidebar from '../components/Sidebar';
 import VideoPlayer from '../components/VideoPlayer';
 import ChatBot from '../components/ChatBot';
 import SummaryPanel from '../components/SummaryPanel';
-import { Menu, ChevronRight, Sun, Moon, Share2, Download } from 'lucide-react';
+import katex from 'katex';
+import { Menu, ChevronRight, Sun, Moon, Download, ChevronDown, Video } from 'lucide-react';
+
+function formatMs(ms) {
+    if (ms == null) return '--:--';
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** Replace $...$ and $$...$$ with KaTeX HTML, and escape the rest for safe HTML. */
+function renderTextToHtml(text) {
+    if (!text) return '';
+    const parts = [];
+    // Split on display math first, then inline math
+    let remaining = text;
+    // Display math $$...$$
+    remaining = remaining.replace(/\$\$([\s\S]+?)\$\$/g, (_m, inner) => {
+        try { return katex.renderToString(inner.trim(), { displayMode: true, throwOnError: false }); }
+        catch { return _m; }
+    });
+    // Inline math $...$
+    remaining = remaining.replace(/\$([^\$\n]+?)\$/g, (_m, inner) => {
+        try { return katex.renderToString(inner.trim(), { displayMode: false, throwOnError: false }); }
+        catch { return _m; }
+    });
+    // Bold **...**
+    remaining = remaining.replace(/\*\*([\s\S]+?)\*\*/g, '<strong>$1</strong>');
+    return remaining;
+}
+
+function buildHtmlExport(videoName, items) {
+    const lines = [];
+    lines.push(`<h1>${videoName}</h1>`);
+    items.forEach((item, index) => {
+        const segIdx = item.segment_index ?? index + 1;
+        const timeRange = `${formatMs(item.start_ms)}\u2013${formatMs(item.end_ms)}`;
+        lines.push(`<h2>Segment ${segIdx} (${timeRange})</h2>`);
+        const summary = item.summary || {};
+        const bullets = summary.bullets || [];
+        const definitions = summary.definitions || [];
+        const explanations = summary.explanations || [];
+        const openQuestions = summary.open_questions || [];
+
+        if (bullets.length > 0) {
+            lines.push('<h3>요약</h3><ul>');
+            bullets.forEach((b) => {
+                const text = typeof b === 'string' ? b : (b.bullet_id ? `(${b.bullet_id}) ` : '') + (b.claim || b.text || JSON.stringify(b));
+                lines.push(`<li>${renderTextToHtml(text)}</li>`);
+            });
+            lines.push('</ul>');
+        }
+        if (definitions.length > 0) {
+            lines.push('<h3>정의</h3><ul>');
+            definitions.forEach((d) => {
+                lines.push(`<li><strong>${renderTextToHtml(d.term)}</strong>: ${renderTextToHtml(d.definition)}</li>`);
+            });
+            lines.push('</ul>');
+        }
+        if (explanations.length > 0) {
+            lines.push('<h3>해설</h3><ul>');
+            explanations.forEach((e) => {
+                lines.push(`<li>${renderTextToHtml(e.point || e.text || JSON.stringify(e))}</li>`);
+            });
+            lines.push('</ul>');
+        }
+        if (openQuestions.length > 0) {
+            lines.push('<h3>열린 질문</h3><ul>');
+            openQuestions.forEach((q) => {
+                lines.push(`<li>${renderTextToHtml(q.question || q.text || JSON.stringify(q))}</li>`);
+            });
+            lines.push('</ul>');
+        }
+    });
+    return lines.join('\n');
+}
+
+function buildMarkdownExport(videoName, items) {
+    const lines = [`# ${videoName}`, ''];
+    items.forEach((item, index) => {
+        const segIdx = item.segment_index ?? index + 1;
+        const timeRange = `${formatMs(item.start_ms)}–${formatMs(item.end_ms)}`;
+        lines.push(`## Segment ${segIdx} (${timeRange})`);
+
+        const summary = item.summary || {};
+        const bullets = summary.bullets || [];
+        const definitions = summary.definitions || [];
+        const explanations = summary.explanations || [];
+        const openQuestions = summary.open_questions || [];
+
+        if (bullets.length > 0) {
+            lines.push('### 요약');
+            bullets.forEach((b) => {
+                const text = typeof b === 'string' ? b : (b.bullet_id ? `(${b.bullet_id}) ` : '') + (b.claim || b.text || JSON.stringify(b));
+                lines.push(`- ${text}`);
+            });
+            lines.push('');
+        }
+
+        if (definitions.length > 0) {
+            lines.push('### 정의');
+            definitions.forEach((d) => {
+                lines.push(`- **${d.term}**: ${d.definition}`);
+            });
+            lines.push('');
+        }
+
+        if (explanations.length > 0) {
+            lines.push('### 해설');
+            explanations.forEach((e) => {
+                lines.push(`- ${e.point || e.text || JSON.stringify(e)}`);
+            });
+            lines.push('');
+        }
+
+        if (openQuestions.length > 0) {
+            lines.push('### 열린 질문');
+            openQuestions.forEach((q) => {
+                lines.push(`- ${q.question || q.text || JSON.stringify(q)}`);
+            });
+            lines.push('');
+        }
+    });
+    return lines.join('\n');
+}
 
 function AnalysisPage() {
     const { id: videoId } = useParams();
@@ -16,6 +141,19 @@ function AnalysisPage() {
     const { theme, toggleTheme } = useTheme();
     const { setCurrentVideoId } = useVideo();
     const [videoInfo, setVideoInfo] = useState(null);
+    const [exportOpen, setExportOpen] = useState(false);
+    const exportRef = useRef(null);
+
+    // Close export dropdown on outside click
+    useEffect(() => {
+        const handleClick = (e) => {
+            if (exportRef.current && !exportRef.current.contains(e.target)) {
+                setExportOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, []);
 
     const handleHeaderStatus = useCallback((statusData) => {
         if (!statusData) return;
@@ -95,8 +233,26 @@ function AnalysisPage() {
     }, [videoId, setCurrentVideoId]);
 
     const videoName = videoInfo?.video_name || (videoInfo ? videoId : '로딩 중...');
-
     const statusLabel = videoInfo?.video_status || 'Loading';
+
+    const handleExportMarkdown = async () => {
+        setExportOpen(false);
+        try {
+            const data = await getVideoSummaries(videoId);
+            const items = data.items || [];
+            const md = buildMarkdownExport(videoName, items);
+            const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${videoName}.md`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error('Markdown export failed:', err);
+        }
+    };
+
 
     return (
         <div className="bg-[var(--bg-primary)] text-[var(--text-primary)] font-display flex h-screen overflow-hidden selection:bg-primary/40 selection:text-white transition-colors duration-300" data-theme={theme}>
@@ -106,8 +262,11 @@ function AnalysisPage() {
             {/* Main Content Area */}
             <main className="flex-1 flex flex-col min-w-0 h-full relative bg-[var(--bg-primary)] transition-colors duration-300">
                 {/* Header / Breadcrumbs */}
-                <header className="h-16 flex items-center justify-between px-6 border-b border-[var(--border-color)] bg-[var(--bg-primary)]/95 backdrop-blur z-10 shrink-0">
+                <header className="h-16 flex items-center justify-between px-6 border-b border-[var(--border-color)] bg-[var(--bg-primary)]/95 backdrop-blur z-30 shrink-0">
                     <div className="flex items-center gap-2">
+                        <a href="/" className="text-gray-400 hover:text-[var(--text-primary)] transition-colors" title="홈으로">
+                            <Video className="w-5 h-5" />
+                        </a>
                         <button className="md:hidden mr-2 text-gray-400">
                             <Menu className="w-5 h-5" />
                         </button>
@@ -136,14 +295,26 @@ function AnalysisPage() {
                         >
                             {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
                         </button>
-                        <button className="flex items-center gap-2 text-gray-400 hover:text-[var(--text-primary)] transition-colors">
-                            <Share2 className="w-5 h-5" />
-                            <span className="text-sm font-medium hidden sm:block">Share</span>
-                        </button>
-                        <button className="flex items-center gap-2 text-gray-400 hover:text-[var(--text-primary)] transition-colors">
-                            <Download className="w-5 h-5" />
-                            <span className="text-sm font-medium hidden sm:block">Export</span>
-                        </button>
+                        <div className="relative" ref={exportRef}>
+                            <button
+                                onClick={() => setExportOpen((o) => !o)}
+                                className="flex items-center gap-2 text-gray-400 hover:text-[var(--text-primary)] transition-colors"
+                            >
+                                <Download className="w-5 h-5" />
+                                <span className="text-sm font-medium hidden sm:block">Export</span>
+                                <ChevronDown className="w-4 h-4" />
+                            </button>
+                            {exportOpen && (
+                                <div className="absolute right-0 top-full mt-2 w-48 bg-[var(--bg-secondary,var(--bg-primary))] border border-[var(--border-color)] rounded-lg shadow-xl z-50 overflow-hidden">
+                                    <button
+                                        onClick={handleExportMarkdown}
+                                        className="w-full text-left px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-surface-highlight transition-colors"
+                                    >
+                                        Markdown (.md)
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </header>
 

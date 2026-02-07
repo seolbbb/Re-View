@@ -322,9 +322,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
                                 {definitions.map((d, i) => (
                                     <li key={i} className="markdown-inline">
-                                        <span className="font-semibold text-[var(--text-primary)]">{d.term}</span>
-                                        {': '}
-                                        <MarkdownRenderer>{d.definition}</MarkdownRenderer>
+                                        <MarkdownRenderer>{`**${d.term}**: ${d.definition}`}</MarkdownRenderer>
                                     </li>
                                 ))}
                             </ul>
@@ -345,10 +343,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                         </div>
                     )}
 
-                    {/* 미해결 질문 (Open Questions) — expanded only */}
+                    {/* 열린 질문 (Open Questions) — expanded only */}
                     {isExpanded && openQuestions.length > 0 && (
                         <div className="mb-2">
-                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">미해결 질문</h5>
+                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">열린 질문</h5>
                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed italic">
                                 {openQuestions.map((q, i) => (
                                     <li key={i} className="markdown-inline">
