@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from src.services.chat_llm_config import load_chat_llm_settings
-import yaml
 
 from src.llm.global_limiter import acquire_google_slot, configure_google_global_limit
 from src.llm.google_key_routing import (
@@ -50,7 +49,6 @@ _DECISION_MODEL = os.getenv("CHATBOT_DECISION_MODEL", "gemini-2.5-flash")
 _DEFAULT_TEMPERATURE = os.getenv("CHATBOT_LLM_TEMPERATURE", "0.2")
 _DEFAULT_REASONING_MODE = os.getenv("CHATBOT_REASONING_MODE", "flash")
 _DEFAULT_ROUTER_MODE = os.getenv("CHATBOT_ROUTER", "rules").strip().lower()
-_DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
 _MAX_EVIDENCE_UNITS = int(os.getenv("CHATBOT_MAX_EVIDENCE_UNITS", "10"))
 _HISTORY_LOG_FORMAT = os.getenv("CHATBOT_HISTORY_LOG_FORMAT", "pretty").strip().lower()
 _TRACE_VERBOSE = True
@@ -69,136 +67,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 _CHAT_LLM_SETTINGS = load_chat_llm_settings(_CHAT_SETTINGS_PATH, logger=logger)
-_CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
-_CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
-_CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
-
-def _env_int_list(name: str, default: str) -> List[int]:
-    raw = os.getenv(name, default)
-    values: List[int] = []
-    normalized = raw.replace(";", ",").replace(" ", ",")
-    for part in normalized.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            value = int(token)
-        except ValueError:
-            continue
-        if value >= 0:
-            values.append(value)
-    return values
-
-
-@dataclass(frozen=True)
-class ChatLLMSettings:
-    timeout_sec: int
-    max_retries: int
-    backoff_sec: List[int]
-    global_max_concurrent: int
-    key_fail_cooldown_sec: int
-
-
-def _coerce_non_negative_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(0, parsed)
-
-
-def _coerce_backoff_list(value: Any, default: List[int]) -> List[int]:
-    if isinstance(value, list):
-        parsed = [_coerce_non_negative_int(item, -1) for item in value]
-        parsed = [item for item in parsed if item >= 0]
-        return parsed if parsed else default
-    if isinstance(value, str):
-        parsed: List[int] = []
-        normalized = value.replace(";", ",").replace(" ", ",")
-        for part in normalized.split(","):
-            token = part.strip()
-            if not token:
-                continue
-            try:
-                parsed_value = int(token)
-            except ValueError:
-                continue
-            if parsed_value >= 0:
-                parsed.append(parsed_value)
-        return parsed if parsed else default
-    return default
-
-
-def _load_chat_llm_settings() -> ChatLLMSettings:
-    default_timeout = max(1, _env_int("CHATBOT_LLM_TIMEOUT_SEC", 90))
-    default_retries = max(0, _env_int("CHATBOT_LLM_MAX_RETRIES", 2))
-    default_backoff = _env_int_list("CHATBOT_LLM_BACKOFF_SEC", "2,5,10") or [2, 5, 10]
-    default_global_max_concurrent = max(1, _env_int("CHATBOT_LLM_MAX_CONCURRENT", 8))
-    default_key_fail_cooldown_sec = max(0, _env_int("CHATBOT_LLM_KEY_COOLDOWN_SEC", 30))
-
-    if not _CHAT_SETTINGS_PATH.exists():
-        return ChatLLMSettings(
-            timeout_sec=default_timeout,
-            max_retries=default_retries,
-            backoff_sec=default_backoff,
-            global_max_concurrent=default_global_max_concurrent,
-            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
-        )
-
-    try:
-        payload = yaml.safe_load(_CHAT_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
-    except Exception as exc:
-        logger.warning("Failed to read chat settings yaml (%s): %s", _CHAT_SETTINGS_PATH, exc)
-        return ChatLLMSettings(
-            timeout_sec=default_timeout,
-            max_retries=default_retries,
-            backoff_sec=default_backoff,
-            global_max_concurrent=default_global_max_concurrent,
-            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
-        )
-
-    if not isinstance(payload, dict):
-        logger.warning("Invalid chat settings format in %s. Falling back to defaults.", _CHAT_SETTINGS_PATH)
-        return ChatLLMSettings(
-            timeout_sec=default_timeout,
-            max_retries=default_retries,
-            backoff_sec=default_backoff,
-            global_max_concurrent=default_global_max_concurrent,
-            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
-        )
-
-    llm_payload = payload.get("llm_gemini", {})
-    if not isinstance(llm_payload, dict):
-        llm_payload = {}
-
-    timeout_sec = max(1, _coerce_non_negative_int(llm_payload.get("timeout_sec"), default_timeout))
-    max_retries = max(0, _coerce_non_negative_int(llm_payload.get("max_retries"), default_retries))
-    backoff_sec = _coerce_backoff_list(llm_payload.get("backoff_sec"), default_backoff)
-    global_max_concurrent = max(
-        1,
-        _coerce_non_negative_int(
-            llm_payload.get("global_max_concurrent"),
-            default_global_max_concurrent,
-        ),
-    )
-    key_fail_cooldown_sec = max(
-        0,
-        _coerce_non_negative_int(
-            llm_payload.get("key_fail_cooldown_sec"),
-            default_key_fail_cooldown_sec,
-        ),
-    )
-
-    return ChatLLMSettings(
-        timeout_sec=timeout_sec,
-        max_retries=max_retries,
-        backoff_sec=backoff_sec,
-        global_max_concurrent=global_max_concurrent,
-        key_fail_cooldown_sec=key_fail_cooldown_sec,
-    )
-
-
-_CHAT_LLM_SETTINGS = _load_chat_llm_settings()
 _CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
 _CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
 _CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
@@ -255,15 +123,6 @@ def _load_google_api_keys() -> List[str]:
     return keys
 
 
-def _select_google_api_key(keys: List[str]) -> Optional[str]:
-    if not keys:
-        return None
-    if len(keys) == 1:
-        return keys[0]
-    index = int(time.time()) % len(keys)
-    return keys[index]
-
-
 def _load_genai_modules() -> Tuple[Any, Any]:
     try:
         from google import genai  # type: ignore
@@ -292,6 +151,27 @@ def _chat_backoff_for_attempt(attempt: int) -> float:
         return 1.0
     index = min(attempt, len(_CHAT_LLM_BACKOFF_SEC) - 1)
     return float(_CHAT_LLM_BACKOFF_SEC[index])
+
+
+def _build_chat_key_pool() -> Tuple[List[Optional[str]], List[str]]:
+    api_keys = _load_google_api_keys()
+    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
+    key_ids = [
+        make_google_key_id(key, fallback_label=f"chat_{idx + 1}")
+        for idx, key in enumerate(key_pool)
+    ]
+    return key_pool, key_ids
+
+
+def _pick_chat_key_index(key_ids: List[str], tried_once: set[int], attempt: int) -> int:
+    ordered_indices, _ = order_google_key_indices(key_ids, role="chat")
+    if not ordered_indices:
+        return 0
+    for idx in ordered_indices:
+        if idx not in tried_once:
+            tried_once.add(idx)
+            return idx
+    return ordered_indices[attempt % len(ordered_indices)]
 
 
 def _is_retriable_chat_error(exc: Exception) -> bool:
@@ -599,37 +479,6 @@ def _route_after_prepare(state: ChatState) -> str:
     return "llm"
 
 
-def _resolve_video_root(state: ChatState) -> Optional[Path]:
-    video_root = state.get("video_root")
-    if video_root:
-        return Path(video_root)
-    video_name = state.get("video_name")
-    if not video_name:
-        return None
-    output_base = state.get("output_base")
-    base_path = Path(output_base) if output_base else _DEFAULT_OUTPUT_BASE
-    return (base_path / video_name).resolve()
-
-
-def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    items.append(json.loads(stripped))
-                except json.JSONDecodeError:
-                    break
-    except OSError:
-        return []
-    return items
-
-
-
-
 def _normalize_evidence_refs(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
@@ -838,32 +687,6 @@ def _build_prompt(state: ChatState) -> str:
     return prompt
 
 
-def _build_enrichment_prompt(state: ChatState) -> str:
-    question = state.get("cleaned_message", "").strip()
-    records = state.get("answer_records") or []
-    condensed: List[Dict[str, Any]] = []
-    for record in records[:6]:
-        summary = record.get("summary") or {}
-        bullets = summary.get("bullets") or []
-        claims = [item.get("claim") for item in bullets if item.get("claim")]
-        condensed.append(
-            {
-                "segment_id": record.get("segment_id") or record.get("segment_index"),
-                "claims": claims[:6],
-            }
-        )
-    payload = json.dumps(condensed, ensure_ascii=False, indent=2)
-    return (
-        "You are deciding whether the current summaries are sufficient to answer the user.\n"
-        "If the summaries are likely insufficient and you should fetch extra evidence, reply with 'enrich'.\n"
-        "If the summaries are sufficient, reply with 'answer'.\n"
-        "Return only one word: enrich or answer.\n"
-        "\n"
-        f"Question:\n{question}\n\n"
-        f"Summary claims:\n{payload}\n"
-    )
-
-
 def _build_summary_sufficiency_prompt(state: ChatState) -> str:
     """요약만으로 답변 가능 여부를 판단하기 위한 프롬프트."""
     question = state.get("cleaned_message", "").strip()
@@ -927,39 +750,6 @@ def _route_after_summary_sufficiency(state: ChatState) -> str:
     return "answer"
 
 
-def _normalize_enrich_decision(value: str) -> str:
-    cleaned = re.sub(r"[^a-z]", "", value.strip().lower())
-    return "enrich" if cleaned == "enrich" else "answer"
-
-
-def _decide_enrichment(state: ChatState) -> Dict[str, Any]:
-    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
-    if reasoning_mode == "thinking":
-        _trace("enrich.decide", decision="enrich", reason="thinking_mode")
-        return {"enrich_decision": "enrich"}
-    prompt = _build_enrichment_prompt(state)
-    try:
-        started = time.monotonic()
-        raw = _generate_with_genai(prompt, model=_DECISION_MODEL)
-        _trace(
-            "timing.decide_enrich",
-            duration_ms=int((time.monotonic() - started) * 1000),
-        )
-    except Exception as exc:
-        logger.warning("Enrichment decision failed: %s", exc)
-        _trace("enrich.decide", decision="answer", error=str(exc))
-        return {"enrich_decision": "answer"}
-    decision = _normalize_enrich_decision(raw)
-    _trace("enrich.decide", decision=decision, raw=raw)
-    return {"enrich_decision": decision}
-
-
-def _route_after_enrich_decision(state: ChatState) -> str:
-    if state.get("enrich_decision") == "enrich":
-        return "enrich"
-    return "answer"
-
-
 def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     """summary의 source_refs를 기반으로 STT/VLM evidence를 조회해 병합한다."""
     _trace("node.enrich_evidence")
@@ -1009,9 +799,7 @@ def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[
 
 def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
     genai, types = _load_genai_modules()
-    api_keys = _load_google_api_keys()
-    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
-    start_index = int(time.time()) % len(key_pool)
+    key_pool, key_ids = _build_chat_key_pool()
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
@@ -1019,17 +807,19 @@ def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
     config = types.GenerateContentConfig(temperature=temperature)
     total_attempts = _CHAT_LLM_MAX_RETRIES + 1
     last_error: Optional[Exception] = None
+    tried_once: set[int] = set()
 
     for attempt in range(total_attempts):
-        pool_index = (start_index + attempt) % len(key_pool)
+        pool_index = _pick_chat_key_index(key_ids, tried_once, attempt)
         api_key = key_pool[pool_index]
         client = _create_genai_client(genai, types, api_key)
         try:
-            response = client.models.generate_content(
-                model=model or _DEFAULT_MODEL,
-                contents=prompt,
-                config=config,
-            )
+            with acquire_google_slot():
+                response = client.models.generate_content(
+                    model=model or _DEFAULT_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
             text = getattr(response, "text", None)
             if text:
                 return text.strip()
@@ -1037,6 +827,11 @@ def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
         except Exception as exc:
             last_error = exc
             retriable = _is_retriable_chat_error(exc)
+            if retriable and _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC > 0:
+                mark_google_key_cooldown(
+                    key_ids[pool_index],
+                    _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC,
+                )
             if attempt >= total_attempts - 1 or not retriable:
                 raise
             sleep_for = _chat_backoff_for_attempt(attempt)
@@ -1074,9 +869,7 @@ def _extract_genai_text(response: Any) -> str:
 
 def _generate_with_genai_stream(prompt: str) -> Any:
     genai, types = _load_genai_modules()
-    api_keys = _load_google_api_keys()
-    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
-    start_index = int(time.time()) % len(key_pool)
+    key_pool, key_ids = _build_chat_key_pool()
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
@@ -1084,32 +877,34 @@ def _generate_with_genai_stream(prompt: str) -> Any:
     config = types.GenerateContentConfig(temperature=temperature)
     total_attempts = _CHAT_LLM_MAX_RETRIES + 1
     last_error: Optional[Exception] = None
+    tried_once: set[int] = set()
 
     for attempt in range(total_attempts):
-        pool_index = (start_index + attempt) % len(key_pool)
+        pool_index = _pick_chat_key_index(key_ids, tried_once, attempt)
         api_key = key_pool[pool_index]
         client = _create_genai_client(genai, types, api_key)
         yielded_any = False
         try:
-            stream = client.models.generate_content_stream(
-                model=_DEFAULT_MODEL,
-                contents=prompt,
-                config=config,
-            )
-            buffer = ""
-            for chunk in stream:
-                text = _extract_genai_text(chunk)
-                if not text:
-                    continue
-                if buffer and text.startswith(buffer):
-                    delta = text[len(buffer):]
-                    buffer = text
-                else:
-                    delta = text
-                    buffer += text
-                if delta:
-                    yielded_any = True
-                    yield delta
+            with acquire_google_slot():
+                stream = client.models.generate_content_stream(
+                    model=_DEFAULT_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+                buffer = ""
+                for chunk in stream:
+                    text = _extract_genai_text(chunk)
+                    if not text:
+                        continue
+                    if buffer and text.startswith(buffer):
+                        delta = text[len(buffer):]
+                        buffer = text
+                    else:
+                        delta = text
+                        buffer += text
+                    if delta:
+                        yielded_any = True
+                        yield delta
             return
         except Exception as exc:
             last_error = exc
@@ -1118,6 +913,11 @@ def _generate_with_genai_stream(prompt: str) -> Any:
                     "Streaming interrupted after emitting partial response."
                 ) from exc
             retriable = _is_retriable_chat_error(exc)
+            if retriable and _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC > 0:
+                mark_google_key_cooldown(
+                    key_ids[pool_index],
+                    _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC,
+                )
             if attempt >= total_attempts - 1 or not retriable:
                 raise
             sleep_for = _chat_backoff_for_attempt(attempt)

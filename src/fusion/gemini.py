@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .config import ConfigBundle
+from src.llm.global_limiter import acquire_google_slot, get_google_limiter_snapshot
+from src.llm.google_key_routing import (
+    make_google_key_id,
+    mark_google_key_cooldown,
+    order_google_key_indices,
+)
 
 logger = logging.getLogger(__name__)
 REQUEST_HEARTBEAT_SEC = 5
@@ -47,6 +53,7 @@ class GeminiClientBundle:
     """Gemini 클라이언트와 모델 메타데이터 묶음."""
     client: Any
     clients: List[Any]
+    client_key_ids: List[str]
     backend: str
     model: str
 
@@ -131,10 +138,15 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
             genai.Client(api_key=api_key, http_options=http_options)
             for api_key in api_keys
         ]
+        key_ids = [
+            make_google_key_id(api_key, fallback_label=f"fusion_key_{idx + 1}")
+            for idx, api_key in enumerate(api_keys)
+        ]
         client = clients[0]
         return GeminiClientBundle(
             client=client,
             clients=clients,
+            client_key_ids=key_ids,
             backend="developer_api",
             model=llm_cfg.model,
         )
@@ -165,9 +177,14 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
                 http_options=http_options,
             )
         clients = [client]
+        if llm_cfg.vertex_ai.auth_mode == "adc":
+            key_ids = [make_google_key_id(None, fallback_label="vertex_adc")]
+        else:
+            key_ids = [make_google_key_id(api_key, fallback_label="vertex_api_key")]
         return GeminiClientBundle(
             client=client,
             clients=clients,
+            client_key_ids=key_ids,
             backend="vertex_ai",
             model=llm_cfg.model,
         )
@@ -250,59 +267,123 @@ def run_with_retries(
     backoff_sec: List[int],
     context: str = "",
     verbose: bool = False,
+    role: Optional[str] = None,
+    key_fail_cooldown_sec: int = 0,
 ) -> tuple[str, int, int]:
     """오류 시 Gemini 호출을 재시도하며 결과, 총 토큰 수, 캐시된 토큰 수를 반환한다."""
     clients = getattr(client_bundle, "clients", None) or [client_bundle.client]
+    raw_key_ids = getattr(client_bundle, "client_key_ids", None) or []
+    key_ids = list(raw_key_ids) if len(raw_key_ids) == len(clients) else [
+        make_google_key_id(None, fallback_label=f"fusion_key_{idx + 1}")
+        for idx in range(len(clients))
+    ]
     total_clients = len(clients)
     last_error: Optional[Exception] = None
+    ordered_indices, cooling_remaining = order_google_key_indices(key_ids, role)
+    if not ordered_indices:
+        ordered_indices = list(range(total_clients))
 
-    for idx, client in enumerate(clients, start=1):
+    for order_pos, client_idx in enumerate(ordered_indices):
+        client = clients[client_idx]
+        idx = client_idx + 1
         attempt = 0
         while True:
             label = f" (Key {idx}/{total_clients})" if total_clients > 1 else ""
             indent = "" if context.lstrip().lower().startswith("batch") else "       "
-            if verbose:
-                print(f"{_get_timestamp()} {indent}[{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
+            if verbose and attempt == 0 and client_idx in cooling_remaining:
+                cooling_sec = int(round(cooling_remaining[client_idx]))
+                print(
+                    f"{_get_timestamp()} {indent}[{context}] Key {idx}/{total_clients} "
+                    f"is in cooldown ({cooling_sec}s remaining), trying due to full fallback order.",
+                    flush=True,
+                )
             try:
                 started_at = time.monotonic()
-                future = _REQUEST_EXECUTOR.submit(
-                    generate_content,
-                    client_bundle,
-                    prompt,
-                    response_schema,
-                    temperature,
-                    response_mime_type,
-                    timeout_sec,
-                    client_override=client,
-                )
-                try:
-                    while True:
-                        elapsed_sec = time.monotonic() - started_at
-                        remaining_sec = float(timeout_sec) - elapsed_sec
-                        if remaining_sec <= 0:
-                            future.cancel()
-                            raise TimeoutError(
-                                f"Safety timeout exceeded before response completion "
-                                f"({timeout_sec}s)."
-                            )
-                        wait_sec = min(REQUEST_HEARTBEAT_SEC, remaining_sec)
-                        try:
-                            return future.result(timeout=wait_sec)
-                        except FutureTimeoutError:
-                            if verbose:
-                                elapsed = int(time.monotonic() - started_at)
-                                print(
-                                    f"{_get_timestamp()} {indent}[{context}] Waiting... "
-                                    f"{elapsed}s/{timeout_sec}s{label}",
-                                    flush=True,
+                slot_wait_sec = 0.0
+                result: Optional[tuple[str, int, int]] = None
+                with acquire_google_slot() as ticket:
+                    slot_wait_sec = ticket.waited_sec
+                    slot_snapshot = ticket.snapshot
+                    if verbose:
+                        print(
+                            f"{_get_timestamp()} {indent}[{context}] Sending request... "
+                            f"Attempt {attempt+1}/{max_retries+1}{label} "
+                            f"(global_in_flight={slot_snapshot.in_flight}/{slot_snapshot.limit}, "
+                            f"global_waiting={slot_snapshot.waiting}, "
+                            f"slot_wait={slot_wait_sec:.2f}s)",
+                            flush=True,
+                        )
+                    future = _REQUEST_EXECUTOR.submit(
+                        generate_content,
+                        client_bundle,
+                        prompt,
+                        response_schema,
+                        temperature,
+                        response_mime_type,
+                        timeout_sec,
+                        client_override=client,
+                    )
+                    try:
+                        while True:
+                            elapsed_sec = time.monotonic() - started_at
+                            remaining_sec = float(timeout_sec) - elapsed_sec
+                            if remaining_sec <= 0:
+                                future.cancel()
+                                raise TimeoutError(
+                                    f"Safety timeout exceeded before response completion "
+                                    f"({timeout_sec}s)."
                                 )
-                finally:
-                    if not future.done():
-                        future.cancel()
+                            wait_sec = min(REQUEST_HEARTBEAT_SEC, remaining_sec)
+                            try:
+                                result = future.result(timeout=wait_sec)
+                                break
+                            except FutureTimeoutError:
+                                if verbose:
+                                    elapsed = int(time.monotonic() - started_at)
+                                    live = get_google_limiter_snapshot()
+                                    print(
+                                        f"{_get_timestamp()} {indent}[{context}] Waiting... "
+                                        f"{elapsed}s/{timeout_sec}s{label} "
+                                        f"(global_in_flight={live.in_flight}/{live.limit}, "
+                                        f"global_waiting={live.waiting})",
+                                        flush=True,
+                                    )
+                    finally:
+                        if not future.done():
+                            future.cancel()
+                if result is not None:
+                    if verbose:
+                        elapsed = int(time.monotonic() - started_at)
+                        live = get_google_limiter_snapshot()
+                        print(
+                            f"{_get_timestamp()} {indent}[{context}] Request finished{label} "
+                            f"(elapsed={elapsed}s, slot_wait={slot_wait_sec:.2f}s, "
+                            f"global_in_flight={live.in_flight}/{live.limit}, "
+                            f"global_waiting={live.waiting})",
+                            flush=True,
+                        )
+                    return result
+                raise RuntimeError("GenerateContent finished without result.")
             except Exception as exc:
                 last_error = exc
+                message = str(exc).lower()
+                retriable = any(
+                    marker in message
+                    for marker in (
+                        "429",
+                        "503",
+                        "504",
+                        "resource_exhausted",
+                        "unavailable",
+                        "deadline exceeded",
+                        "timeout",
+                        "timed out",
+                    )
+                )
+                if retriable and key_fail_cooldown_sec > 0:
+                    mark_google_key_cooldown(key_ids[client_idx], key_fail_cooldown_sec)
                 if attempt >= max_retries:
-                    if total_clients > 1 and idx < total_clients:
+                    if total_clients > 1 and order_pos < (len(ordered_indices) - 1):
                         logger.warning(
                             f"GenerateContent failed after {max_retries} retries on key "
                             f"{idx}/{total_clients}. Switching keys."

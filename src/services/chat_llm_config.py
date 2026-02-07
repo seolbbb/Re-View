@@ -14,6 +14,8 @@ class ChatLLMSettings:
     timeout_sec: int
     max_retries: int
     backoff_sec: List[int]
+    global_max_concurrent: int
+    key_fail_cooldown_sec: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -79,12 +81,16 @@ def load_chat_llm_settings(
     default_timeout = max(1, _env_int("CHATBOT_LLM_TIMEOUT_SEC", 90))
     default_retries = max(0, _env_int("CHATBOT_LLM_MAX_RETRIES", 2))
     default_backoff = _env_int_list("CHATBOT_LLM_BACKOFF_SEC", "2,5,10") or [2, 5, 10]
+    default_global_max_concurrent = max(1, _env_int("CHATBOT_LLM_MAX_CONCURRENT", 8))
+    default_key_fail_cooldown_sec = max(0, _env_int("CHATBOT_LLM_KEY_COOLDOWN_SEC", 30))
 
     if not settings_path.exists():
         return ChatLLMSettings(
             timeout_sec=default_timeout,
             max_retries=default_retries,
             backoff_sec=default_backoff,
+            global_max_concurrent=default_global_max_concurrent,
+            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
         )
 
     try:
@@ -96,6 +102,8 @@ def load_chat_llm_settings(
             timeout_sec=default_timeout,
             max_retries=default_retries,
             backoff_sec=default_backoff,
+            global_max_concurrent=default_global_max_concurrent,
+            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
         )
 
     if not isinstance(payload, dict):
@@ -105,6 +113,8 @@ def load_chat_llm_settings(
             timeout_sec=default_timeout,
             max_retries=default_retries,
             backoff_sec=default_backoff,
+            global_max_concurrent=default_global_max_concurrent,
+            key_fail_cooldown_sec=default_key_fail_cooldown_sec,
         )
 
     llm_payload = payload.get("llm_gemini", {})
@@ -114,10 +124,25 @@ def load_chat_llm_settings(
     timeout_sec = max(1, _coerce_non_negative_int(llm_payload.get("timeout_sec"), default_timeout))
     max_retries = max(0, _coerce_non_negative_int(llm_payload.get("max_retries"), default_retries))
     backoff_sec = _coerce_backoff_list(llm_payload.get("backoff_sec"), default_backoff)
+    global_max_concurrent = max(
+        1,
+        _coerce_non_negative_int(
+            llm_payload.get("global_max_concurrent"),
+            default_global_max_concurrent,
+        ),
+    )
+    key_fail_cooldown_sec = max(
+        0,
+        _coerce_non_negative_int(
+            llm_payload.get("key_fail_cooldown_sec"),
+            default_key_fail_cooldown_sec,
+        ),
+    )
 
     return ChatLLMSettings(
         timeout_sec=timeout_sec,
         max_retries=max_retries,
         backoff_sec=backoff_sec,
+        global_max_concurrent=global_max_concurrent,
+        key_fail_cooldown_sec=key_fail_cooldown_sec,
     )
-
