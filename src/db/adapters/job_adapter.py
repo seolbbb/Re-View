@@ -176,6 +176,7 @@ class JobAdapterMixin:
             update_result = self.client.table("videos").update({
                 "current_processing_job_id": job["id"],
                 "status": "PROCESSING",  # PREPROCESS_DONE -> PROCESSING
+                "error_message": None,
             }).eq("id", video_id).execute()
             print(f"{_get_timestamp()} [DB] Updated videos.status to PROCESSING for video_id: {video_id}")
 
@@ -209,7 +210,36 @@ class JobAdapterMixin:
             data["error_message"] = error_message
             
         result = self.client.table("processing_jobs").update(data).eq("id", job_id).execute()
-        return result.data[0] if result.data else {}
+        job = result.data[0] if result.data else {}
+
+        status_upper = (status or "").upper()
+        if status_upper in ("DONE", "FAILED"):
+            # Keep videos.status in sync with terminal processing state so clients can
+            # reliably end the stream and render final/failed UI.
+            video_id = job.get("video_id")
+            if not video_id:
+                try:
+                    lookup = (
+                        self.client.table("processing_jobs")
+                        .select("video_id")
+                        .eq("id", job_id)
+                        .execute()
+                    )
+                    if lookup.data:
+                        video_id = lookup.data[0].get("video_id")
+                except Exception:
+                    video_id = None
+
+            if video_id:
+                try:
+                    if status_upper == "DONE":
+                        self.update_video_status(video_id, "DONE")
+                    else:
+                        self.update_video_status(video_id, "FAILED", error=error_message)
+                except Exception:
+                    pass
+
+        return job
     
     def update_processing_job_progress(
         self,

@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useVideo } from '../context/VideoContext';
 import { getVideoStatus } from '../api/videos';
+import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import Sidebar from '../components/Sidebar';
 import VideoPlayer from '../components/VideoPlayer';
 import ChatBot from '../components/ChatBot';
@@ -15,6 +16,37 @@ function AnalysisPage() {
     const { theme, toggleTheme } = useTheme();
     const { setCurrentVideoId } = useVideo();
     const [videoInfo, setVideoInfo] = useState(null);
+
+    const handleHeaderStatus = useCallback((statusData) => {
+        if (!statusData) return;
+        setVideoInfo((prev) => {
+            if (!prev) return statusData;
+            const nextStatus = statusData.video_status;
+            const nextErr = statusData.error_message;
+            const nextName = statusData.video_name;
+
+            if (
+                prev.video_status === nextStatus &&
+                prev.error_message === nextErr &&
+                prev.video_name === nextName
+            ) {
+                return prev;
+            }
+
+            return {
+                ...prev,
+                video_status: nextStatus,
+                error_message: nextErr,
+                video_name: nextName ?? prev.video_name,
+            };
+        });
+    }, []);
+
+    // Keep the header status label in sync (restart/complete transitions).
+    useVideoStatusStream(videoId, {
+        enabled: !!videoId,
+        onStatus: handleHeaderStatus,
+    });
 
     // Shared video element ref & playback state for preserving across expand/collapse
     const videoElRef = useRef(null);
