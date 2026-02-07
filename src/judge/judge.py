@@ -248,10 +248,9 @@ def _build_response_schema() -> Dict[str, Any]:
     """Gemini 응답 스키마를 구성한다."""
     score_schema = {
         "type": "object",
-        "required": ["groundedness", "compliance", "note_quality", "multimodal_use"],
+        "required": ["groundedness", "note_quality", "multimodal_use"],
         "properties": {
             "groundedness": {"type": "integer"},
-            "compliance": {"type": "integer"},
             "note_quality": {"type": "integer"},
             "multimodal_use": {"type": "integer"},
         },
@@ -285,9 +284,9 @@ def _normalize_feedback(value: Any) -> str:
     return " ".join(text.split())
 
 
-def _compute_final_score(groundedness: int, compliance: int, note_quality: int) -> float:
+def _compute_final_score(groundedness: int, note_quality: int) -> float:
     """가중치 기반 최종 점수를 계산한다."""
-    return round(0.45 * groundedness + 0.35 * note_quality + 0.20 * compliance, 2)
+    return round(0.50 * groundedness + 0.50 * note_quality, 2)
 
 
 def run_judge(
@@ -417,7 +416,6 @@ def run_judge(
     # 5. 결과 집계 및 점수 계산
     segment_reports: List[Dict[str, Any]] = []
     groundedness_scores: List[int] = []
-    compliance_scores: List[int] = []
     note_quality_scores: List[int] = []
     multimodal_use_scores: List[int] = []
     final_scores: List[float] = []
@@ -428,10 +426,9 @@ def run_judge(
             raise ValueError(f"Missing LLM result for segment_id={seg_id}")
         llm_scores = llm_item.get("scores", {}) if isinstance(llm_item, dict) else {}
         groundedness = _clamp_score(llm_scores.get("groundedness"))      # 근거 충실도 (출처/컨텍스트 기반 응답)
-        compliance = _clamp_score(llm_scores.get("compliance"))          # 프롬프트/규칙 준수도
         note_quality = _clamp_score(llm_scores.get("note_quality"))      # 결과물 품질 (명확성·구조·요약력)
         multimodal_use = _clamp_score(llm_scores.get("multimodal_use"))  # 멀티모달 정보 활용 적절성
-        final_score = _compute_final_score(groundedness, compliance, note_quality)
+        final_score = _compute_final_score(groundedness, note_quality)
         feedback = _normalize_feedback(llm_item.get("feedback"))
         if not feedback:
             raise ValueError(f"segment_id={seg_id} feedback is empty.")
@@ -441,7 +438,6 @@ def run_judge(
                 "segment_id": seg_id,
                 "scores": {
                     "groundedness": groundedness,
-                    "compliance": compliance,
                     "note_quality": note_quality,
                     "multimodal_use": multimodal_use,
                     "final": final_score,
@@ -455,13 +451,11 @@ def run_judge(
         )
 
         groundedness_scores.append(groundedness)
-        compliance_scores.append(compliance)
         note_quality_scores.append(note_quality)
         multimodal_use_scores.append(multimodal_use)
         final_scores.append(final_score)
 
     avg_groundedness = round(sum(groundedness_scores) / len(groundedness_scores), 2)
-    avg_compliance = round(sum(compliance_scores) / len(compliance_scores), 2)
     avg_note_quality = round(sum(note_quality_scores) / len(note_quality_scores), 2)
     avg_multimodal_use = round(sum(multimodal_use_scores) / len(multimodal_use_scores), 2)
     avg_final = round(sum(final_scores) / len(final_scores), 2)
@@ -470,7 +464,6 @@ def run_judge(
         "score_scale": {"min": 0, "max": MAX_SCORE},
         "scores_avg": {
             "groundedness": avg_groundedness,
-            "compliance": avg_compliance,
             "note_quality": avg_note_quality,
             "multimodal_use": avg_multimodal_use,
             "final": avg_final,
