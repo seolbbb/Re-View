@@ -956,8 +956,7 @@ def delete_video(video_id: str, http_request: Request) -> Response:
     user_id = _require_user_id(adapter, http_request)
     video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
-    status = (video.get("status") or "").upper()
-    if status in ("PREPROCESSING", "PREPROCESS_DONE", "PROCESSING"):
+    if _is_video_actively_processing(adapter, video):
         raise HTTPException(status_code=409, detail="Video is still processing")
 
     # Storage cleanup (R2) first so failures are retryable (DB row remains).
@@ -1163,6 +1162,8 @@ def _get_user_id_from_request(adapter, request: Request) -> Optional[str]:
 
 
 _MEDIA_TICKET_TTL_SEC = int(os.getenv("MEDIA_TICKET_TTL_SEC", "300"))
+_DELETE_STALE_PREPROCESS_SEC = int(os.getenv("DELETE_STALE_PREPROCESS_SEC", "1800"))  # 30m
+_DELETE_STALE_PROCESSING_SEC = int(os.getenv("DELETE_STALE_PROCESSING_SEC", "7200"))  # 2h
 
 
 def _media_ticket_secret() -> str:
@@ -1240,6 +1241,71 @@ def _require_video_owner(adapter, *, user_id: str, video_id: str) -> Dict[str, A
     if str(video.get("user_id") or "") != str(user_id):
         raise HTTPException(status_code=403, detail="Forbidden")
     return video
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        raw = raw.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _record_age_sec(record: Dict[str, Any]) -> Optional[int]:
+    now = datetime.now(timezone.utc)
+    # Prefer updated_at as a heartbeat signal (processing jobs update progress frequently).
+    for key in ("updated_at", "started_at", "created_at"):
+        dt = _parse_dt(record.get(key))
+        if not dt:
+            continue
+        return int((now - dt).total_seconds())
+    return None
+
+
+def _is_video_actively_processing(adapter, video: Dict[str, Any]) -> bool:
+    """Return True if a video appears to have an active (non-stale) running job.
+
+    This is used to prevent deletes while a pipeline job is *actually* running, while
+    still allowing deletes for stuck videos that were force-canceled and never
+    transitioned to DONE/FAILED.
+    """
+    pre_id = video.get("current_preprocess_job_id")
+    if pre_id:
+        try:
+            pre = adapter.get_preprocessing_job(pre_id)
+        except Exception:
+            pre = None
+        if pre and (str(pre.get("status") or "").upper() == "RUNNING"):
+            age = _record_age_sec(pre)
+            # If we can't determine age, be conservative and block deletion.
+            if age is None or age < _DELETE_STALE_PREPROCESS_SEC:
+                return True
+
+    proc_id = video.get("current_processing_job_id")
+    if proc_id:
+        try:
+            proc = adapter.get_processing_job(proc_id)
+        except Exception:
+            proc = None
+        if proc:
+            status = str(proc.get("status") or "").upper()
+            if status in ("VLM_RUNNING", "SUMMARY_RUNNING", "JUDGE_RUNNING"):
+                age = _record_age_sec(proc)
+                if age is None or age < _DELETE_STALE_PROCESSING_SEC:
+                    return True
+
+    return False
 
 
 def _internal_api_token() -> str:

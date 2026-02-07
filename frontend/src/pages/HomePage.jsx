@@ -48,7 +48,14 @@ function HomePage() {
     }, []);
 
     const handleDelete = async (videoId) => {
-        const ok = window.confirm('이 영상을 삭제할까요? (되돌릴 수 없습니다)');
+        const target = (videos || []).find((v) => v.id === videoId);
+        const uiStatus = mapStatus(target?.status);
+
+        const message = uiStatus === 'progress'
+            ? '이 영상은 진행 중으로 표시됩니다.\n실제로 작업이 멈춘 상태(stuck)라면 삭제가 진행될 수 있습니다.\n삭제할까요? (되돌릴 수 없습니다)'
+            : '이 영상을 삭제할까요? (되돌릴 수 없습니다)';
+
+        const ok = window.confirm(message);
         if (!ok) return;
 
         try {
@@ -56,6 +63,10 @@ function HomePage() {
             setVideos((prev) => (prev || []).filter((v) => v.id !== videoId));
             window.dispatchEvent(new Event('videos:changed'));
         } catch (err) {
+            if (err?.status === 409) {
+                setError('아직 처리 중인 영상은 삭제할 수 없습니다.');
+                return;
+            }
             setError(err?.message || 'Failed to delete video');
         }
     };

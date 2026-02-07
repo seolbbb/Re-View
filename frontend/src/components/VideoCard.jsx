@@ -19,7 +19,6 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
 
     // Use thumbnail prop if provided (legacy), otherwise use API
     const imgSrc = thumbnail || (thumbnailVideoId ? getThumbnailUrl(thumbnailVideoId, mediaTicket) : null);
-    const canDelete = status === 'done';
     const showImage = imgSrc && failedSrc !== imgSrc;
 
     return (
@@ -28,13 +27,11 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
                 <button
                     type="button"
                     className="video-delete"
-                    aria-disabled={!canDelete}
-                    title={canDelete ? 'Delete video' : 'Video is still processing'}
-                    aria-label="Delete video"
+                    title={status === 'done' ? '삭제' : '처리 중인 영상은 삭제가 제한될 수 있습니다'}
+                    aria-label="영상 삭제"
                     onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        if (!canDelete) return;
                         onDelete(id);
                     }}
                 >
