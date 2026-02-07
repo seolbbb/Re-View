@@ -49,7 +49,7 @@ function AnalysisPage() {
         v.currentTime = timeMs / 1000;
         setCurrentPlaybackMs(timeMs);
         if (v.paused) {
-            v.play().catch(() => {});
+            v.play().catch(() => { });
         }
     }, []);
 
@@ -58,13 +58,11 @@ function AnalysisPage() {
             setCurrentVideoId(videoId);
             getVideoStatus(videoId)
                 .then((data) => setVideoInfo(data))
-                .catch(() => {});
+                .catch(() => { });
         }
     }, [videoId, setCurrentVideoId]);
 
-    const videoName = videoInfo?.video_status
-        ? (videoInfo.video_name || videoId)
-        : videoId;
+    const videoName = videoInfo?.video_name || (videoInfo ? videoId : '로딩 중...');
 
     const statusLabel = videoInfo?.video_status || 'Loading';
 
@@ -84,7 +82,17 @@ function AnalysisPage() {
                         <a href="/" className="text-gray-400 text-sm font-medium hover:text-[var(--text-primary)] transition-colors">Library</a>
                         <ChevronRight className="w-4 h-4 text-gray-400" />
                         <div className="flex items-center gap-2">
-                            <span className="text-[var(--text-primary)] text-sm font-medium truncate max-w-[200px]">{videoName}</span>
+                            {videoInfo ? (
+                                <span className="text-[var(--text-primary)] text-sm font-medium truncate max-w-[200px]">{videoName}</span>
+                            ) : (
+                                <span className="text-gray-400 text-sm font-medium">
+                                    <span className="inline-flex">
+                                        <span className="animate-pulse">.</span>
+                                        <span className="animate-pulse" style={{ animationDelay: '0.2s' }}>.</span>
+                                        <span className="animate-pulse" style={{ animationDelay: '0.4s' }}>.</span>
+                                    </span>
+                                </span>
+                            )}
                             <span className="bg-primary/20 text-primary text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">{statusLabel}</span>
                         </div>
                     </div>

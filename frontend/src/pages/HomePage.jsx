@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import Header from '../components/Header';
 import VideoCard from '../components/VideoCard';
 import UploadArea from '../components/UploadArea';
+import ConfirmModal from '../components/ConfirmModal';
 import { Library, Loader2 } from 'lucide-react';
-import { listVideos } from '../api/videos';
+import { listVideos, deleteVideo } from '../api/videos';
 import './HomePage.css';
 
 // DB 상태 → UI 상태 매핑
@@ -35,6 +36,7 @@ function HomePage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [filter, setFilter] = useState('all');
+    const [deleteTarget, setDeleteTarget] = useState(null);
 
     useEffect(() => {
         setLoading(true);
@@ -46,6 +48,32 @@ function HomePage() {
             .catch((err) => setError(err.message || 'Failed to load videos'))
             .finally(() => setLoading(false));
     }, []);
+
+    const handleDeleteRequest = (videoId, status) => {
+        setDeleteTarget({ id: videoId, status });
+    };
+
+    const handleDeleteConfirm = async () => {
+        if (!deleteTarget) return;
+
+        try {
+            await deleteVideo(deleteTarget.id);
+            setVideos((prev) => (prev || []).filter((v) => v.id !== deleteTarget.id));
+            window.dispatchEvent(new Event('videos:changed'));
+        } catch (err) {
+            if (err?.status === 409) {
+                setError('아직 처리 중인 영상은 삭제할 수 없습니다.');
+            } else {
+                setError(err?.message || 'Failed to delete video');
+            }
+        } finally {
+            setDeleteTarget(null);
+        }
+    };
+
+    const handleDeleteCancel = () => {
+        setDeleteTarget(null);
+    };
 
     const filtered = videos.filter((v) => {
         if (filter === 'all') return true;
@@ -135,12 +163,26 @@ function HomePage() {
                                     duration={formatDuration(video.duration_sec)}
                                     date={formatDate(video.created_at)}
                                     status={mapStatus(video.status)}
+                                    onDelete={handleDeleteRequest}
                                 />
                             </div>
                         ))}
                     </div>
                 </section>
             </main>
+
+            <ConfirmModal
+                isOpen={deleteTarget !== null}
+                title="영상 삭제"
+                message={deleteTarget?.status === 'progress'
+                    ? '이 영상은 현재 처리 중입니다.\n정말 삭제하시겠습니까?'
+                    : '이 영상을 삭제하시겠습니까?\n삭제된 영상은 복구할 수 없습니다.'}
+                confirmText="삭제"
+                cancelText="취소"
+                onConfirm={handleDeleteConfirm}
+                onCancel={handleDeleteCancel}
+                variant="danger"
+            />
 
             {/* Footer */}
             <footer className="home-footer">

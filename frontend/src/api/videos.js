@@ -1,4 +1,4 @@
-import { get, post, BASE_URL } from './client';
+import { get, post, del, BASE_URL } from './client';
 import { supabase } from '../lib/supabase';
 
 // ---------------------------------------------------------------------------
@@ -97,14 +97,38 @@ export function getVideoProgress(videoId) {
   return get(`/videos/${videoId}/progress`);
 }
 
-export function getVideoStreamUrl(videoId) {
-  return `${BASE_URL}/api/videos/${videoId}/stream`;
-}
-
-export function getThumbnailUrl(videoId) {
-  return `${BASE_URL}/api/videos/${videoId}/thumbnail`;
-}
-
 export function restartProcessing(videoId) {
   return post('/process', { video_id: videoId });
+}
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+export function deleteVideo(videoId) {
+  return del(`/api/videos/${videoId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Media Ticket (for <video>/<img> src without Authorization header)
+// ---------------------------------------------------------------------------
+
+export function getMediaTicket() {
+  return post('/api/media/ticket', {});
+}
+
+// ---------------------------------------------------------------------------
+// Media URLs
+// ---------------------------------------------------------------------------
+
+export function getVideoStreamUrl(videoId, ticket) {
+  if (!videoId) return null;
+  const q = ticket ? `?ticket=${encodeURIComponent(ticket)}` : '';
+  return `${BASE_URL}/api/videos/${videoId}/stream${q}`;
+}
+
+export function getThumbnailUrl(videoId, ticket) {
+  if (!videoId) return null;
+  const q = ticket ? `?ticket=${encodeURIComponent(ticket)}` : '';
+  return `${BASE_URL}/api/videos/${videoId}/thumbnail${q}`;
 }

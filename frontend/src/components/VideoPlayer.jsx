@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, Maximize2, Volume2, VolumeX, Volume1, Settings, Maximize, Minimize, Check } from 'lucide-react';
 import { getVideoStreamUrl } from '../api/videos';
+import { useAuth } from '../context/AuthContext';
 
 function formatTime(sec) {
     if (!sec || isNaN(sec)) return '0:00';
@@ -12,6 +13,7 @@ function formatTime(sec) {
 function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, playbackRestore, onTimeUpdate }) {
     const internalRef = useRef(null);
     const videoRef = videoElRef || internalRef;
+    const { mediaTicket } = useAuth();
     const [playing, setPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -40,7 +42,59 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     const defaultClasses = "relative w-full rounded-xl overflow-hidden shadow-2xl bg-black aspect-video group";
     const finalClasses = className || defaultClasses;
 
-    const streamUrl = videoId ? getVideoStreamUrl(videoId) : null;
+    const desiredStreamUrl = videoId && mediaTicket ? getVideoStreamUrl(videoId, mediaTicket) : null;
+    const [streamUrl, setStreamUrl] = useState(null);
+
+    useEffect(() => {
+        if (!desiredStreamUrl) {
+            setStreamUrl(null);
+            return;
+        }
+
+        if (!streamUrl) {
+            setStreamUrl(desiredStreamUrl);
+            return;
+        }
+
+        if (streamUrl === desiredStreamUrl) return;
+
+        // When media tickets rotate, <video src> must be updated or future range requests
+        // can fail with 401. Preserve playback position when swapping URLs.
+        const v = videoRef.current;
+        const restore = {
+            time: v?.currentTime ?? 0,
+            wasPlaying: v ? !v.paused && !v.ended : false,
+            playbackRate: v?.playbackRate ?? 1,
+        };
+
+        if (v) {
+            v.addEventListener(
+                'loadedmetadata',
+                () => {
+                    try {
+                        if (restore.playbackRate) v.playbackRate = restore.playbackRate;
+                    } catch {
+                        // ignore
+                    }
+
+                    try {
+                        if (typeof restore.time === 'number' && restore.time > 0) {
+                            v.currentTime = restore.time;
+                        }
+                    } catch {
+                        // ignore
+                    }
+
+                    if (restore.wasPlaying) {
+                        v.play().catch(() => { });
+                    }
+                },
+                { once: true }
+            );
+        }
+
+        setStreamUrl(desiredStreamUrl);
+    }, [desiredStreamUrl, streamUrl, videoRef]);
 
     const togglePlay = (e) => {
         e.stopPropagation();

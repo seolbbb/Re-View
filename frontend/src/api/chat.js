@@ -1,4 +1,5 @@
 import { post, BASE_URL, ApiError } from './client';
+import { supabase } from '../lib/supabase';
 
 export function sendChatMessage({ videoId, message, sessionId, reasoningMode }) {
   return post('/api/chat', {
@@ -78,9 +79,21 @@ export function streamChatMessage({
 
   const start = async () => {
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (supabase) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            headers.Authorization = `Bearer ${session.access_token}`;
+          }
+        } catch {
+          // ignore auth header errors
+        }
+      }
+
       const res = await fetch(`${BASE_URL}/api/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           video_id: videoId,
           message,
