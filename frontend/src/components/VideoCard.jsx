@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Play, Calendar } from 'lucide-react';
+import { Play, Calendar, Trash2 } from 'lucide-react';
 import { getThumbnailUrl } from '../api/videos';
+import { useAuth } from '../context/AuthContext';
 import './VideoCard.css';
 
-function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, status = 'done' }) {
-    const [imgError, setImgError] = useState(false);
+function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, status = 'done', onDelete }) {
+    const [failedSrc, setFailedSrc] = useState(null);
+    const { mediaTicket } = useAuth();
 
     const statusConfig = {
         done: { label: '완료', color: '#22c55e' },
@@ -16,13 +18,32 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
     const currentStatus = statusConfig[status] || statusConfig.done;
 
     // Use thumbnail prop if provided (legacy), otherwise use API
-    const imgSrc = thumbnail || (thumbnailVideoId ? getThumbnailUrl(thumbnailVideoId) : null);
+    const imgSrc = thumbnail || (thumbnailVideoId ? getThumbnailUrl(thumbnailVideoId, mediaTicket) : null);
+    const canDelete = status === 'done';
+    const showImage = imgSrc && failedSrc !== imgSrc;
 
     return (
         <Link to={`/analysis/${id}`} className="video-card">
+            {onDelete && (
+                <button
+                    type="button"
+                    className="video-delete"
+                    aria-disabled={!canDelete}
+                    title={canDelete ? 'Delete video' : 'Video is still processing'}
+                    aria-label="Delete video"
+                    onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (!canDelete) return;
+                        onDelete(id);
+                    }}
+                >
+                    <Trash2 className="w-4 h-4" />
+                </button>
+            )}
             <div className="video-thumbnail">
-                {imgSrc && !imgError ? (
-                    <img src={imgSrc} alt={title} onError={() => setImgError(true)} />
+                {showImage ? (
+                    <img src={imgSrc} alt={title} onError={() => setFailedSrc(imgSrc)} />
                 ) : (
                     <div className="video-thumbnail-placeholder" style={{
                         background: 'linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-secondary) 100%)',

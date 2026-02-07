@@ -9,12 +9,28 @@ function Sidebar() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        listVideos()
-            .then((data) => {
-                setRecentVideos((data.videos || []).slice(0, 5));
-            })
-            .catch(() => {})
-            .finally(() => setLoading(false));
+        let mounted = true;
+
+        const refresh = () => {
+            setLoading(true);
+            listVideos()
+                .then((data) => {
+                    if (!mounted) return;
+                    setRecentVideos((data.videos || []).slice(0, 5));
+                })
+                .catch(() => {})
+                .finally(() => {
+                    if (!mounted) return;
+                    setLoading(false);
+                });
+        };
+
+        refresh();
+        window.addEventListener('videos:changed', refresh);
+        return () => {
+            mounted = false;
+            window.removeEventListener('videos:changed', refresh);
+        };
     }, []);
 
     const getStatusIcon = (status) => {

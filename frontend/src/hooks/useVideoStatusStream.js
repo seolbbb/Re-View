@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { BASE_URL } from '../api/client';
+import { supabase } from '../lib/supabase';
 
 /**
  * SSE를 통해 비디오 상태 및 요약을 실시간으로 스트리밍합니다.
@@ -104,9 +105,21 @@ export default function useVideoStatusStream(
     controllerRef.current = controller;
 
     try {
+      const headers = { Accept: 'text/event-stream' };
+      if (supabase) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            headers.Authorization = `Bearer ${session.access_token}`;
+          }
+        } catch {
+          // ignore auth header errors
+        }
+      }
+
       const res = await fetch(`${BASE_URL}/videos/${videoId}/status/stream`, {
         method: 'GET',
-        headers: { Accept: 'text/event-stream' },
+        headers,
         signal: controller.signal,
       });
 

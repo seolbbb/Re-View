@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, Maximize2, Volume2, VolumeX, Volume1, Settings, Maximize, Minimize, Check } from 'lucide-react';
 import { getVideoStreamUrl } from '../api/videos';
+import { useAuth } from '../context/AuthContext';
 
 function formatTime(sec) {
     if (!sec || isNaN(sec)) return '0:00';
@@ -12,6 +13,8 @@ function formatTime(sec) {
 function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, playbackRestore, onTimeUpdate }) {
     const internalRef = useRef(null);
     const videoRef = videoElRef || internalRef;
+    const { mediaTicket } = useAuth();
+    const mediaTicketRef = useRef(null);
     const [playing, setPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -40,7 +43,15 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     const defaultClasses = "relative w-full rounded-xl overflow-hidden shadow-2xl bg-black aspect-video group";
     const finalClasses = className || defaultClasses;
 
-    const streamUrl = videoId ? getVideoStreamUrl(videoId) : null;
+    useEffect(() => {
+        // Lock to the first valid ticket we see to avoid reloading <video src>
+        // whenever AuthContext refreshes tickets.
+        if (!mediaTicketRef.current && mediaTicket) {
+            mediaTicketRef.current = mediaTicket;
+        }
+    }, [mediaTicket]);
+
+    const streamUrl = videoId ? getVideoStreamUrl(videoId, mediaTicketRef.current || mediaTicket) : null;
 
     const togglePlay = (e) => {
         e.stopPropagation();

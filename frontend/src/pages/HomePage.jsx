@@ -3,7 +3,7 @@ import Header from '../components/Header';
 import VideoCard from '../components/VideoCard';
 import UploadArea from '../components/UploadArea';
 import { Library, Loader2 } from 'lucide-react';
-import { listVideos } from '../api/videos';
+import { listVideos, deleteVideo } from '../api/videos';
 import './HomePage.css';
 
 // DB 상태 → UI 상태 매핑
@@ -46,6 +46,19 @@ function HomePage() {
             .catch((err) => setError(err.message || 'Failed to load videos'))
             .finally(() => setLoading(false));
     }, []);
+
+    const handleDelete = async (videoId) => {
+        const ok = window.confirm('이 영상을 삭제할까요? (되돌릴 수 없습니다)');
+        if (!ok) return;
+
+        try {
+            await deleteVideo(videoId);
+            setVideos((prev) => (prev || []).filter((v) => v.id !== videoId));
+            window.dispatchEvent(new Event('videos:changed'));
+        } catch (err) {
+            setError(err?.message || 'Failed to delete video');
+        }
+    };
 
     const filtered = videos.filter((v) => {
         if (filter === 'all') return true;
@@ -135,6 +148,7 @@ function HomePage() {
                                     duration={formatDuration(video.duration_sec)}
                                     date={formatDate(video.created_at)}
                                     status={mapStatus(video.status)}
+                                    onDelete={handleDelete}
                                 />
                             </div>
                         ))}

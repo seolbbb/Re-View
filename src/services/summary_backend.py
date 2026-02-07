@@ -351,11 +351,19 @@ class ProcessApiBackend:
     ) -> Dict[str, Any]:
         url = f"{self._base_url}{path}"
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json"}
+        internal_token = (
+            os.getenv("PROCESS_API_INTERNAL_TOKEN")
+            or os.getenv("INTERNAL_API_TOKEN")
+            or os.getenv("SUPABASE_KEY")
+        )
+        if internal_token:
+            headers["X-Internal-Token"] = internal_token
         req = urllib_request.Request(
             url,
             data=data,
             method=method.upper(),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with urllib_request.urlopen(req, timeout=5) as resp:

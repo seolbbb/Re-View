@@ -185,6 +185,22 @@ class VideoAdapterMixin:
         except Exception:
             return []
 
+    def list_videos_for_user(self, user_id: str) -> list:
+        """List videos for a specific user (newest first)."""
+        if not user_id:
+            return []
+        try:
+            result = (
+                self.client.table("videos")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception:
+            return []
+
     def update_video_storage_key(
         self,
         video_id: str,
@@ -206,6 +222,27 @@ class VideoAdapterMixin:
             .execute()
         )
         return result.data[0] if result.data else {}
+
+    def delete_video(self, video_id: str, user_id: str) -> bool:
+        """Delete a video row if it belongs to the given user.
+
+        This deletes only the DB row. Storage cleanup must be handled separately.
+        """
+        if not video_id or not user_id:
+            return False
+        try:
+            (
+                self.client.table("videos")
+                .delete()
+                .eq("id", video_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            # Some PostgREST configurations may return no representation for DELETE.
+            # Treat "no exception" as success; callers already verify ownership.
+            return True
+        except Exception:
+            return False
 
     def upload_video(
         self,

@@ -50,11 +50,14 @@ import shutil
 import tempfile
 import threading
 import time
+import base64
+import hashlib
+import hmac
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -125,20 +128,32 @@ def get_last_run(video_name: str, output_base: str = "data/outputs") -> dict:
 
 
 @app.post("/process", response_model=ProcessResponse)
-def process_pipeline(request: ProcessRequest, background_tasks: BackgroundTasks) -> ProcessResponse:
+def process_pipeline(
+    request: ProcessRequest,
+    background_tasks: BackgroundTasks,
+    http_request: Request,
+) -> ProcessResponse:
     if not request.video_name and not request.video_id:
         raise HTTPException(status_code=400, detail="video_name or video_id is required.")
 
-    # 이미 PROCESSING 중이면 중복 실행 방지
+    # video_id 기반 요청만 인증/권한 체크 (video_name-only는 기존 dev/local 사용을 위해 허용)
     if request.video_id:
         adapter = get_supabase_adapter()
-        if adapter:
-            video = adapter.get_video(request.video_id)
-            if video and video.get("status") == "PROCESSING":
-                raise HTTPException(
-                    status_code=409,
-                    detail="Pipeline is already running for this video",
-                )
+        if not adapter:
+            raise HTTPException(status_code=503, detail="Database not configured")
+
+        if _is_internal_request(http_request):
+            video = _require_video_exists(adapter, request.video_id)
+        else:
+            user_id = _require_user_id(adapter, http_request)
+            video = _require_video_owner(adapter, user_id=user_id, video_id=request.video_id)
+
+        # 이미 PROCESSING 중이면 중복 실행 방지
+        if (video.get("status") or "").upper() == "PROCESSING":
+            raise HTTPException(
+                status_code=409,
+                detail="Pipeline is already running for this video",
+            )
 
     background_tasks.add_task(
         run_processing_pipeline,
@@ -236,11 +251,17 @@ def _build_summaries_payload(adapter, video_id: str) -> Dict[str, Any]:
 
 
 @app.get("/videos/{video_id}/status")
-def get_video_status(video_id: str) -> Dict[str, Any]:
+def get_video_status(video_id: str, http_request: Request) -> Dict[str, Any]:
     """비디오 상태 및 현재 작업 정보 조회."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
+
+    if _is_internal_request(http_request):
+        _require_video_exists(adapter, video_id)
+    else:
+        user_id = _require_user_id(adapter, http_request)
+        _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
     result = _build_status_payload(adapter, video_id)
     if result is None:
@@ -250,7 +271,7 @@ def get_video_status(video_id: str) -> Dict[str, Any]:
 
 
 @app.get("/videos/{video_id}/status/stream")
-def stream_video_status(video_id: str):
+def stream_video_status(video_id: str, http_request: Request):
     """비디오 상태 및 요약을 SSE로 스트리밍합니다.
 
     이벤트 타입:
@@ -263,9 +284,11 @@ def stream_video_status(video_id: str):
         raise HTTPException(status_code=503, detail="Database not configured")
 
     # 초기 비디오 존재 확인
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    if _is_internal_request(http_request):
+        _require_video_exists(adapter, video_id)
+    else:
+        user_id = _require_user_id(adapter, http_request)
+        _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
     def event_generator():
         last_status_json = None
@@ -317,16 +340,18 @@ def stream_video_status(video_id: str):
 
 
 @app.get("/videos/{video_id}/progress")
-def get_video_progress(video_id: str) -> Dict[str, Any]:
+def get_video_progress(video_id: str, http_request: Request) -> Dict[str, Any]:
     """처리 진행률 조회 (폴링용)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
     
     # 비디오 정보 조회
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    if _is_internal_request(http_request):
+        video = _require_video_exists(adapter, video_id)
+    else:
+        user_id = _require_user_id(adapter, http_request)
+        video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
     
     processing_job_id = video.get("current_processing_job_id")
     if not processing_job_id:
@@ -361,16 +386,18 @@ def get_video_progress(video_id: str) -> Dict[str, Any]:
 
 
 @app.get("/videos/{video_id}/summary")
-def get_video_summary(video_id: str, format: Optional[str] = None) -> Dict[str, Any]:
+def get_video_summary(video_id: str, http_request: Request, format: Optional[str] = None) -> Dict[str, Any]:
     """최신 요약 결과 조회 (IN_PROGRESS 포함)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
     
     # 비디오 존재 확인
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    if _is_internal_request(http_request):
+        video = _require_video_exists(adapter, video_id)
+    else:
+        user_id = _require_user_id(adapter, http_request)
+        video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
     
     # 최신 summary_results 조회
     summary_result = adapter.get_latest_summary_results(video_id, format)
@@ -408,15 +435,17 @@ def _parse_id_list(value: Optional[str]) -> List[str]:
 
 
 @app.get("/videos/{video_id}/summaries")
-def get_video_summaries(video_id: str) -> Dict[str, Any]:
+def get_video_summaries(video_id: str, http_request: Request) -> Dict[str, Any]:
     """세부 요약 세그먼트 리스트 조회 (Chatbot용)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    if _is_internal_request(http_request):
+        _require_video_exists(adapter, video_id)
+    else:
+        user_id = _require_user_id(adapter, http_request)
+        _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
     return _build_summaries_payload(adapter, video_id)
 
@@ -424,6 +453,7 @@ def get_video_summaries(video_id: str) -> Dict[str, Any]:
 @app.get("/videos/{video_id}/evidence")
 def get_video_evidence(
     video_id: str,
+    http_request: Request,
     stt_ids: Optional[str] = None,
     cap_ids: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -432,9 +462,11 @@ def get_video_evidence(
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    if _is_internal_request(http_request):
+        _require_video_exists(adapter, video_id)
+    else:
+        user_id = _require_user_id(adapter, http_request)
+        _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
     stt_list = _parse_id_list(stt_ids)
     cap_list = _parse_id_list(cap_ids)
@@ -565,7 +597,7 @@ async def upload_video(
         raise HTTPException(status_code=503, detail="Database not configured")
 
     video_name = Path(file.filename).stem
-    user_id = _get_user_id_from_request(adapter, http_request)
+    user_id = _require_user_id(adapter, http_request)
     video = adapter.create_video(
         name=video_name,
         original_filename=file.filename,
@@ -653,7 +685,7 @@ def init_upload(payload: UploadInitRequest, http_request: Request):
 
     video_name = Path(payload.filename).stem
     safe_name = _sanitize_filename(payload.filename)
-    user_id = _get_user_id_from_request(adapter, http_request)
+    user_id = _require_user_id(adapter, http_request)
     # 임시 ID 없이 레코드 먼저 생성하여 video_id 확보
     video = adapter.create_video(
         name=video_name,
@@ -719,15 +751,23 @@ class UploadCompleteResponse(BaseModel):
 def complete_upload(
     request: UploadCompleteRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
 ):
     """Storage 업로드 완료 알림 → 파이프라인 실행."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    video = adapter.get_video(request.video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    user_id = _require_user_id(adapter, http_request)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=request.video_id)
+
+    # Safety: don't allow arbitrary keys outside the video's prefix.
+    if not request.storage_key.startswith(f"{request.video_id}/"):
+        raise HTTPException(status_code=400, detail="Invalid storage_key")
+
+    expected_storage_key = video.get("video_storage_key")
+    if expected_storage_key and expected_storage_key != request.storage_key:
+        raise HTTPException(status_code=400, detail="storage_key does not match the video")
 
     adapter.update_video_status(request.video_id, "PREPROCESSING")
 
@@ -877,26 +917,80 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
 
 
 @app.get("/api/videos")
-def list_videos() -> Dict[str, Any]:
+def list_videos(http_request: Request) -> Dict[str, Any]:
     """비디오 목록 조회 (최신순)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    videos = adapter.list_videos()
+    user_id = _require_user_id(adapter, http_request)
+    videos = adapter.list_videos_for_user(user_id)
     return {"videos": videos}
 
 
+class MediaTicketResponse(BaseModel):
+    ticket: str
+    expires_in: int
+
+
+@app.post("/api/media/ticket", response_model=MediaTicketResponse)
+def issue_media_ticket(http_request: Request) -> MediaTicketResponse:
+    """Issue a short-lived, signed token for media endpoints (stream/thumbnail)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    user_id = _require_user_id(adapter, http_request)
+    ttl_sec = _MEDIA_TICKET_TTL_SEC
+    ticket = _create_media_ticket(user_id, ttl_sec=ttl_sec)
+    return MediaTicketResponse(ticket=ticket, expires_in=ttl_sec)
+
+
+@app.delete("/api/videos/{video_id}", status_code=204)
+def delete_video(video_id: str, http_request: Request) -> Response:
+    """Delete a user's video (DB rows + R2 objects under {video_id}/)."""
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    user_id = _require_user_id(adapter, http_request)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
+
+    status = (video.get("status") or "").upper()
+    if status in ("PREPROCESSING", "PREPROCESS_DONE", "PROCESSING"):
+        raise HTTPException(status_code=409, detail="Video is still processing")
+
+    # Storage cleanup (R2) first so failures are retryable (DB row remains).
+    try:
+        r2_result = adapter.r2_delete_prefix(f"{video_id}/")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Storage delete failed: {exc}")
+
+    errors = r2_result.get("errors") or []
+    if errors:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to delete storage objects ({len(errors)} errors)",
+        )
+
+    # DB delete (FK cascades will clean up children).
+    if not adapter.delete_video(video_id, user_id):
+        raise HTTPException(status_code=500, detail="Failed to delete video")
+
+    return Response(status_code=204)
+
+
 @app.get("/api/videos/{video_id}/stream")
-def stream_video(video_id: str):
+def stream_video(video_id: str, http_request: Request, ticket: Optional[str] = None):
     """비디오 파일 서빙 (Storage signed URL 또는 로컬 fallback)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    user_id = _require_user_id_from_request_or_ticket(adapter, http_request, ticket)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
     # Storage에 업로드된 비디오가 있으면 signed URL로 리다이렉트
     storage_key = video.get("video_storage_key")
@@ -925,15 +1019,14 @@ def stream_video(video_id: str):
 
 
 @app.get("/api/videos/{video_id}/thumbnail")
-def get_video_thumbnail(video_id: str):
+def get_video_thumbnail(video_id: str, http_request: Request, ticket: Optional[str] = None):
     """비디오 썸네일 이미지 서빙 (captures 버킷 signed URL 또는 로컬 fallback)."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
-    video = adapter.get_video(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    user_id = _require_user_id_from_request_or_ticket(adapter, http_request, ticket)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
     # DB에서 첫 번째 캡처의 storage_path 조회
     try:
@@ -988,23 +1081,28 @@ def _resolve_video_name(video: Dict[str, Any], fallback: str) -> str:
     return fallback
 
 
-def _get_or_create_chat_session(request: ChatRequest):
+def _get_or_create_chat_session(
+    request: ChatRequest,
+    *,
+    video: Dict[str, Any],
+    user_id: str,
+):
     session = None
     if request.session_id:
         session = _chat_sessions.get(request.session_id)
+    if session:
+        # Safety: do not allow session reuse across different videos.
+        state = getattr(session, "_state", None)
+        if isinstance(state, dict):
+            session_video_id = state.get("video_id")
+            if session_video_id and str(session_video_id) != str(request.video_id):
+                session = None
+
     if session:
         # Update reasoning_mode if provided in request
         if request.reasoning_mode and request.reasoning_mode in ("flash", "thinking"):
             session._state["reasoning_mode"] = request.reasoning_mode
         return session
-
-    adapter = get_supabase_adapter()
-    if not adapter:
-        raise HTTPException(status_code=503, detail="Database not configured")
-
-    video = adapter.get_video(request.video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
 
     video_name = _resolve_video_name(video, request.video_id)
     initial_state = {
@@ -1021,6 +1119,7 @@ def _get_or_create_chat_session(request: ChatRequest):
         video_name,
         process_api_url="http://localhost:8080",
         initial_state=initial_state,
+        user_id=user_id,
     )
 
 
@@ -1063,10 +1162,123 @@ def _get_user_id_from_request(adapter, request: Request) -> Optional[str]:
     return None
 
 
+_MEDIA_TICKET_TTL_SEC = int(os.getenv("MEDIA_TICKET_TTL_SEC", "300"))
+
+
+def _media_ticket_secret() -> str:
+    # Prefer a dedicated secret, but fall back to SUPABASE_KEY (server-side secret) so
+    # local/dev setups still work without extra config.
+    return os.getenv("MEDIA_TICKET_SECRET") or os.getenv("SUPABASE_KEY") or ""
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padded = value + "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
+def _create_media_ticket(user_id: str, *, ttl_sec: int = _MEDIA_TICKET_TTL_SEC) -> str:
+    if not user_id:
+        raise ValueError("user_id is required")
+    secret = _media_ticket_secret().encode("utf-8")
+    if not secret:
+        raise RuntimeError("MEDIA_TICKET_SECRET (or SUPABASE_KEY) is required")
+
+    exp = int(time.time()) + int(ttl_sec)
+    payload = {"uid": user_id, "exp": exp}
+    payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_b64 = _b64url_encode(payload_json)
+    sig = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
+    sig_b64 = _b64url_encode(sig)
+    return f"{payload_b64}.{sig_b64}"
+
+
+def _verify_media_ticket(ticket: str) -> Optional[str]:
+    if not ticket:
+        return None
+    secret = _media_ticket_secret().encode("utf-8")
+    if not secret:
+        return None
+    try:
+        payload_b64, sig_b64 = ticket.split(".", 1)
+        expected_sig = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
+        expected_sig_b64 = _b64url_encode(expected_sig)
+        if not hmac.compare_digest(expected_sig_b64, sig_b64):
+            return None
+
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+        exp = int(payload.get("exp") or 0)
+        if exp <= int(time.time()):
+            return None
+        uid = payload.get("uid")
+        return str(uid) if uid else None
+    except Exception:
+        return None
+
+
+def _require_user_id(adapter, request: Request) -> str:
+    user_id = _get_user_id_from_request(adapter, request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return user_id
+
+
+def _require_user_id_from_request_or_ticket(adapter, request: Request, ticket: Optional[str]) -> str:
+    user_id = _get_user_id_from_request(adapter, request) or _verify_media_ticket(ticket or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return user_id
+
+
+def _require_video_owner(adapter, *, user_id: str, video_id: str) -> Dict[str, Any]:
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if str(video.get("user_id") or "") != str(user_id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return video
+
+
+def _internal_api_token() -> str:
+    # Used for server-to-server calls (e.g. chatbot code calling back into this API).
+    return (
+        os.getenv("PROCESS_API_INTERNAL_TOKEN")
+        or os.getenv("INTERNAL_API_TOKEN")
+        or os.getenv("SUPABASE_KEY")
+        or ""
+    )
+
+
+def _is_internal_request(request: Request) -> bool:
+    expected = _internal_api_token()
+    if not expected:
+        return False
+    token = request.headers.get("x-internal-token") or request.headers.get("X-Internal-Token") or ""
+    if not token:
+        return False
+    return hmac.compare_digest(token, expected)
+
+
+def _require_video_exists(adapter, video_id: str) -> Dict[str, Any]:
+    video = adapter.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return video
+
+
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     """LangGraph 기반 챗봇 API (비스트리밍)."""
-    session = _get_or_create_chat_session(request)
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    user_id = _require_user_id(adapter, http_request)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=request.video_id)
+    session = _get_or_create_chat_session(request, video=video, user_id=user_id)
     messages = session.send_message(request.message)
     response_text = "".join([getattr(msg, "text", "") for msg in messages if msg])
     return ChatResponse(
@@ -1076,9 +1288,15 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/api/chat/stream")
-def chat_stream(request: ChatRequest):
+def chat_stream(request: ChatRequest, http_request: Request):
     """LangGraph 기반 챗봇 API (SSE 스트리밍)."""
-    session = _get_or_create_chat_session(request)
+    adapter = get_supabase_adapter()
+    if not adapter:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    user_id = _require_user_id(adapter, http_request)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=request.video_id)
+    session = _get_or_create_chat_session(request, video=video, user_id=user_id)
 
     def event_generator():
         yield _format_sse_event("session", {"session_id": session.session_id})
@@ -1148,7 +1366,7 @@ class STTProcessResponse(BaseModel):
 
 
 @app.post("/stt/process", response_model=STTProcessResponse)
-def process_stt_from_storage(request: STTProcessRequest) -> STTProcessResponse:
+def process_stt_from_storage(request: STTProcessRequest, http_request: Request) -> STTProcessResponse:
     """Storage에서 오디오를 다운받아 STT를 처리하고 결과를 DB에 저장한다.
     
     사용 예시:
@@ -1163,9 +1381,8 @@ def process_stt_from_storage(request: STTProcessRequest) -> STTProcessResponse:
         raise HTTPException(status_code=503, detail="Database not configured")
     
     # 비디오 존재 확인
-    video = adapter.get_video(request.video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+    user_id = _require_user_id(adapter, http_request)
+    video = _require_video_owner(adapter, user_id=user_id, video_id=request.video_id)
     
     try:
         # 1. Storage에서 오디오 다운로드 → STT 실행
