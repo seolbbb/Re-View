@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
-import yaml
-
+from src.services.chat_llm_config import load_chat_llm_settings
 from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
 try:
@@ -62,106 +61,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_int_list(name: str, default: str) -> List[int]:
-    raw = os.getenv(name, default)
-    values: List[int] = []
-    normalized = raw.replace(";", ",").replace(" ", ",")
-    for part in normalized.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            value = int(token)
-        except ValueError:
-            continue
-        if value >= 0:
-            values.append(value)
-    return values
-
-
-@dataclass(frozen=True)
-class ChatLLMSettings:
-    timeout_sec: int
-    max_retries: int
-    backoff_sec: List[int]
-
-
-def _coerce_non_negative_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(0, parsed)
-
-
-def _coerce_backoff_list(value: Any, default: List[int]) -> List[int]:
-    if isinstance(value, list):
-        parsed = [_coerce_non_negative_int(item, -1) for item in value]
-        parsed = [item for item in parsed if item >= 0]
-        return parsed if parsed else default
-    if isinstance(value, str):
-        parsed: List[int] = []
-        normalized = value.replace(";", ",").replace(" ", ",")
-        for part in normalized.split(","):
-            token = part.strip()
-            if not token:
-                continue
-            try:
-                parsed_value = int(token)
-            except ValueError:
-                continue
-            if parsed_value >= 0:
-                parsed.append(parsed_value)
-        return parsed if parsed else default
-    return default
-
-
-def _load_chat_llm_settings() -> ChatLLMSettings:
-    default_timeout = max(1, _env_int("CHATBOT_LLM_TIMEOUT_SEC", 90))
-    default_retries = max(0, _env_int("CHATBOT_LLM_MAX_RETRIES", 2))
-    default_backoff = _env_int_list("CHATBOT_LLM_BACKOFF_SEC", "2,5,10") or [2, 5, 10]
-
-    if not _CHAT_SETTINGS_PATH.exists():
-        return ChatLLMSettings(
-            timeout_sec=default_timeout,
-            max_retries=default_retries,
-            backoff_sec=default_backoff,
-        )
-
-    try:
-        payload = yaml.safe_load(_CHAT_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
-    except Exception as exc:
-        logger.warning("Failed to read chat settings yaml (%s): %s", _CHAT_SETTINGS_PATH, exc)
-        return ChatLLMSettings(
-            timeout_sec=default_timeout,
-            max_retries=default_retries,
-            backoff_sec=default_backoff,
-        )
-
-    if not isinstance(payload, dict):
-        logger.warning("Invalid chat settings format in %s. Falling back to defaults.", _CHAT_SETTINGS_PATH)
-        return ChatLLMSettings(
-            timeout_sec=default_timeout,
-            max_retries=default_retries,
-            backoff_sec=default_backoff,
-        )
-
-    llm_payload = payload.get("llm_gemini", {})
-    if not isinstance(llm_payload, dict):
-        llm_payload = {}
-
-    timeout_sec = max(1, _coerce_non_negative_int(llm_payload.get("timeout_sec"), default_timeout))
-    max_retries = max(0, _coerce_non_negative_int(llm_payload.get("max_retries"), default_retries))
-    backoff_sec = _coerce_backoff_list(llm_payload.get("backoff_sec"), default_backoff)
-
-    return ChatLLMSettings(
-        timeout_sec=timeout_sec,
-        max_retries=max_retries,
-        backoff_sec=backoff_sec,
-    )
-
-
-_CHAT_LLM_SETTINGS = _load_chat_llm_settings()
+_CHAT_LLM_SETTINGS = load_chat_llm_settings(_CHAT_SETTINGS_PATH, logger=logger)
 _CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
 _CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
 _CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
@@ -181,6 +81,10 @@ _OUT_OF_RANGE_MESSAGE = (
     "요약 작업은 완료되었지만, 특정 시간대의 상세 내용을 제공해 드리지 못하고 있습니다."
 )
 _NO_SUMMARY_MESSAGE = "아직 요약이 생성되지 않았습니다. 요약 작업을 먼저 실행해 주세요."
+
+
+class StreamPartialResponseError(RuntimeError):
+    """Raised when stream output was partially emitted before an LLM error."""
 
 
 def _load_google_api_keys() -> List[str]:
@@ -247,19 +151,43 @@ def _chat_backoff_for_attempt(attempt: int) -> float:
 
 
 def _is_retriable_chat_error(exc: Exception) -> bool:
+    retriable_status = {429, 503, 504}
+    status_candidates: List[int] = []
+
+    def _append_status(value: Any) -> None:
+        if isinstance(value, int):
+            status_candidates.append(value)
+            return
+        if isinstance(value, str):
+            token = value.strip()
+            if token.isdigit():
+                status_candidates.append(int(token))
+
+    for attr in ("status_code", "code"):
+        _append_status(getattr(exc, attr, None))
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        _append_status(getattr(response, "status_code", None))
+
+    if any(status in retriable_status for status in status_candidates):
+        return True
+
     message = str(exc).lower()
-    markers = (
-        "429",
-        "503",
-        "resource_exhausted",
-        "unavailable",
+    timeout_markers = (
         "timeout",
         "timed out",
         "deadline exceeded",
         "readtimeout",
         "connecttimeout",
+        "resource_exhausted",
+        "unavailable",
     )
-    return any(marker in message for marker in markers)
+    if any(marker in message for marker in timeout_markers):
+        return True
+
+    # Fallback for SDKs that only expose status text in message.
+    return re.search(r"\b(429|503|504)\b", message) is not None
 
 
 def _get_trace_logger() -> logging.Logger:
@@ -1042,7 +970,9 @@ def _generate_with_genai_stream(prompt: str) -> Any:
         except Exception as exc:
             last_error = exc
             if yielded_any:
-                raise
+                raise StreamPartialResponseError(
+                    "Streaming interrupted after emitting partial response."
+                ) from exc
             retriable = _is_retriable_chat_error(exc)
             if attempt >= total_attempts - 1 or not retriable:
                 raise
@@ -1583,6 +1513,10 @@ class LangGraphSession:
                 )
             elapsed = time.monotonic() - llm_started
         except Exception as exc:
+            if isinstance(exc, StreamPartialResponseError):
+                logger.warning("LangGraph streaming interrupted after partial output: %s", exc)
+                # Do not append fallback final text after partial chunks; propagate to SSE error channel.
+                raise
             logger.warning("LangGraph streaming LLM call failed: %s", exc)
             response_text = _fallback_answer(result.get("answer_records") or [])
             result["response"] = response_text

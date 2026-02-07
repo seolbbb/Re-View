@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import atexit
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -13,6 +14,21 @@ from .config import ConfigBundle
 
 logger = logging.getLogger(__name__)
 REQUEST_HEARTBEAT_SEC = 5
+REQUEST_EXECUTOR_WORKERS = max(
+    4,
+    int(os.getenv("GEMINI_HEARTBEAT_EXECUTOR_WORKERS", "16")),
+)
+_REQUEST_EXECUTOR = ThreadPoolExecutor(
+    max_workers=REQUEST_EXECUTOR_WORKERS,
+    thread_name_prefix="gemini-heartbeat",
+)
+
+
+def _shutdown_request_executor() -> None:
+    _REQUEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(_shutdown_request_executor)
 
 
 def _get_timestamp() -> str:
@@ -249,20 +265,29 @@ def run_with_retries(
                 print(f"{_get_timestamp()} {indent}[{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
             try:
                 started_at = time.monotonic()
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        generate_content,
-                        client_bundle,
-                        prompt,
-                        response_schema,
-                        temperature,
-                        response_mime_type,
-                        timeout_sec,
-                        client_override=client,
-                    )
+                future = _REQUEST_EXECUTOR.submit(
+                    generate_content,
+                    client_bundle,
+                    prompt,
+                    response_schema,
+                    temperature,
+                    response_mime_type,
+                    timeout_sec,
+                    client_override=client,
+                )
+                try:
                     while True:
+                        elapsed_sec = time.monotonic() - started_at
+                        remaining_sec = float(timeout_sec) - elapsed_sec
+                        if remaining_sec <= 0:
+                            future.cancel()
+                            raise TimeoutError(
+                                f"Safety timeout exceeded before response completion "
+                                f"({timeout_sec}s)."
+                            )
+                        wait_sec = min(REQUEST_HEARTBEAT_SEC, remaining_sec)
                         try:
-                            return future.result(timeout=REQUEST_HEARTBEAT_SEC)
+                            return future.result(timeout=wait_sec)
                         except FutureTimeoutError:
                             if verbose:
                                 elapsed = int(time.monotonic() - started_at)
@@ -271,6 +296,9 @@ def run_with_retries(
                                     f"{elapsed}s/{timeout_sec}s{label}",
                                     flush=True,
                                 )
+                finally:
+                    if not future.done():
+                        future.cancel()
             except Exception as exc:
                 last_error = exc
                 if attempt >= max_retries:
