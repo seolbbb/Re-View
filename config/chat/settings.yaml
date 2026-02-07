@@ -1,0 +1,7 @@
+# Chatbot LLM settings only.
+# These values are used by /api/chat and /api/chat/stream (langgraph_session.py),
+# and are intentionally separate from fusion pipeline settings.
+llm_gemini:
+  timeout_sec: 90
+  max_retries: 2
+  backoff_sec: [2, 5, 10]

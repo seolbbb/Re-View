@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
+from src.services.chat_llm_config import load_chat_llm_settings
 from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
 try:
@@ -25,6 +26,8 @@ else:
 logger = logging.getLogger(__name__)
 _TRACE_LOGGER: Optional[logging.Logger] = None
 _HISTORY_LOGGER: Optional[logging.Logger] = None
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_CHAT_SETTINGS_PATH = _PROJECT_ROOT / "config" / "chat" / "settings.yaml"
 _TRACE_LOG_PATH = Path(os.getenv("CHATBOT_TRACE_LOG", "logs/langgraph_trace.log"))
 _HISTORY_LOG_PATH = Path("logs/history.log")
 
@@ -58,6 +61,12 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+_CHAT_LLM_SETTINGS = load_chat_llm_settings(_CHAT_SETTINGS_PATH, logger=logger)
+_CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
+_CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
+_CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
+
+
 _ENABLE_GRAPH_SUGGESTIONS = os.getenv("CHATBOT_ENABLE_GRAPH_SUGGESTIONS", "true").strip().lower() not in {
     "0",
     "false",
@@ -72,6 +81,10 @@ _OUT_OF_RANGE_MESSAGE = (
     "요약 작업은 완료되었지만, 특정 시간대의 상세 내용을 제공해 드리지 못하고 있습니다."
 )
 _NO_SUMMARY_MESSAGE = "아직 요약이 생성되지 않았습니다. 요약 작업을 먼저 실행해 주세요."
+
+
+class StreamPartialResponseError(RuntimeError):
+    """Raised when stream output was partially emitted before an LLM error."""
 
 
 def _load_google_api_keys() -> List[str]:
@@ -105,6 +118,76 @@ def _select_google_api_key(keys: List[str]) -> Optional[str]:
         return keys[0]
     index = int(time.time()) % len(keys)
     return keys[index]
+
+
+def _load_genai_modules() -> Tuple[Any, Any]:
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
+    return genai, types
+
+
+def _create_genai_client(genai: Any, types: Any, api_key: Optional[str]) -> Any:
+    timeout_ms = max(1, int(_CHAT_LLM_TIMEOUT_SEC * 1000))
+    try:
+        http_options = types.HttpOptions(timeout=timeout_ms)
+    except Exception as exc:
+        raise RuntimeError(
+            "Gemini SDK rejected HttpOptions(timeout). "
+            "Cannot run chat LLM without timeout protection."
+        ) from exc
+    if api_key:
+        return genai.Client(api_key=api_key, http_options=http_options)
+    return genai.Client(http_options=http_options)
+
+
+def _chat_backoff_for_attempt(attempt: int) -> float:
+    if not _CHAT_LLM_BACKOFF_SEC:
+        return 1.0
+    index = min(attempt, len(_CHAT_LLM_BACKOFF_SEC) - 1)
+    return float(_CHAT_LLM_BACKOFF_SEC[index])
+
+
+def _is_retriable_chat_error(exc: Exception) -> bool:
+    retriable_status = {429, 503, 504}
+    status_candidates: List[int] = []
+
+    def _append_status(value: Any) -> None:
+        if isinstance(value, int):
+            status_candidates.append(value)
+            return
+        if isinstance(value, str):
+            token = value.strip()
+            if token.isdigit():
+                status_candidates.append(int(token))
+
+    for attr in ("status_code", "code"):
+        _append_status(getattr(exc, attr, None))
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        _append_status(getattr(response, "status_code", None))
+
+    if any(status in retriable_status for status in status_candidates):
+        return True
+
+    message = str(exc).lower()
+    timeout_markers = (
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+        "readtimeout",
+        "connecttimeout",
+        "resource_exhausted",
+        "unavailable",
+    )
+    if any(marker in message for marker in timeout_markers):
+        return True
+
+    # Fallback for SDKs that only expose status text in message.
+    return re.search(r"\b(429|503|504)\b", message) is not None
 
 
 def _get_trace_logger() -> logging.Logger:
@@ -781,28 +864,50 @@ def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[
 
 
 def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    genai, types = _load_genai_modules()
+    api_keys = _load_google_api_keys()
+    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
+    start_index = int(time.time()) % len(key_pool)
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
         temperature = 0.2
     config = types.GenerateContentConfig(temperature=temperature)
-    response = client.models.generate_content(
-        model=model or _DEFAULT_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    text = getattr(response, "text", None)
-    if text:
-        return text.strip()
-    return str(response)
+    total_attempts = _CHAT_LLM_MAX_RETRIES + 1
+    last_error: Optional[Exception] = None
+
+    for attempt in range(total_attempts):
+        pool_index = (start_index + attempt) % len(key_pool)
+        api_key = key_pool[pool_index]
+        client = _create_genai_client(genai, types, api_key)
+        try:
+            response = client.models.generate_content(
+                model=model or _DEFAULT_MODEL,
+                contents=prompt,
+                config=config,
+            )
+            text = getattr(response, "text", None)
+            if text:
+                return text.strip()
+            return str(response)
+        except Exception as exc:
+            last_error = exc
+            retriable = _is_retriable_chat_error(exc)
+            if attempt >= total_attempts - 1 or not retriable:
+                raise
+            sleep_for = _chat_backoff_for_attempt(attempt)
+            logger.warning(
+                "LangGraph LLM call retry %s/%s due to %s. Backoff %.1fs.",
+                attempt + 1,
+                _CHAT_LLM_MAX_RETRIES,
+                exc,
+                sleep_for,
+            )
+            time.sleep(sleep_for)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LangGraph LLM call failed with no response.")
 
 
 def _extract_genai_text(response: Any) -> str:
@@ -824,37 +929,66 @@ def _extract_genai_text(response: Any) -> str:
 
 
 def _generate_with_genai_stream(prompt: str) -> Any:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    genai, types = _load_genai_modules()
+    api_keys = _load_google_api_keys()
+    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
+    start_index = int(time.time()) % len(key_pool)
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
         temperature = 0.2
     config = types.GenerateContentConfig(temperature=temperature)
-    stream = client.models.generate_content_stream(
-        model=_DEFAULT_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    buffer = ""
-    for chunk in stream:
-        text = _extract_genai_text(chunk)
-        if not text:
-            continue
-        if buffer and text.startswith(buffer):
-            delta = text[len(buffer):]
-            buffer = text
-        else:
-            delta = text
-            buffer += text
-        if delta:
-            yield delta
+    total_attempts = _CHAT_LLM_MAX_RETRIES + 1
+    last_error: Optional[Exception] = None
+
+    for attempt in range(total_attempts):
+        pool_index = (start_index + attempt) % len(key_pool)
+        api_key = key_pool[pool_index]
+        client = _create_genai_client(genai, types, api_key)
+        yielded_any = False
+        try:
+            stream = client.models.generate_content_stream(
+                model=_DEFAULT_MODEL,
+                contents=prompt,
+                config=config,
+            )
+            buffer = ""
+            for chunk in stream:
+                text = _extract_genai_text(chunk)
+                if not text:
+                    continue
+                if buffer and text.startswith(buffer):
+                    delta = text[len(buffer):]
+                    buffer = text
+                else:
+                    delta = text
+                    buffer += text
+                if delta:
+                    yielded_any = True
+                    yield delta
+            return
+        except Exception as exc:
+            last_error = exc
+            if yielded_any:
+                raise StreamPartialResponseError(
+                    "Streaming interrupted after emitting partial response."
+                ) from exc
+            retriable = _is_retriable_chat_error(exc)
+            if attempt >= total_attempts - 1 or not retriable:
+                raise
+            sleep_for = _chat_backoff_for_attempt(attempt)
+            logger.warning(
+                "LangGraph streaming LLM retry %s/%s due to %s. Backoff %.1fs.",
+                attempt + 1,
+                _CHAT_LLM_MAX_RETRIES,
+                exc,
+                sleep_for,
+            )
+            time.sleep(sleep_for)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LangGraph streaming LLM call failed with no response.")
 
 
 def _fallback_answer(records: List[Dict[str, Any]]) -> str:
@@ -1379,6 +1513,10 @@ class LangGraphSession:
                 )
             elapsed = time.monotonic() - llm_started
         except Exception as exc:
+            if isinstance(exc, StreamPartialResponseError):
+                logger.warning("LangGraph streaming interrupted after partial output: %s", exc)
+                # Do not append fallback final text after partial chunks; propagate to SSE error channel.
+                raise
             logger.warning("LangGraph streaming LLM call failed: %s", exc)
             response_text = _fallback_answer(result.get("answer_records") or [])
             result["response"] = response_text

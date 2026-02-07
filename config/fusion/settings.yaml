@@ -25,7 +25,8 @@ summarizer:
   json_repair_attempts: 2      # JSON 복구 재시도 횟수
   prompt_version: "v4.1"       # summarizer 프롬프트 버전 (Production: Benchmark Winner)
 
-# Gemini 호출 설정
+# Gemini 호출 설정 (fusion pipeline 전용)
+# NOTE: chat endpoint는 config/chat/settings.yaml 값을 별도로 사용합니다.
 llm_gemini:
   backend: "developer_api"           # Gemini 호출 방식
   model: "gemini-3-flash-preview"    # 모델 이름

@@ -5,7 +5,7 @@ requests
 pytest
 tenacity
 tqdm
-google-genai
+google-genai>=1.56.0
 google-adk
 pyyaml
 
