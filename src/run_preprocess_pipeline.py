@@ -27,7 +27,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -361,10 +363,14 @@ def run_preprocess_pipeline(
             codec_ext_map = {"pcm_s16le": ".wav", "flac": ".flac", "libmp3lame": ".mp3"}
             audio_ext = codec_ext_map.get(audio_codec, ".wav")
 
-            # (1) Audio Extract
-            audio_path = video_root / f"{video_name}{audio_ext}"
+            # (1) Audio Extract (메모리 처리 - 파일 저장 안 함)
             pipeline_logger.log("Audio", "Extracting...")
             start = time.perf_counter()
+
+            # 임시 파일 생성 (STT 분석용)
+            temp_audio_dir = tempfile.mkdtemp()
+            audio_path = Path(temp_audio_dir) / f"temp_audio{audio_ext}"
+
             extract_audio(
                 video_path,
                 output_path=audio_path,
@@ -376,7 +382,7 @@ def run_preprocess_pipeline(
             )
             elapsed_audio = time.perf_counter() - start
             timer.record_stage("audio", elapsed_audio)
-            _finalize_stage("audio", elapsed_audio, audio_path=audio_path)
+            _finalize_stage("audio", elapsed_audio, audio_path=None)  # audio_path는 저장하지 않음
 
             # (2) STT Analysis
             pipeline_logger.log("STT", "Analyzing...")
@@ -386,6 +392,14 @@ def run_preprocess_pipeline(
             stt_elapsed = elapsed_stt
             timer.record_stage("stt", elapsed_stt)
             _finalize_stage("stt", elapsed_stt, stt_payload=payload)
+
+            # 임시 오디오 파일 삭제
+            try:
+                shutil.rmtree(temp_audio_dir, ignore_errors=True)
+                pipeline_logger.log("Audio", "Temporary audio file cleaned up")
+            except Exception as e:
+                pipeline_logger.log("Audio", f"Warning: Failed to clean temp audio: {e}")
+
             return payload
 
         def handle_capture() -> List[Dict[str, Any]]:
