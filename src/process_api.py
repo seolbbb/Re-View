@@ -960,15 +960,15 @@ def delete_video(video_id: str, http_request: Request) -> Response:
     if _is_video_actively_processing(adapter, video):
         raise HTTPException(status_code=409, detail="Video is still processing")
 
-    # Storage cleanup (R2) first so failures are retryable (DB row remains).
+    # Storage cleanup first so failures are retryable (DB row remains).
     try:
-        r2_result = adapter.r2_delete_prefix(f"{video_id}/")
+        storage_result = _delete_storage_objects_for_video(adapter, video_id, video)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Storage delete failed: {exc}")
 
-    errors = r2_result.get("errors") or []
+    errors = storage_result.get("errors") or []
     if errors:
         raise HTTPException(
             status_code=502,
@@ -1162,15 +1162,31 @@ def _get_user_id_from_request(adapter, request: Request) -> Optional[str]:
     return None
 
 
-_MEDIA_TICKET_TTL_SEC = int(os.getenv("MEDIA_TICKET_TTL_SEC", "300"))
+# Default to 1h so video playback (seek/range requests) remains stable for longer sessions.
+_MEDIA_TICKET_TTL_SEC = int(os.getenv("MEDIA_TICKET_TTL_SEC", "3600"))
 _DELETE_STALE_PREPROCESS_SEC = int(os.getenv("DELETE_STALE_PREPROCESS_SEC", "1800"))  # 30m
 _DELETE_STALE_PROCESSING_SEC = int(os.getenv("DELETE_STALE_PROCESSING_SEC", "7200"))  # 2h
+
+_warned_media_ticket_secret_fallback = False
+_warned_internal_api_token_fallback = False
 
 
 def _media_ticket_secret() -> str:
     # Prefer a dedicated secret, but fall back to SUPABASE_KEY (server-side secret) so
     # local/dev setups still work without extra config.
-    return os.getenv("MEDIA_TICKET_SECRET") or os.getenv("SUPABASE_KEY") or ""
+    global _warned_media_ticket_secret_fallback
+    secret = os.getenv("MEDIA_TICKET_SECRET")
+    if secret:
+        return secret
+    fallback = os.getenv("SUPABASE_KEY") or ""
+    if fallback and not _warned_media_ticket_secret_fallback:
+        role = _supabase_jwt_role(fallback)
+        msg = "Warning: MEDIA_TICKET_SECRET is not set. Falling back to SUPABASE_KEY"
+        if role:
+            msg += f" (role={role})"
+        print(msg)
+        _warned_media_ticket_secret_fallback = True
+    return fallback
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -1180,6 +1196,25 @@ def _b64url_encode(raw: bytes) -> str:
 def _b64url_decode(value: str) -> bytes:
     padded = value + "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
+def _supabase_jwt_role(token: str) -> Optional[str]:
+    """Best-effort decode of a Supabase JWT to extract the 'role' claim.
+
+    This is used only for warning logs when we fall back to SUPABASE_KEY.
+    """
+    if not token:
+        return None
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_raw = _b64url_decode(parts[1]).decode("utf-8")
+        payload = json.loads(payload_raw)
+        role = payload.get("role")
+        return str(role) if role else None
+    except Exception:
+        return None
 
 
 def _create_media_ticket(user_id: str, *, ttl_sec: int = _MEDIA_TICKET_TTL_SEC) -> str:
@@ -1309,14 +1344,129 @@ def _is_video_actively_processing(adapter, video: Dict[str, Any]) -> bool:
     return False
 
 
+def _dedupe_paths(paths: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in paths:
+        if not raw:
+            continue
+        value = str(raw)
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _supabase_storage_remove_paths(
+    adapter,
+    *,
+    bucket: str,
+    paths: List[str],
+    chunk_size: int = 100,
+) -> Dict[str, Any]:
+    """Best-effort delete a list of object paths from Supabase Storage."""
+    paths = _dedupe_paths(paths)
+    total = len(paths)
+    if total == 0:
+        return {"bucket": bucket, "total": 0, "deleted": 0, "errors": []}
+
+    deleted = 0
+    errors: List[Dict[str, Any]] = []
+    for i in range(0, total, chunk_size):
+        chunk = paths[i : i + chunk_size]
+        try:
+            # supabase-py storage API expects a list of file paths.
+            adapter.client.storage.from_(bucket).remove(chunk)
+            deleted += len(chunk)
+        except Exception as exc:
+            errors.append({"bucket": bucket, "code": "RemoveFailed", "message": str(exc)})
+
+    return {"bucket": bucket, "total": total, "deleted": deleted, "errors": errors}
+
+
+def _delete_storage_objects_for_video(adapter, video_id: str, video: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete storage objects for a given video.
+
+    - R2 configured: delete everything under `{video_id}/` prefix (covers video/captures/audios).
+    - R2 not configured:
+        - if r2_only: raise
+        - else: best-effort delete known paths from Supabase Storage buckets.
+    """
+    if getattr(adapter, "s3_client", None):
+        return adapter.r2_delete_prefix(f"{video_id}/")
+
+    if getattr(adapter, "r2_only", False):
+        raise RuntimeError("R2 storage is required (check R2_* env vars)")
+
+    prefix = f"{video_id}/"
+
+    # videos bucket
+    video_key = video.get("video_storage_key")
+    video_paths = [video_key] if video_key and str(video_key).startswith(prefix) else []
+
+    # captures bucket (best-effort; ignore missing rows)
+    capture_paths: List[str] = []
+    try:
+        caps = (
+            adapter.client.table("captures")
+            .select("storage_path")
+            .eq("video_id", video_id)
+            .execute()
+        )
+        for row in caps.data or []:
+            p = row.get("storage_path") if isinstance(row, dict) else None
+            if p and str(p).startswith(prefix):
+                capture_paths.append(str(p))
+    except Exception:
+        pass
+
+    # audio bucket (preprocessing_jobs.audio_storage_key)
+    audio_paths: List[str] = []
+    try:
+        jobs = (
+            adapter.client.table("preprocessing_jobs")
+            .select("audio_storage_key")
+            .eq("video_id", video_id)
+            .execute()
+        )
+        for row in jobs.data or []:
+            p = row.get("audio_storage_key") if isinstance(row, dict) else None
+            if p and str(p).startswith(prefix):
+                audio_paths.append(str(p))
+    except Exception:
+        pass
+
+    results = [
+        _supabase_storage_remove_paths(adapter, bucket="videos", paths=video_paths),
+        _supabase_storage_remove_paths(adapter, bucket="captures", paths=capture_paths),
+        _supabase_storage_remove_paths(adapter, bucket="audio", paths=audio_paths),
+    ]
+
+    total = sum(r.get("total", 0) for r in results)
+    deleted = sum(r.get("deleted", 0) for r in results)
+    errors: List[Dict[str, Any]] = []
+    for r in results:
+        errors.extend(r.get("errors") or [])
+
+    return {"total": total, "deleted": deleted, "errors": errors}
+
+
 def _internal_api_token() -> str:
     # Used for server-to-server calls (e.g. chatbot code calling back into this API).
-    return (
-        os.getenv("PROCESS_API_INTERNAL_TOKEN")
-        or os.getenv("INTERNAL_API_TOKEN")
-        or os.getenv("SUPABASE_KEY")
-        or ""
-    )
+    global _warned_internal_api_token_fallback
+    configured = os.getenv("PROCESS_API_INTERNAL_TOKEN") or os.getenv("INTERNAL_API_TOKEN")
+    if configured:
+        return configured
+    fallback = os.getenv("SUPABASE_KEY") or ""
+    if fallback and not _warned_internal_api_token_fallback:
+        role = _supabase_jwt_role(fallback)
+        msg = "Warning: PROCESS_API_INTERNAL_TOKEN is not set. Falling back to SUPABASE_KEY"
+        if role:
+            msg += f" (role={role})"
+        print(msg)
+        _warned_internal_api_token_fallback = True
+    return fallback
 
 
 def _is_internal_request(request: Request) -> bool:

@@ -2,6 +2,7 @@ opencv-python-headless
 pydantic>=2.5.0
 python-dotenv
 requests
+pytest
 tenacity
 tqdm
 google-genai
