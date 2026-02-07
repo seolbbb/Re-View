@@ -182,6 +182,7 @@ def _build_status_payload(adapter, video_id: str) -> Dict[str, Any]:
 
     result = {
         "video_id": video_id,
+        "video_name": video.get("name"),
         "video_status": video.get("status"),
         "error_message": video.get("error_message"),
     }
