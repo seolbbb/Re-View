@@ -23,17 +23,18 @@ export async function uploadToStorage(uploadUrl, file) {
   }
 }
 
-export async function completeUpload(videoId, storageKey) {
+export async function completeUpload(videoId, storageKey, pipelineMode = 'async') {
   return post('/api/videos/upload/complete', {
     video_id: videoId,
     storage_key: storageKey,
+    pipeline_mode: pipelineMode,
   });
 }
 
-export async function uploadVideo(file) {
+export async function uploadVideo(file, pipelineMode = 'async') {
   const { video_id, video_name, upload_url, storage_key } = await initUpload(file);
   await uploadToStorage(upload_url, file);
-  await completeUpload(video_id, storage_key);
+  await completeUpload(video_id, storage_key, pipelineMode);
   return { video_id, video_name, status: 'PREPROCESSING' };
 }
 

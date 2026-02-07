@@ -47,7 +47,6 @@ def _build_response_schema() -> Dict[str, Any]:
             "source_type",
             "evidence_refs",
             "confidence",
-            "notes",
         ],
         "properties": {
             "bullet_id": {"type": "string"},
@@ -55,7 +54,6 @@ def _build_response_schema() -> Dict[str, Any]:
             "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-            "notes": {"type": "string"},
         },
     }
     definition_schema = {
@@ -66,7 +64,6 @@ def _build_response_schema() -> Dict[str, Any]:
             "source_type",
             "evidence_refs",
             "confidence",
-            "notes",
         ],
         "properties": {
             "term": {"type": "string"},
@@ -74,29 +71,26 @@ def _build_response_schema() -> Dict[str, Any]:
             "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-            "notes": {"type": "string"},
         },
     }
     explanation_schema = {
         "type": "object",
-        "required": ["point", "source_type", "evidence_refs", "confidence", "notes"],
+        "required": ["point", "source_type", "evidence_refs", "confidence"],
         "properties": {
             "point": {"type": "string"},
             "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-            "notes": {"type": "string"},
         },
     }
     question_schema = {
         "type": "object",
-        "required": ["question", "source_type", "evidence_refs", "confidence", "notes"],
+        "required": ["question", "source_type", "evidence_refs", "confidence"],
         "properties": {
             "question": {"type": "string"},
             "source_type": source_type_schema,
             "evidence_refs": evidence_schema,
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-            "notes": {"type": "string"},
         },
     }
     summary_schema = {

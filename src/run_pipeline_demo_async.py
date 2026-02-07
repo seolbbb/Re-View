@@ -275,6 +275,7 @@ async def run_async_demo(
     sync_to_db: bool,
     upload_video_to_r2: bool,
     upload_audio_to_r2: bool,
+    existing_video_id: str | None = None,
 ) -> AsyncDemoResult:
     output_base.mkdir(parents=True, exist_ok=True)
     video_name = _sanitize_video_name(video_path.stem)
@@ -294,15 +295,18 @@ async def run_async_demo(
         if not adapter:
             raise RuntimeError("Supabase adapter not configured; set SUPABASE_URL/SUPABASE_KEY.")
 
-        existing = adapter.get_video_by_filename(None, video_path.name)
-        if existing:
-            video_id = existing.get("id")
+        if existing_video_id:
+            video_id = existing_video_id
         else:
-            video = adapter.create_video(
-                name=video_name,
-                original_filename=video_path.name,
-            )
-            video_id = video.get("id")
+            existing = adapter.get_video_by_filename(None, video_path.name)
+            if existing:
+                video_id = existing.get("id")
+            else:
+                video = adapter.create_video(
+                    name=video_name,
+                    original_filename=video_path.name,
+                )
+                video_id = video.get("id")
 
         if not video_id:
             raise RuntimeError("Failed to resolve video_id for DB sync.")
