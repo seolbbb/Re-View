@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .config import ConfigBundle
-from src.llm.global_limiter import acquire_google_slot, get_google_limiter_snapshot
+from src.llm.global_limiter import (
+    acquire_google_slot,
+    configure_google_global_limit,
+    get_google_limiter_snapshot,
+)
 from src.llm.google_key_routing import (
     make_google_key_id,
     mark_google_key_cooldown,
@@ -125,6 +129,10 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
     from google.genai import types as genai_types  # type: ignore
 
     llm_cfg = config.raw.llm_gemini
+    configure_google_global_limit(
+        llm_cfg.global_max_concurrent,
+        source="fusion.llm_gemini.global_max_concurrent",
+    )
     timeout_ms = max(1, int(llm_cfg.timeout_sec * 1000))
     http_options = genai_types.HttpOptions(timeout=timeout_ms)
     

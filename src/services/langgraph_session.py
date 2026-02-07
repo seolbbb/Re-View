@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -72,11 +73,22 @@ _CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
 _CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
 _CHAT_LLM_GLOBAL_MAX_CONCURRENT = _CHAT_LLM_SETTINGS.global_max_concurrent
 _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC = _CHAT_LLM_SETTINGS.key_fail_cooldown_sec
+_CHAT_LIMIT_INIT_LOCK = threading.Lock()
+_CHAT_LIMIT_INITIALIZED = False
 
-configure_google_global_limit(
-    _CHAT_LLM_GLOBAL_MAX_CONCURRENT,
-    source="chat.llm_gemini.global_max_concurrent",
-)
+
+def _ensure_chat_google_limit_configured() -> None:
+    global _CHAT_LIMIT_INITIALIZED
+    if _CHAT_LIMIT_INITIALIZED:
+        return
+    with _CHAT_LIMIT_INIT_LOCK:
+        if _CHAT_LIMIT_INITIALIZED:
+            return
+        configure_google_global_limit(
+            _CHAT_LLM_GLOBAL_MAX_CONCURRENT,
+            source="chat.llm_gemini.global_max_concurrent",
+        )
+        _CHAT_LIMIT_INITIALIZED = True
 
 
 _ENABLE_GRAPH_SUGGESTIONS = os.getenv("CHATBOT_ENABLE_GRAPH_SUGGESTIONS", "true").strip().lower() not in {
@@ -1278,6 +1290,7 @@ class LangGraphSession:
         backend: Optional[SummaryBackend] = None,
         initial_state: Optional[Dict[str, Any]] = None,
     ) -> None:
+        _ensure_chat_google_limit_configured()
         self._app_name = app_name
         self._user_id = user_id
         self._session_id = f"langgraph-{uuid.uuid4().hex}"
