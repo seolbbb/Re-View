@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
+import yaml
+
 from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
 try:
@@ -25,6 +27,8 @@ else:
 logger = logging.getLogger(__name__)
 _TRACE_LOGGER: Optional[logging.Logger] = None
 _HISTORY_LOGGER: Optional[logging.Logger] = None
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_CHAT_SETTINGS_PATH = _PROJECT_ROOT / "config" / "chat" / "settings.yaml"
 _TRACE_LOG_PATH = Path(os.getenv("CHATBOT_TRACE_LOG", "logs/langgraph_trace.log"))
 _HISTORY_LOG_PATH = Path("logs/history.log")
 
@@ -56,6 +60,111 @@ def _env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def _env_int_list(name: str, default: str) -> List[int]:
+    raw = os.getenv(name, default)
+    values: List[int] = []
+    normalized = raw.replace(";", ",").replace(" ", ",")
+    for part in normalized.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except ValueError:
+            continue
+        if value >= 0:
+            values.append(value)
+    return values
+
+
+@dataclass(frozen=True)
+class ChatLLMSettings:
+    timeout_sec: int
+    max_retries: int
+    backoff_sec: List[int]
+
+
+def _coerce_non_negative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _coerce_backoff_list(value: Any, default: List[int]) -> List[int]:
+    if isinstance(value, list):
+        parsed = [_coerce_non_negative_int(item, -1) for item in value]
+        parsed = [item for item in parsed if item >= 0]
+        return parsed if parsed else default
+    if isinstance(value, str):
+        parsed: List[int] = []
+        normalized = value.replace(";", ",").replace(" ", ",")
+        for part in normalized.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                parsed_value = int(token)
+            except ValueError:
+                continue
+            if parsed_value >= 0:
+                parsed.append(parsed_value)
+        return parsed if parsed else default
+    return default
+
+
+def _load_chat_llm_settings() -> ChatLLMSettings:
+    default_timeout = max(1, _env_int("CHATBOT_LLM_TIMEOUT_SEC", 90))
+    default_retries = max(0, _env_int("CHATBOT_LLM_MAX_RETRIES", 2))
+    default_backoff = _env_int_list("CHATBOT_LLM_BACKOFF_SEC", "2,5,10") or [2, 5, 10]
+
+    if not _CHAT_SETTINGS_PATH.exists():
+        return ChatLLMSettings(
+            timeout_sec=default_timeout,
+            max_retries=default_retries,
+            backoff_sec=default_backoff,
+        )
+
+    try:
+        payload = yaml.safe_load(_CHAT_SETTINGS_PATH.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.warning("Failed to read chat settings yaml (%s): %s", _CHAT_SETTINGS_PATH, exc)
+        return ChatLLMSettings(
+            timeout_sec=default_timeout,
+            max_retries=default_retries,
+            backoff_sec=default_backoff,
+        )
+
+    if not isinstance(payload, dict):
+        logger.warning("Invalid chat settings format in %s. Falling back to defaults.", _CHAT_SETTINGS_PATH)
+        return ChatLLMSettings(
+            timeout_sec=default_timeout,
+            max_retries=default_retries,
+            backoff_sec=default_backoff,
+        )
+
+    llm_payload = payload.get("llm_gemini", {})
+    if not isinstance(llm_payload, dict):
+        llm_payload = {}
+
+    timeout_sec = max(1, _coerce_non_negative_int(llm_payload.get("timeout_sec"), default_timeout))
+    max_retries = max(0, _coerce_non_negative_int(llm_payload.get("max_retries"), default_retries))
+    backoff_sec = _coerce_backoff_list(llm_payload.get("backoff_sec"), default_backoff)
+
+    return ChatLLMSettings(
+        timeout_sec=timeout_sec,
+        max_retries=max_retries,
+        backoff_sec=backoff_sec,
+    )
+
+
+_CHAT_LLM_SETTINGS = _load_chat_llm_settings()
+_CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
+_CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
+_CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
 
 
 _ENABLE_GRAPH_SUGGESTIONS = os.getenv("CHATBOT_ENABLE_GRAPH_SUGGESTIONS", "true").strip().lower() not in {
@@ -105,6 +214,52 @@ def _select_google_api_key(keys: List[str]) -> Optional[str]:
         return keys[0]
     index = int(time.time()) % len(keys)
     return keys[index]
+
+
+def _load_genai_modules() -> Tuple[Any, Any]:
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
+    return genai, types
+
+
+def _create_genai_client(genai: Any, types: Any, api_key: Optional[str]) -> Any:
+    timeout_ms = max(1, int(_CHAT_LLM_TIMEOUT_SEC * 1000))
+    try:
+        http_options = types.HttpOptions(timeout=timeout_ms)
+    except Exception as exc:
+        raise RuntimeError(
+            "Gemini SDK rejected HttpOptions(timeout). "
+            "Cannot run chat LLM without timeout protection."
+        ) from exc
+    if api_key:
+        return genai.Client(api_key=api_key, http_options=http_options)
+    return genai.Client(http_options=http_options)
+
+
+def _chat_backoff_for_attempt(attempt: int) -> float:
+    if not _CHAT_LLM_BACKOFF_SEC:
+        return 1.0
+    index = min(attempt, len(_CHAT_LLM_BACKOFF_SEC) - 1)
+    return float(_CHAT_LLM_BACKOFF_SEC[index])
+
+
+def _is_retriable_chat_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    markers = (
+        "429",
+        "503",
+        "resource_exhausted",
+        "unavailable",
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+        "readtimeout",
+        "connecttimeout",
+    )
+    return any(marker in message for marker in markers)
 
 
 def _get_trace_logger() -> logging.Logger:
@@ -781,28 +936,50 @@ def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[
 
 
 def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    genai, types = _load_genai_modules()
+    api_keys = _load_google_api_keys()
+    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
+    start_index = int(time.time()) % len(key_pool)
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
         temperature = 0.2
     config = types.GenerateContentConfig(temperature=temperature)
-    response = client.models.generate_content(
-        model=model or _DEFAULT_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    text = getattr(response, "text", None)
-    if text:
-        return text.strip()
-    return str(response)
+    total_attempts = _CHAT_LLM_MAX_RETRIES + 1
+    last_error: Optional[Exception] = None
+
+    for attempt in range(total_attempts):
+        pool_index = (start_index + attempt) % len(key_pool)
+        api_key = key_pool[pool_index]
+        client = _create_genai_client(genai, types, api_key)
+        try:
+            response = client.models.generate_content(
+                model=model or _DEFAULT_MODEL,
+                contents=prompt,
+                config=config,
+            )
+            text = getattr(response, "text", None)
+            if text:
+                return text.strip()
+            return str(response)
+        except Exception as exc:
+            last_error = exc
+            retriable = _is_retriable_chat_error(exc)
+            if attempt >= total_attempts - 1 or not retriable:
+                raise
+            sleep_for = _chat_backoff_for_attempt(attempt)
+            logger.warning(
+                "LangGraph LLM call retry %s/%s due to %s. Backoff %.1fs.",
+                attempt + 1,
+                _CHAT_LLM_MAX_RETRIES,
+                exc,
+                sleep_for,
+            )
+            time.sleep(sleep_for)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LangGraph LLM call failed with no response.")
 
 
 def _extract_genai_text(response: Any) -> str:
@@ -824,37 +1001,64 @@ def _extract_genai_text(response: Any) -> str:
 
 
 def _generate_with_genai_stream(prompt: str) -> Any:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    genai, types = _load_genai_modules()
+    api_keys = _load_google_api_keys()
+    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
+    start_index = int(time.time()) % len(key_pool)
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
         temperature = 0.2
     config = types.GenerateContentConfig(temperature=temperature)
-    stream = client.models.generate_content_stream(
-        model=_DEFAULT_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    buffer = ""
-    for chunk in stream:
-        text = _extract_genai_text(chunk)
-        if not text:
-            continue
-        if buffer and text.startswith(buffer):
-            delta = text[len(buffer):]
-            buffer = text
-        else:
-            delta = text
-            buffer += text
-        if delta:
-            yield delta
+    total_attempts = _CHAT_LLM_MAX_RETRIES + 1
+    last_error: Optional[Exception] = None
+
+    for attempt in range(total_attempts):
+        pool_index = (start_index + attempt) % len(key_pool)
+        api_key = key_pool[pool_index]
+        client = _create_genai_client(genai, types, api_key)
+        yielded_any = False
+        try:
+            stream = client.models.generate_content_stream(
+                model=_DEFAULT_MODEL,
+                contents=prompt,
+                config=config,
+            )
+            buffer = ""
+            for chunk in stream:
+                text = _extract_genai_text(chunk)
+                if not text:
+                    continue
+                if buffer and text.startswith(buffer):
+                    delta = text[len(buffer):]
+                    buffer = text
+                else:
+                    delta = text
+                    buffer += text
+                if delta:
+                    yielded_any = True
+                    yield delta
+            return
+        except Exception as exc:
+            last_error = exc
+            if yielded_any:
+                raise
+            retriable = _is_retriable_chat_error(exc)
+            if attempt >= total_attempts - 1 or not retriable:
+                raise
+            sleep_for = _chat_backoff_for_attempt(attempt)
+            logger.warning(
+                "LangGraph streaming LLM retry %s/%s due to %s. Backoff %.1fs.",
+                attempt + 1,
+                _CHAT_LLM_MAX_RETRIES,
+                exc,
+                sleep_for,
+            )
+            time.sleep(sleep_for)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LangGraph streaming LLM call failed with no response.")
 
 
 def _fallback_answer(records: List[Dict[str, Any]]) -> str:
