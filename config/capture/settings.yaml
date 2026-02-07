@@ -5,7 +5,7 @@
 sample_interval_sec: 1.0        # 프레임 샘플링 간격 (초 단위). 값이 작을수록 정밀하지만 연산량이 증가합니다.
                                 # 예: 0.5초 = 1초에 2프레임씩 추출하여 분석
 
-enable_roi_detection: true      # 스마트 ROI(Region of Interest) 검출 활성화 여부.
+enable_roi_detection: false     # 스마트 ROI(Region of Interest) 검출 활성화 여부.
                                 # 영상의 첫 프레임에서 상하단 레터박스(검은 영역)를 감지하여 제외합니다.
                                 # 불필요한 영역의 특징점 추출을 방지하여 속도와 정확도를 높입니다.
 
