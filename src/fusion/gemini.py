@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .config import ConfigBundle
 
 logger = logging.getLogger(__name__)
+REQUEST_HEARTBEAT_SEC = 5
 
 
 def _get_timestamp() -> str:
@@ -97,7 +99,11 @@ def _get_single_api_key(env_base: str) -> Optional[str]:
 def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
     """fusion config 기준으로 Gemini 클라이언트를 생성한다."""
     genai = load_genai()
+    from google.genai import types as genai_types  # type: ignore
+
     llm_cfg = config.raw.llm_gemini
+    timeout_ms = max(1, int(llm_cfg.timeout_sec * 1000))
+    http_options = genai_types.HttpOptions(timeout=timeout_ms)
     
     if llm_cfg.backend == "developer_api":
         api_keys = _load_gemini_keys(llm_cfg.developer_api.api_key_env_candidates)
@@ -105,7 +111,10 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
             raise ValueError(
                 "Developer API key is missing. Set GOOGLE_API_KEY or GEMINI_API_KEY."
             )
-        clients = [genai.Client(api_key=api_key) for api_key in api_keys]
+        clients = [
+            genai.Client(api_key=api_key, http_options=http_options)
+            for api_key in api_keys
+        ]
         client = clients[0]
         return GeminiClientBundle(
             client=client,
@@ -122,13 +131,22 @@ def init_gemini_client(config: ConfigBundle) -> GeminiClientBundle:
                 "Vertex AI requires project/location. Check config."
             )
         if llm_cfg.vertex_ai.auth_mode == "adc":
-            client = genai.Client(vertexai=True, project=project, location=location)
+            client = genai.Client(
+                vertexai=True,
+                project=project,
+                location=location,
+                http_options=http_options,
+            )
         else:
             api_key = _get_single_api_key(llm_cfg.vertex_ai.api_key_env)
             if not api_key:
                 raise ValueError("API key for Vertex AI express_api_key mode is missing.")
             client = genai.Client(
-                vertexai=True, project=project, location=location, api_key=api_key
+                vertexai=True,
+                project=project,
+                location=location,
+                api_key=api_key,
+                http_options=http_options,
             )
         clients = [client]
         return GeminiClientBundle(
@@ -172,6 +190,8 @@ def generate_content(
 ) -> tuple[str, int, int]:
     """Gemini 호출 결과의 텍스트, 총 토큰 수, 캐시된 토큰 수를 반환한다."""
     client = client_override or client_bundle.client
+    # timeout_sec is configured on Client(http_options=...) in init_gemini_client().
+    _ = timeout_sec
     config = {
         "temperature": temperature,
         "response_mime_type": response_mime_type,
@@ -187,21 +207,11 @@ def generate_content(
     ]
     # [TEST-END]
     
-    # timeout 인자 지원 여부에 따른 처리
-    try:
-        response = client.models.generate_content(
-            model=client_bundle.model,
-            contents=prompt,
-            config=config,
-            timeout=timeout_sec,
-        )
-    except TypeError:
-        # 구버전이나 타입 에러 시 timeout 제외하고 재시도
-        response = client.models.generate_content(
-            model=client_bundle.model,
-            contents=prompt,
-            config=config,
-        )
+    response = client.models.generate_content(
+        model=client_bundle.model,
+        contents=prompt,
+        config=config,
+    )
         
     text = extract_text_from_response(response)
     total_tokens = 0
@@ -233,20 +243,34 @@ def run_with_retries(
     for idx, client in enumerate(clients, start=1):
         attempt = 0
         while True:
+            label = f" (Key {idx}/{total_clients})" if total_clients > 1 else ""
+            indent = "" if context.lstrip().lower().startswith("batch") else "       "
             if verbose:
-                label = f" (Key {idx}/{total_clients})" if total_clients > 1 else ""
-                indent = "" if context.lstrip().lower().startswith("batch") else "       "
                 print(f"{_get_timestamp()} {indent}[{context}] Sending request... Attempt {attempt+1}/{max_retries+1}{label}", flush=True)
             try:
-                return generate_content(
-                    client_bundle,
-                    prompt,
-                    response_schema,
-                    temperature,
-                    response_mime_type,
-                    timeout_sec,
-                    client_override=client,
-                )
+                started_at = time.monotonic()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        generate_content,
+                        client_bundle,
+                        prompt,
+                        response_schema,
+                        temperature,
+                        response_mime_type,
+                        timeout_sec,
+                        client_override=client,
+                    )
+                    while True:
+                        try:
+                            return future.result(timeout=REQUEST_HEARTBEAT_SEC)
+                        except FutureTimeoutError:
+                            if verbose:
+                                elapsed = int(time.monotonic() - started_at)
+                                print(
+                                    f"{_get_timestamp()} {indent}[{context}] Waiting... "
+                                    f"{elapsed}s/{timeout_sec}s{label}",
+                                    flush=True,
+                                )
             except Exception as exc:
                 last_error = exc
                 if attempt >= max_retries:
@@ -280,15 +304,37 @@ def run_with_retries(
                     except:
                         simplified_msg = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
 
-                indent = "" if context.lstrip().lower().startswith("batch") else "       "
-                prefix = f"[{context}] " if context else ""
                 if simplified_msg:
                     if verbose:
                         print(f"{_get_timestamp()} {indent}[{context}] Failed: {simplified_msg}. Retrying in {sleep_for}s...", flush=True)
                     else:
-                        print(f"{_get_timestamp()} ⚠️ {indent}[{context}] Retry {attempt+1}/{max_retries}: {simplified_msg}", flush=True)
-                
-                time.sleep(sleep_for)
+                        print(
+                            f"{_get_timestamp()} ⚠️ {indent}[{context}] "
+                            f"Retry {attempt+1}/{max_retries}: {simplified_msg} "
+                            f"(backoff={sleep_for}s)",
+                            flush=True,
+                        )
+
+                sleep_for_sec = max(0.0, float(sleep_for))
+                if verbose and sleep_for_sec >= REQUEST_HEARTBEAT_SEC:
+                    backoff_started = time.monotonic()
+                    backoff_total = int(sleep_for_sec)
+                    while True:
+                        elapsed = time.monotonic() - backoff_started
+                        remaining = sleep_for_sec - elapsed
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(REQUEST_HEARTBEAT_SEC, remaining))
+                        elapsed_sec = int(min(sleep_for_sec, time.monotonic() - backoff_started))
+                        if elapsed_sec < backoff_total:
+                            print(
+                                f"{_get_timestamp()} {indent}[{context}] Backoff waiting... "
+                                f"{elapsed_sec}s/{backoff_total}s before Attempt "
+                                f"{attempt+2}/{max_retries+1}{label}",
+                                flush=True,
+                            )
+                else:
+                    time.sleep(sleep_for_sec)
                 attempt += 1
 
     if last_error:
