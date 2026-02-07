@@ -12,5 +12,6 @@ fastapi
 numpy
 openai>=1.0.0
 supabase>=2.0.0
+boto3
 uvicorn[standard]
 langgraph
