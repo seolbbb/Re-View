@@ -1,12 +1,17 @@
 
-import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { Video, Home, Library, Settings, History, CheckCircle, ChevronsUpDown, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Video, Home, Library, History, CheckCircle, ChevronsUpDown, Loader2, LogOut } from 'lucide-react';
 import { listVideos } from '../api/videos';
+import { useAuth } from '../context/AuthContext';
 
 function Sidebar() {
     const [recentVideos, setRecentVideos] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [profileOpen, setProfileOpen] = useState(false);
+    const profileRef = useRef(null);
+    const { user, signOut } = useAuth();
+    const navigate = useNavigate();
 
     useEffect(() => {
         let mounted = true;
@@ -33,6 +38,27 @@ function Sidebar() {
         };
     }, []);
 
+    // Close profile dropup on outside click
+    useEffect(() => {
+        const handleClick = (e) => {
+            if (profileRef.current && !profileRef.current.contains(e.target)) {
+                setProfileOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+    }, []);
+
+    const handleSignOut = async () => {
+        setProfileOpen(false);
+        try {
+            await signOut();
+            navigate('/login');
+        } catch (err) {
+            console.error('Sign out failed:', err);
+        }
+    };
+
     const getStatusIcon = (status) => {
         const s = (status || '').toUpperCase();
         if (s === 'DONE') return <CheckCircle className="w-5 h-5 text-gray-400 group-hover:text-[var(--text-primary)]" />;
@@ -49,6 +75,10 @@ function Sidebar() {
         const days = Math.floor(hours / 24);
         return `${days}d ago`;
     };
+
+    const userEmail = user?.email || '';
+    const userInitial = userEmail ? userEmail[0].toUpperCase() : 'U';
+    const displayName = user?.user_metadata?.full_name || userEmail.split('@')[0] || 'User';
 
     return (
         <aside className="w-64 flex flex-col bg-surface border-r border-[var(--border-color)] shrink-0 z-20 hidden md:flex h-full">
@@ -72,10 +102,6 @@ function Sidebar() {
                     <a href="#" className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface-highlight text-[var(--text-primary)] transition-colors">
                         <Library className="w-5 h-5 text-primary" />
                         <span className="text-sm font-medium">Library</span>
-                    </a>
-                    <a href="#" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[var(--text-primary)] hover:bg-surface-highlight transition-colors group">
-                        <Settings className="w-5 h-5 text-gray-400 group-hover:text-[var(--text-primary)]" />
-                        <span className="text-sm font-medium">Settings</span>
                     </a>
                 </div>
                 {/* Recent Lectures */}
@@ -109,13 +135,32 @@ function Sidebar() {
                 </div>
             </div>
             {/* User Profile */}
-            <div className="p-4 border-t border-[var(--border-color)]">
-                <button className="flex items-center gap-3 w-full hover:bg-surface-highlight p-2 rounded-lg transition-colors text-left">
+            <div className="p-4 border-t border-[var(--border-color)] relative" ref={profileRef}>
+                {/* Dropup Menu */}
+                {profileOpen && (
+                    <div className="absolute bottom-full left-4 right-4 mb-2 bg-[var(--bg-secondary,var(--bg-primary))] border border-[var(--border-color)] rounded-lg shadow-xl z-50 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-[var(--border-color)]">
+                            <p className="text-[var(--text-primary)] text-sm font-medium truncate">{userEmail}</p>
+                            <p className="text-gray-400 text-xs">Free Plan</p>
+                        </div>
+                        <button
+                            onClick={handleSignOut}
+                            className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-red-400 hover:bg-surface-highlight transition-colors text-left"
+                        >
+                            <LogOut className="w-4 h-4" />
+                            로그아웃
+                        </button>
+                    </div>
+                )}
+                <button
+                    onClick={() => setProfileOpen((o) => !o)}
+                    className="flex items-center gap-3 w-full hover:bg-surface-highlight p-2 rounded-lg transition-colors text-left"
+                >
                     <div className="bg-center bg-no-repeat bg-cover rounded-full size-8 bg-gray-600 flex items-center justify-center text-white text-xs font-bold">
-                        U
+                        {userInitial}
                     </div>
                     <div className="flex flex-col">
-                        <p className="text-[var(--text-primary)] text-sm font-medium">User</p>
+                        <p className="text-[var(--text-primary)] text-sm font-medium truncate">{displayName}</p>
                         <p className="text-gray-400 text-xs">Free Plan</p>
                     </div>
                     <ChevronsUpDown className="w-[18px] h-[18px] text-gray-400 ml-auto" />

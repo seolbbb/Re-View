@@ -1,8 +1,7 @@
 import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
+import katex from 'katex';
 import 'katex/dist/katex.min.css';
 
 /**
@@ -15,24 +14,41 @@ import 'katex/dist/katex.min.css';
  *
  * We bypass the emphasis parser entirely by converting **…** / *…*
  * to <strong>/<em> HTML tags, then use rehype-raw to parse them.
- * Math ($…$, $$…$$) and code blocks are protected from conversion.
+ * Math ($…$, $$…$$) is pre-rendered to HTML via katex.renderToString()
+ * and protected from further processing. Code blocks are also protected.
  */
 function preprocessMarkdown(text) {
     if (!text) return text;
 
     const saved = [];
     let idx = 0;
-    const protect = (match) => {
+    const protect = (html) => {
         const ph = `\x00P${idx++}\x00`;
-        saved.push({ ph, val: match });
+        saved.push({ ph, val: html });
         return ph;
     };
 
     // Protect content that must not be touched
     text = text.replace(/```[\s\S]*?```/g, protect);    // fenced code
     text = text.replace(/`[^`]+`/g, protect);            // inline code
-    text = text.replace(/\$\$([\s\S]+?)\$\$/g, protect); // display math
-    text = text.replace(/\$([^\$\n]+?)\$/g, protect);    // inline math
+
+    // Pre-render display math ($$...$$) with KaTeX, then protect
+    text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, inner) => {
+        try {
+            return protect(katex.renderToString(inner.trim(), { displayMode: true, throwOnError: false }));
+        } catch {
+            return protect(_m);
+        }
+    });
+
+    // Pre-render inline math ($...$) with KaTeX, then protect
+    text = text.replace(/\$([^\$\n]+?)\$/g, (_m, inner) => {
+        try {
+            return protect(katex.renderToString(inner.trim(), { displayMode: false, throwOnError: false }));
+        } catch {
+            return protect(_m);
+        }
+    });
 
     // **…** → <strong>…</strong>  (collapse internal newlines)
     text = text.replace(/\*\*([\s\S]+?)\*\*/g, (_m, inner) => {
@@ -61,8 +77,7 @@ function MarkdownRenderer({ children, className = '' }) {
     return (
         <div className={`markdown-body ${className}`}>
             <ReactMarkdown
-                remarkPlugins={[remarkMath]}
-                rehypePlugins={[rehypeKatex, rehypeRaw]}
+                rehypePlugins={[rehypeRaw]}
             >
                 {processed}
             </ReactMarkdown>
