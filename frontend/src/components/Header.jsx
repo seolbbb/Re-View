@@ -1,10 +1,9 @@
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import './Header.css';
 
 function Header() {
-  const location = useLocation();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const { user, signOut } = useAuth();
@@ -27,14 +26,7 @@ function Header() {
           <span className="logo-play">▶</span>
         </Link>
 
-        <nav className="nav">
-          <Link
-            to="/"
-            className={`nav-link ${location.pathname === '/' ? 'active' : ''}`}
-          >
-            홈
-          </Link>
-        </nav>
+
 
         <div className="header-actions">
           {user && (
