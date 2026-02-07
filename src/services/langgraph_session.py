@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
+from src.services.chat_llm_config import load_chat_llm_settings
+
+from src.llm.global_limiter import acquire_google_slot, configure_google_global_limit
+from src.llm.google_key_routing import (
+    make_google_key_id,
+    mark_google_key_cooldown,
+    order_google_key_indices,
+)
 from src.services.summary_backend import ProcessApiBackend, SummaryBackend
 
 try:
@@ -25,6 +34,8 @@ else:
 logger = logging.getLogger(__name__)
 _TRACE_LOGGER: Optional[logging.Logger] = None
 _HISTORY_LOGGER: Optional[logging.Logger] = None
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_CHAT_SETTINGS_PATH = _PROJECT_ROOT / "config" / "chat" / "settings.yaml"
 _TRACE_LOG_PATH = Path(os.getenv("CHATBOT_TRACE_LOG", "logs/langgraph_trace.log"))
 _HISTORY_LOG_PATH = Path("logs/history.log")
 
@@ -39,7 +50,6 @@ _DECISION_MODEL = os.getenv("CHATBOT_DECISION_MODEL", "gemini-2.5-flash")
 _DEFAULT_TEMPERATURE = os.getenv("CHATBOT_LLM_TEMPERATURE", "0.2")
 _DEFAULT_REASONING_MODE = os.getenv("CHATBOT_REASONING_MODE", "flash")
 _DEFAULT_ROUTER_MODE = os.getenv("CHATBOT_ROUTER", "rules").strip().lower()
-_DEFAULT_OUTPUT_BASE = Path(os.getenv("CHATBOT_OUTPUT_BASE", "data/outputs"))
 _MAX_EVIDENCE_UNITS = int(os.getenv("CHATBOT_MAX_EVIDENCE_UNITS", "10"))
 _HISTORY_LOG_FORMAT = os.getenv("CHATBOT_HISTORY_LOG_FORMAT", "pretty").strip().lower()
 _TRACE_VERBOSE = True
@@ -49,11 +59,56 @@ _TRACE_SESSION_SEPARATOR = True
 _TRACE_SEPARATOR_TEXT = "--------------------------------------------------------------------------------"
 _TRACE_HISTORY_TAIL = 6
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+_CHAT_LLM_SETTINGS = load_chat_llm_settings(_CHAT_SETTINGS_PATH, logger=logger)
+_CHAT_LLM_TIMEOUT_SEC = _CHAT_LLM_SETTINGS.timeout_sec
+_CHAT_LLM_MAX_RETRIES = _CHAT_LLM_SETTINGS.max_retries
+_CHAT_LLM_BACKOFF_SEC = _CHAT_LLM_SETTINGS.backoff_sec
+_CHAT_LLM_GLOBAL_MAX_CONCURRENT = _CHAT_LLM_SETTINGS.global_max_concurrent
+_CHAT_LLM_KEY_FAIL_COOLDOWN_SEC = _CHAT_LLM_SETTINGS.key_fail_cooldown_sec
+_CHAT_LIMIT_INIT_LOCK = threading.Lock()
+_CHAT_LIMIT_INITIALIZED = False
+
+
+def _ensure_chat_google_limit_configured() -> None:
+    global _CHAT_LIMIT_INITIALIZED
+    if _CHAT_LIMIT_INITIALIZED:
+        return
+    with _CHAT_LIMIT_INIT_LOCK:
+        if _CHAT_LIMIT_INITIALIZED:
+            return
+        configure_google_global_limit(
+            _CHAT_LLM_GLOBAL_MAX_CONCURRENT,
+            source="chat.llm_gemini.global_max_concurrent",
+        )
+        _CHAT_LIMIT_INITIALIZED = True
+
+
+_ENABLE_GRAPH_SUGGESTIONS = os.getenv("CHATBOT_ENABLE_GRAPH_SUGGESTIONS", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+_SUGGESTION_MODEL = os.getenv("CHATBOT_SUGGESTION_MODEL", "gemini-2.5-flash")
+_SUGGESTION_MAX_ITEMS = max(1, _env_int("CHATBOT_SUGGESTION_MAX_ITEMS", 2))
+_SUGGESTION_MAX_CHARS = max(20, _env_int("CHATBOT_SUGGESTION_MAX_CHARS", 60))
+
 _OUT_OF_RANGE_MESSAGE = (
     "죄송합니다. 해당 시간에 대한 요약 정보가 아직 업데이트되지 않았습니다. "
     "요약 작업은 완료되었지만, 특정 시간대의 상세 내용을 제공해 드리지 못하고 있습니다."
 )
 _NO_SUMMARY_MESSAGE = "아직 요약이 생성되지 않았습니다. 요약 작업을 먼저 실행해 주세요."
+
+
+class StreamPartialResponseError(RuntimeError):
+    """Raised when stream output was partially emitted before an LLM error."""
 
 
 def _load_google_api_keys() -> List[str]:
@@ -80,13 +135,95 @@ def _load_google_api_keys() -> List[str]:
     return keys
 
 
-def _select_google_api_key(keys: List[str]) -> Optional[str]:
-    if not keys:
-        return None
-    if len(keys) == 1:
-        return keys[0]
-    index = int(time.time()) % len(keys)
-    return keys[index]
+def _load_genai_modules() -> Tuple[Any, Any]:
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
+    return genai, types
+
+
+def _create_genai_client(genai: Any, types: Any, api_key: Optional[str]) -> Any:
+    timeout_ms = max(1, int(_CHAT_LLM_TIMEOUT_SEC * 1000))
+    try:
+        http_options = types.HttpOptions(timeout=timeout_ms)
+    except Exception as exc:
+        raise RuntimeError(
+            "Gemini SDK rejected HttpOptions(timeout). "
+            "Cannot run chat LLM without timeout protection."
+        ) from exc
+    if api_key:
+        return genai.Client(api_key=api_key, http_options=http_options)
+    return genai.Client(http_options=http_options)
+
+
+def _chat_backoff_for_attempt(attempt: int) -> float:
+    if not _CHAT_LLM_BACKOFF_SEC:
+        return 1.0
+    index = min(attempt, len(_CHAT_LLM_BACKOFF_SEC) - 1)
+    return float(_CHAT_LLM_BACKOFF_SEC[index])
+
+
+def _build_chat_key_pool() -> Tuple[List[Optional[str]], List[str]]:
+    api_keys = _load_google_api_keys()
+    key_pool: List[Optional[str]] = api_keys if api_keys else [None]
+    key_ids = [
+        make_google_key_id(key, fallback_label=f"chat_{idx + 1}")
+        for idx, key in enumerate(key_pool)
+    ]
+    return key_pool, key_ids
+
+
+def _pick_chat_key_index(key_ids: List[str], tried_once: set[int], attempt: int) -> int:
+    ordered_indices, _ = order_google_key_indices(key_ids, role="chat")
+    if not ordered_indices:
+        return 0
+    for idx in ordered_indices:
+        if idx not in tried_once:
+            tried_once.add(idx)
+            return idx
+    return ordered_indices[attempt % len(ordered_indices)]
+
+
+def _is_retriable_chat_error(exc: Exception) -> bool:
+    retriable_status = {429, 503, 504}
+    status_candidates: List[int] = []
+
+    def _append_status(value: Any) -> None:
+        if isinstance(value, int):
+            status_candidates.append(value)
+            return
+        if isinstance(value, str):
+            token = value.strip()
+            if token.isdigit():
+                status_candidates.append(int(token))
+
+    for attr in ("status_code", "code"):
+        _append_status(getattr(exc, attr, None))
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        _append_status(getattr(response, "status_code", None))
+
+    if any(status in retriable_status for status in status_candidates):
+        return True
+
+    message = str(exc).lower()
+    timeout_markers = (
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+        "readtimeout",
+        "connecttimeout",
+        "resource_exhausted",
+        "unavailable",
+    )
+    if any(marker in message for marker in timeout_markers):
+        return True
+
+    # Fallback for SDKs that only expose status text in message.
+    return re.search(r"\b(429|503|504)\b", message) is not None
 
 
 def _get_trace_logger() -> logging.Logger:
@@ -220,6 +357,7 @@ def _trace_history(session_id: str, state: Dict[str, Any], *, reason: str) -> No
 
 class ChatState(TypedDict, total=False):
     message: str
+    message_id: str
     cleaned_message: str
     time_ms: Optional[int]
     chat_mode: Optional[str]
@@ -227,6 +365,9 @@ class ChatState(TypedDict, total=False):
     enrich_decision: str
     summary_decision: str
     response: str
+    suggestions: List[str]
+    suggestions_source: str
+    suggestions_error: Optional[str]
     streaming: bool
     prompt: str
     answer_records: List[Dict[str, Any]]
@@ -247,6 +388,7 @@ class LangGraphMessage:
     author: str
     text: str
     is_final: bool = True
+    message_id: Optional[str] = None
 
 
 def _normalize_reasoning_mode(text: str) -> Optional[str]:
@@ -347,37 +489,6 @@ def _route_after_prepare(state: ChatState) -> str:
         return "respond"
     _trace("route.prepare_full", decision="llm")
     return "llm"
-
-
-def _resolve_video_root(state: ChatState) -> Optional[Path]:
-    video_root = state.get("video_root")
-    if video_root:
-        return Path(video_root)
-    video_name = state.get("video_name")
-    if not video_name:
-        return None
-    output_base = state.get("output_base")
-    base_path = Path(output_base) if output_base else _DEFAULT_OUTPUT_BASE
-    return (base_path / video_name).resolve()
-
-
-def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    items.append(json.loads(stripped))
-                except json.JSONDecodeError:
-                    break
-    except OSError:
-        return []
-    return items
-
-
 
 
 def _normalize_evidence_refs(value: Any) -> List[str]:
@@ -565,53 +676,43 @@ def _build_prompt(state: ChatState) -> str:
     summary_json = _format_records(records_for_prompt)
     if reasoning_mode == "thinking":
         prompt = (
-            "You are the Summary Chatbot.\n"
+            "You are a Video Summary Assistant for lecture recordings.\n"
+            "Your role is to answer questions based on the provided segment summaries and transcripts.\n"
+            "\n"
+            "Response Guidelines:\n"
+            "- Start with a direct answer to the question.\n"
+            "- Keep responses under 3-4 sentences unless more detail is requested.\n"
+            "- If citing specific moments, mention the time naturally (e.g., '영상 초반에...', '약 5분경에...').\n"
+            "- Use original English terms for technical concepts (e.g., 'Diffusion', 'Markov', 'Decoder').\n"
+            "\n"
             "Always respond in Korean.\n"
             "Use only the provided summary records and evidence to answer.\n"
             "Explain evidence in natural language. Do not reveal internal IDs (e.g., segment_id, cap_001, stt_001).\n"
             "If summaries are missing but evidence is sufficient, provide a reasonable interpretation based on the evidence.\n"
             "When answering, connect claims to evidence and explain the reasoning briefly.\n"
-            "If the answer is not present, say you cannot find it.\n"
+            "If the answer is not present, explain what IS available in the summaries and offer related topics.\n"
         )
     else:
         prompt = (
-            "You are the Summary Chatbot.\n"
+            "You are a Video Summary Assistant for lecture recordings.\n"
+            "Your role is to answer questions based on the provided segment summaries and transcripts.\n"
+            "\n"
+            "Response Guidelines:\n"
+            "- Start with a direct answer to the question.\n"
+            "- Keep responses under 3-4 sentences unless more detail is requested.\n"
+            "- If citing specific moments, mention the time naturally (e.g., '영상 초반에...', '약 5분경에...').\n"
+            "- Use original English terms for technical concepts (e.g., 'Diffusion', 'Markov', 'Decoder').\n"
+            "\n"
             "Always respond in Korean.\n"
             "Use the provided summary records and evidence if available.\n"
             "Explain evidence in natural language. Do not reveal internal IDs (e.g., segment_id, cap_001, stt_001).\n"
             "If summaries are missing but evidence is sufficient, provide a reasonable interpretation based on the evidence.\n"
-            "If the answer is not present, say you cannot find it.\n"
+            "If the answer is not present, explain what IS available in the summaries and offer related topics.\n"
         )
     if history_text:
         prompt += f"\nRecent conversation:\n{history_text}\n"
     prompt += f"\nUser question:\n{question}\n\nSummary records:\n{summary_json}\n"
     return prompt
-
-
-def _build_enrichment_prompt(state: ChatState) -> str:
-    question = state.get("cleaned_message", "").strip()
-    records = state.get("answer_records") or []
-    condensed: List[Dict[str, Any]] = []
-    for record in records[:6]:
-        summary = record.get("summary") or {}
-        bullets = summary.get("bullets") or []
-        claims = [item.get("claim") for item in bullets if item.get("claim")]
-        condensed.append(
-            {
-                "segment_id": record.get("segment_id") or record.get("segment_index"),
-                "claims": claims[:6],
-            }
-        )
-    payload = json.dumps(condensed, ensure_ascii=False, indent=2)
-    return (
-        "You are deciding whether the current summaries are sufficient to answer the user.\n"
-        "If the summaries are likely insufficient and you should fetch extra evidence, reply with 'enrich'.\n"
-        "If the summaries are sufficient, reply with 'answer'.\n"
-        "Return only one word: enrich or answer.\n"
-        "\n"
-        f"Question:\n{question}\n\n"
-        f"Summary claims:\n{payload}\n"
-    )
 
 
 def _build_summary_sufficiency_prompt(state: ChatState) -> str:
@@ -677,39 +778,6 @@ def _route_after_summary_sufficiency(state: ChatState) -> str:
     return "answer"
 
 
-def _normalize_enrich_decision(value: str) -> str:
-    cleaned = re.sub(r"[^a-z]", "", value.strip().lower())
-    return "enrich" if cleaned == "enrich" else "answer"
-
-
-def _decide_enrichment(state: ChatState) -> Dict[str, Any]:
-    reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
-    if reasoning_mode == "thinking":
-        _trace("enrich.decide", decision="enrich", reason="thinking_mode")
-        return {"enrich_decision": "enrich"}
-    prompt = _build_enrichment_prompt(state)
-    try:
-        started = time.monotonic()
-        raw = _generate_with_genai(prompt, model=_DECISION_MODEL)
-        _trace(
-            "timing.decide_enrich",
-            duration_ms=int((time.monotonic() - started) * 1000),
-        )
-    except Exception as exc:
-        logger.warning("Enrichment decision failed: %s", exc)
-        _trace("enrich.decide", decision="answer", error=str(exc))
-        return {"enrich_decision": "answer"}
-    decision = _normalize_enrich_decision(raw)
-    _trace("enrich.decide", decision=decision, raw=raw)
-    return {"enrich_decision": decision}
-
-
-def _route_after_enrich_decision(state: ChatState) -> str:
-    if state.get("enrich_decision") == "enrich":
-        return "enrich"
-    return "answer"
-
-
 def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[str, Any]:
     """summary의 source_refs를 기반으로 STT/VLM evidence를 조회해 병합한다."""
     _trace("node.enrich_evidence")
@@ -758,28 +826,55 @@ def _enrich_with_db_evidence(state: ChatState, backend: SummaryBackend) -> Dict[
 
 
 def _generate_with_genai(prompt: str, *, model: Optional[str] = None) -> str:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    genai, types = _load_genai_modules()
+    key_pool, key_ids = _build_chat_key_pool()
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
         temperature = 0.2
     config = types.GenerateContentConfig(temperature=temperature)
-    response = client.models.generate_content(
-        model=model or _DEFAULT_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    text = getattr(response, "text", None)
-    if text:
-        return text.strip()
-    return str(response)
+    total_attempts = _CHAT_LLM_MAX_RETRIES + 1
+    last_error: Optional[Exception] = None
+    tried_once: set[int] = set()
+
+    for attempt in range(total_attempts):
+        pool_index = _pick_chat_key_index(key_ids, tried_once, attempt)
+        api_key = key_pool[pool_index]
+        client = _create_genai_client(genai, types, api_key)
+        try:
+            with acquire_google_slot():
+                response = client.models.generate_content(
+                    model=model or _DEFAULT_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+            text = getattr(response, "text", None)
+            if text:
+                return text.strip()
+            return str(response)
+        except Exception as exc:
+            last_error = exc
+            retriable = _is_retriable_chat_error(exc)
+            if retriable and _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC > 0:
+                mark_google_key_cooldown(
+                    key_ids[pool_index],
+                    _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC,
+                )
+            if attempt >= total_attempts - 1 or not retriable:
+                raise
+            sleep_for = _chat_backoff_for_attempt(attempt)
+            logger.warning(
+                "LangGraph LLM call retry %s/%s due to %s. Backoff %.1fs.",
+                attempt + 1,
+                _CHAT_LLM_MAX_RETRIES,
+                exc,
+                sleep_for,
+            )
+            time.sleep(sleep_for)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LangGraph LLM call failed with no response.")
 
 
 def _extract_genai_text(response: Any) -> str:
@@ -801,37 +896,71 @@ def _extract_genai_text(response: Any) -> str:
 
 
 def _generate_with_genai_stream(prompt: str) -> Any:
-    try:
-        from google import genai  # type: ignore
-        from google.genai import types  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("google-genai package is required for LangGraph chatbot.") from exc
-
-    api_key = _select_google_api_key(_load_google_api_keys())
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    genai, types = _load_genai_modules()
+    key_pool, key_ids = _build_chat_key_pool()
     try:
         temperature = float(_DEFAULT_TEMPERATURE)
     except ValueError:
         temperature = 0.2
     config = types.GenerateContentConfig(temperature=temperature)
-    stream = client.models.generate_content_stream(
-        model=_DEFAULT_MODEL,
-        contents=prompt,
-        config=config,
-    )
-    buffer = ""
-    for chunk in stream:
-        text = _extract_genai_text(chunk)
-        if not text:
-            continue
-        if buffer and text.startswith(buffer):
-            delta = text[len(buffer):]
-            buffer = text
-        else:
-            delta = text
-            buffer += text
-        if delta:
-            yield delta
+    total_attempts = _CHAT_LLM_MAX_RETRIES + 1
+    last_error: Optional[Exception] = None
+    tried_once: set[int] = set()
+
+    for attempt in range(total_attempts):
+        pool_index = _pick_chat_key_index(key_ids, tried_once, attempt)
+        api_key = key_pool[pool_index]
+        client = _create_genai_client(genai, types, api_key)
+        yielded_any = False
+        try:
+            with acquire_google_slot():
+                stream = client.models.generate_content_stream(
+                    model=_DEFAULT_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+                buffer = ""
+                for chunk in stream:
+                    text = _extract_genai_text(chunk)
+                    if not text:
+                        continue
+                    if buffer and text.startswith(buffer):
+                        delta = text[len(buffer):]
+                        buffer = text
+                    else:
+                        delta = text
+                        buffer += text
+                    if delta:
+                        yielded_any = True
+                        yield delta
+            return
+        except Exception as exc:
+            last_error = exc
+            if yielded_any:
+                raise StreamPartialResponseError(
+                    "Streaming interrupted after emitting partial response."
+                ) from exc
+            retriable = _is_retriable_chat_error(exc)
+            if retriable and _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC > 0:
+                mark_google_key_cooldown(
+                    key_ids[pool_index],
+                    _CHAT_LLM_KEY_FAIL_COOLDOWN_SEC,
+                )
+            if attempt >= total_attempts - 1 or not retriable:
+                raise
+            sleep_for = _chat_backoff_for_attempt(attempt)
+            logger.warning(
+                "LangGraph streaming LLM retry %s/%s due to %s. Backoff %.1fs.",
+                attempt + 1,
+                _CHAT_LLM_MAX_RETRIES,
+                exc,
+                sleep_for,
+            )
+            time.sleep(sleep_for)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LangGraph streaming LLM call failed with no response.")
 
 
 def _fallback_answer(records: List[Dict[str, Any]]) -> str:
@@ -900,16 +1029,215 @@ def _generate_answer(state: ChatState) -> Dict[str, Any]:
             vlm_evidence=vlm_count,
         )
 
+    return {"response": response_text}
+
+
+def _build_suggestions_prompt(state: ChatState) -> str:
+    question = (state.get("cleaned_message") or "").strip()
+    answer = (state.get("response") or "").strip()
+    return (
+        "You generate follow-up question chips for a chat UI.\n"
+        "Return JSON ONLY in this exact format: {\"questions\": [\"question1\", \"question2\"]}.\n"
+        "\n"
+        "Rules:\n"
+        "- Always write in Korean.\n"
+        f"- Return 1 to {_SUGGESTION_MAX_ITEMS} concise questions.\n"
+        f"- Keep each question within {_SUGGESTION_MAX_CHARS} characters.\n"
+        "- Questions must be natural follow-ups based on the assistant's answer.\n"
+        "- Avoid duplicates and generic prompts.\n"
+        "\n"
+        "Punctuation Rules (CRITICAL):\n"
+        "1. Interrogative questions (의문문): Use ONLY '?' at the end\n"
+        "   - Question words: 왜, 무엇을, 뭐, 어디서, 언제, 어떻게, 누가\n"
+        "   - Question endings: ~인가요, ~나요, ~까요, ~인지, ~ㄹ까요\n"
+        "   - Examples: \"왜 그런가요?\", \"어떻게 사용하나요?\", \"차이점이 뭐예요?\"\n"
+        "2. Imperative/request sentences (명령문/청유문): Use ONLY '.' at the end\n"
+        "   - Request endings: ~해 주세요, ~알려 주세요, ~설명해 주세요, ~비교해 주세요\n"
+        "   - Examples: \"설명해 주세요.\", \"예시를 알려 주세요.\", \"비교해 주세요.\"\n"
+        "3. NEVER use mixed punctuation like '.?', '?.', '??', or '..' at the end\n"
+        "4. NEVER omit punctuation - every question must end with either '?' or '.'\n"
+        "\n"
+        "Few-shot Examples:\n"
+        "\n"
+        "Example 1:\n"
+        "User: \"Stable Diffusion이 뭐야?\"\n"
+        "Assistant: \"Stable Diffusion은 텍스트를 이미지로 변환하는 AI 모델입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"어떻게 사용하나요?\", \"다른 이미지 생성 AI와 비교해 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"어떻게 사용하나요??\", \"비교해 주세요?.\"]}\n"
+        "\n"
+        "Example 2:\n"
+        "User: \"파이썬 리스트 컴프리헨션 설명해줘\"\n"
+        "Assistant: \"리스트 컴프리헨션은 간결하게 리스트를 생성하는 문법입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"언제 사용하면 좋나요?\", \"실전 예제를 보여 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"언제 사용하면 좋나요.\", \"실전 예제를 보여 주세요?\"]}\n"
+        "\n"
+        "Example 3:\n"
+        "User: \"Docker와 VM의 차이는?\"\n"
+        "Assistant: \"Docker는 컨테이너 기반이고 VM은 하이퍼바이저 기반입니다...\"\n"
+        "Good Output:\n"
+        "{\"questions\": [\"어떤 상황에서 Docker를 쓰나요?\", \"성능 차이를 알려 주세요.\"]}\n"
+        "Bad Output:\n"
+        "{\"questions\": [\"어떤 상황에서 Docker를 쓰나요\", \"성능 차이를 알려 주세요??\"]}\n"
+        "\n"
+        f"User question:\n{question}\n\n"
+        f"Assistant answer:\n{answer}\n\n"
+        "Generate follow-up questions in JSON format:\n"
+    )
+
+
+def _extract_questions_from_text(text: str) -> List[str]:
+    stripped = (text or "").strip()
+    if not stripped:
+        return []
+    fence_match = re.search(r"```(?:json)?\s*(.+?)\s*```", stripped, re.IGNORECASE | re.DOTALL)
+    candidate = fence_match.group(1).strip() if fence_match else stripped
+
+    parsed: Any = None
+    brace_start = candidate.find("{")
+    brace_end = candidate.rfind("}")
+    bracket_start = candidate.find("[")
+    bracket_end = candidate.rfind("]")
+    for token in (
+        candidate,
+        candidate[brace_start : brace_end + 1] if brace_start != -1 and brace_end > brace_start else "",
+        candidate[bracket_start : bracket_end + 1] if bracket_start != -1 and bracket_end > bracket_start else "",
+    ):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            parsed = json.loads(token)
+            break
+        except json.JSONDecodeError:
+            continue
+
+    raw_items: List[Any] = []
+    if isinstance(parsed, dict):
+        items = parsed.get("questions")
+        if isinstance(items, list):
+            raw_items = items
+    elif isinstance(parsed, list):
+        raw_items = parsed
+    elif candidate:
+        raw_items = [line.strip("- ").strip() for line in candidate.splitlines() if line.strip()]
+
+    def _normalize_chip_text(value: str) -> str:
+        """
+        Minimal normalization for suggestion chips.
+        Relies on LLM prompt to generate correct punctuation.
+        This function acts as a safety net for edge cases.
+        """
+        # Basic whitespace normalization
+        text_value = re.sub(r"\s+", " ", value.strip())
+
+        # Remove surrounding quotes
+        text_value = text_value.strip("'\"""''")
+
+        if not text_value:
+            return ""
+
+        # Remove duplicate punctuation (e.g., "??" -> "?", ".." -> ".")
+        text_value = re.sub(r"([?!.])\1+$", r"\1", text_value)
+
+        # Enforce length limit
+        if len(text_value) > _SUGGESTION_MAX_CHARS:
+            text_value = text_value[:_SUGGESTION_MAX_CHARS].rstrip()
+
+        # Fix mixed punctuation (safety net for extreme cases)
+        if text_value.endswith(".?") or text_value.endswith("?."):
+            # Remove all trailing punctuation and add '?'
+            core = re.sub(r"[.!?]+$", "", text_value).strip()
+            if not core:
+                return ""
+            logger.warning(f"Mixed punctuation detected in suggestion: '{value}' -> fixed to '{core}?'")
+            return f"{core}?"
+
+        # If punctuation is missing, log a warning but don't add it automatically
+        # This helps us monitor LLM prompt effectiveness
+        if not text_value.endswith(("?", "!", ".")):
+            logger.warning(f"Missing punctuation in suggestion: '{text_value}' - relying on LLM to fix this")
+            # Add a fallback punctuation to avoid breaking UI
+            return f"{text_value}?"
+
+        return text_value
+
+    questions: List[str] = []
+    seen = set()
+    for item in raw_items:
+        question = _normalize_chip_text(str(item or ""))
+        if not question:
+            continue
+        if question in seen:
+            continue
+        seen.add(question)
+        questions.append(question)
+        if len(questions) >= _SUGGESTION_MAX_ITEMS:
+            break
+    return questions
+
+
+def _generate_suggestions(state: ChatState) -> Dict[str, Any]:
+    response_text = (state.get("response") or "").strip()
+    if not response_text or not _ENABLE_GRAPH_SUGGESTIONS:
+        return {"suggestions": [], "suggestions_source": "graph_node"}
+    prompt = _build_suggestions_prompt(state)
+    try:
+        started = time.monotonic()
+        raw = _generate_with_genai(prompt, model=_SUGGESTION_MODEL)
+        _trace(
+            "timing.suggestions",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            model=_SUGGESTION_MODEL,
+        )
+    except Exception as exc:
+        logger.warning("Suggestion generation failed: %s", exc)
+        _trace("suggestions.generate", status="error", error=str(exc))
+        return {
+            "suggestions": [],
+            "suggestions_source": "graph_node",
+            "suggestions_error": str(exc),
+        }
+
+    questions = _extract_questions_from_text(raw)
+    _trace("suggestions.generate", status="ok" if questions else "empty", count=len(questions))
+    return {
+        "suggestions": questions,
+        "suggestions_source": "graph_node",
+        "suggestions_error": None if questions else "empty",
+    }
+
+
+def _finalize_history(state: ChatState) -> Dict[str, Any]:
+    question_text = (state.get("cleaned_message") or "").strip()
+    response_text = (state.get("response") or "").strip()
+    if not question_text or not response_text:
+        return {}
+
     reasoning_mode = _normalize_reasoning_mode(state.get("reasoning_mode") or "") or "flash"
     history_key = f"history_{reasoning_mode}"
     history = state.get(history_key, [])
     if not isinstance(history, list):
         history = []
+    if len(history) >= 2:
+        previous_user = history[-2]
+        previous_assistant = history[-1]
+        if (
+            previous_user.get("role") == "user"
+            and previous_assistant.get("role") == "assistant"
+            and previous_user.get("content") == question_text
+            and previous_assistant.get("content") == response_text
+        ):
+            return {history_key: history}
+
     history = history + [
-        {"role": "user", "content": state.get("cleaned_message", "")},
+        {"role": "user", "content": question_text},
         {"role": "assistant", "content": response_text},
     ]
-    return {"response": response_text, history_key: history}
+    return {history_key: history}
 
 
 def _build_agent_graph(backend: SummaryBackend) -> Any:
@@ -925,6 +1253,8 @@ def _build_agent_graph(backend: SummaryBackend) -> Any:
     graph.add_node("decide_summary", _decide_summary_sufficiency)
     graph.add_node("enrich_evidence", lambda state: _enrich_with_db_evidence(state, backend))
     graph.add_node("generate_answer", _generate_answer)
+    graph.add_node("generate_suggestions", _generate_suggestions)
+    graph.add_node("finalize_history", _finalize_history)
 
     graph.set_entry_point("parse_input")
     graph.add_edge("parse_input", "prepare_full")
@@ -932,7 +1262,7 @@ def _build_agent_graph(backend: SummaryBackend) -> Any:
         "prepare_full",
         _route_after_prepare,
         {
-            "respond": END,
+            "respond": "generate_suggestions",
             "llm": "decide_summary",
         },
     )
@@ -945,7 +1275,24 @@ def _build_agent_graph(backend: SummaryBackend) -> Any:
         },
     )
     graph.add_edge("enrich_evidence", "generate_answer")
-    graph.add_edge("generate_answer", END)
+    graph.add_edge("generate_answer", "generate_suggestions")
+    graph.add_edge("generate_suggestions", "finalize_history")
+    graph.add_edge("finalize_history", END)
+    return graph.compile()
+
+
+def _build_post_answer_graph() -> Any:
+    if _LANGGRAPH_IMPORT_ERROR:
+        raise RuntimeError(
+            "langgraph is required for LangGraphSession. Install it or use CHATBOT_BACKEND=adk."
+        ) from _LANGGRAPH_IMPORT_ERROR
+
+    graph: Any = StateGraph(ChatState)
+    graph.add_node("generate_suggestions", _generate_suggestions)
+    graph.add_node("finalize_history", _finalize_history)
+    graph.set_entry_point("generate_suggestions")
+    graph.add_edge("generate_suggestions", "finalize_history")
+    graph.add_edge("finalize_history", END)
     return graph.compile()
 
 
@@ -959,6 +1306,7 @@ class LangGraphSession:
         backend: Optional[SummaryBackend] = None,
         initial_state: Optional[Dict[str, Any]] = None,
     ) -> None:
+        _ensure_chat_google_limit_configured()
         self._app_name = app_name
         self._user_id = user_id
         self._session_id = f"langgraph-{uuid.uuid4().hex}"
@@ -966,6 +1314,8 @@ class LangGraphSession:
         state_seed = dict(initial_state or {})
         router_mode = (state_seed.get("router_mode") or _DEFAULT_ROUTER_MODE).strip().lower()
         self._graph = _build_agent_graph(self._backend)
+        self._post_answer_graph = _build_post_answer_graph()
+        self._last_suggestions: Optional[Dict[str, Any]] = None
         self._state = state_seed
         self._state.setdefault("summary_cache", [])
         self._state.setdefault("pending_updates", [])
@@ -1003,19 +1353,63 @@ class LangGraphSession:
     def session_id(self) -> str:
         return self._session_id
 
+    def consume_latest_suggestions(self) -> Optional[Dict[str, Any]]:
+        payload = self._last_suggestions
+        self._last_suggestions = None
+        return payload
+
+    @staticmethod
+    def _next_message_id() -> str:
+        return f"msg-{uuid.uuid4().hex[:12]}"
+
+    def _capture_suggestions(self, state: Dict[str, Any]) -> None:
+        raw_questions = state.get("suggestions") or []
+        if not isinstance(raw_questions, list):
+            raw_questions = []
+        questions = [str(item).strip() for item in raw_questions if str(item or "").strip()]
+        if not questions:
+            self._last_suggestions = None
+            return
+        message_id = str(state.get("message_id") or "").strip()
+        if not message_id:
+            self._last_suggestions = None
+            return
+        self._last_suggestions = {
+            "message_id": message_id,
+            "questions": questions[:_SUGGESTION_MAX_ITEMS],
+            "source": state.get("suggestions_source") or "graph_node",
+        }
+
+    def _run_post_answer_graph(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._post_answer_graph.invoke(state)
+        except Exception as exc:
+            logger.warning("Post-answer graph failed: %s", exc)
+            fallback = dict(state)
+            fallback.update(_finalize_history(fallback))
+            fallback["suggestions"] = []
+            fallback["suggestions_source"] = "graph_node"
+            fallback["suggestions_error"] = str(exc)
+            return fallback
+
     def send_message(self, text: str) -> List[LangGraphMessage]:
         started = time.monotonic()
+        message_id = self._next_message_id()
         input_state = dict(self._state)
         input_state["message"] = text
+        input_state["message_id"] = message_id
         _trace(
             "session.message",
             session_id=self._session_id,
             workflow="agent",
             router=self._state.get("router_mode"),
             streaming=False,
+            message_id=message_id,
             question=_shorten(text),
         )
         result = self._graph.invoke(input_state)
+        result["message_id"] = result.get("message_id") or message_id
+        self._capture_suggestions(result)
         response_text = result.get("response", "")
         self._state = self._prune_state(result)
         _trace_history(self._session_id, self._state, reason="send_message")
@@ -1025,12 +1419,21 @@ class LangGraphSession:
             session_id=self._session_id,
             duration_ms=int(elapsed * 1000),
         )
-        return [LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)]
+        return [
+            LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=result.get("message_id"),
+            )
+        ]
 
     def stream_message(self, text: str) -> Any:
-        started = time.monotonic()
+        session_started = time.monotonic()
+        message_id = self._next_message_id()
         input_state = dict(self._state)
         input_state["message"] = text
+        input_state["message_id"] = message_id
         input_state["streaming"] = True
         _trace(
             "session.message",
@@ -1038,48 +1441,78 @@ class LangGraphSession:
             workflow="agent",
             router=self._state.get("router_mode"),
             streaming=True,
+            message_id=message_id,
             question=_shorten(text),
         )
         result = self._graph.invoke(input_state)
         prompt = result.get("prompt")
         if not prompt:
             response_text = result.get("response", "")
+            result["message_id"] = result.get("message_id") or message_id
+            self._capture_suggestions(result)
             self._state = self._prune_state(result)
             _trace_history(self._session_id, self._state, reason="stream_message")
-            elapsed = time.monotonic() - started
+            elapsed = time.monotonic() - session_started
             _trace(
                 "session.complete",
                 session_id=self._session_id,
                 duration_ms=int(elapsed * 1000),
             )
-            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+            yield LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=result.get("message_id"),
+            )
             return
 
         stt_count, vlm_count = _count_evidence(result.get("answer_records") or [])
         response_text = ""
         try:
-            started = time.monotonic()
+            llm_started = time.monotonic()
             first_token_ms: Optional[int] = None
             for chunk in _generate_with_genai_stream(prompt):
                 if not chunk:
                     continue
                 if first_token_ms is None:
-                    first_token_ms = int((time.monotonic() - started) * 1000)
+                    first_token_ms = int((time.monotonic() - llm_started) * 1000)
                     _trace("llm.first_token", duration_ms=first_token_ms)
                 response_text += chunk
-                yield LangGraphMessage(author=_BACKEND_AUTHOR, text=chunk, is_final=False)
-            elapsed = time.monotonic() - started
+                yield LangGraphMessage(
+                    author=_BACKEND_AUTHOR,
+                    text=chunk,
+                    is_final=False,
+                    message_id=message_id,
+                )
+            elapsed = time.monotonic() - llm_started
         except Exception as exc:
+            if isinstance(exc, StreamPartialResponseError):
+                logger.warning("LangGraph streaming interrupted after partial output: %s", exc)
+                # Do not append fallback final text after partial chunks; propagate to SSE error channel.
+                raise
             logger.warning("LangGraph streaming LLM call failed: %s", exc)
             response_text = _fallback_answer(result.get("answer_records") or [])
-            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
             result["response"] = response_text
+            result["message_id"] = message_id
+            result = self._run_post_answer_graph(result)
+            self._capture_suggestions(result)
             self._state = self._prune_state(result)
             _trace_history(self._session_id, self._state, reason="stream_error")
+            yield LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=message_id,
+            )
             return
         if not response_text:
             response_text = _fallback_answer(result.get("answer_records") or [])
-            yield LangGraphMessage(author=_BACKEND_AUTHOR, text=response_text, is_final=True)
+            yield LangGraphMessage(
+                author=_BACKEND_AUTHOR,
+                text=response_text,
+                is_final=True,
+                message_id=message_id,
+            )
         else:
             _trace(
                 "llm.call",
@@ -1090,20 +1523,13 @@ class LangGraphSession:
                 vlm_evidence=vlm_count,
             )
 
-        reasoning_mode = _normalize_reasoning_mode(result.get("reasoning_mode") or "") or "flash"
-        history_key = f"history_{reasoning_mode}"
-        history = result.get(history_key, [])
-        if not isinstance(history, list):
-            history = []
-        history = history + [
-            {"role": "user", "content": result.get("cleaned_message", "")},
-            {"role": "assistant", "content": response_text},
-        ]
-        result[history_key] = history
         result["response"] = response_text
+        result["message_id"] = message_id
+        result = self._run_post_answer_graph(result)
+        self._capture_suggestions(result)
         self._state = self._prune_state(result)
         _trace_history(self._session_id, self._state, reason="stream_message")
-        total_elapsed = time.monotonic() - started
+        total_elapsed = time.monotonic() - session_started
         _trace(
             "session.complete",
             session_id=self._session_id,
@@ -1129,5 +1555,9 @@ class LangGraphSession:
             "prompt",
             "enrich_decision",
             "summary_decision",
+            "message_id",
+            "suggestions",
+            "suggestions_source",
+            "suggestions_error",
         }
         return {k: v for k, v in state.items() if k not in scratch_keys}

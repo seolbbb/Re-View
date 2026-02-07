@@ -176,6 +176,7 @@ class JobAdapterMixin:
             update_result = self.client.table("videos").update({
                 "current_processing_job_id": job["id"],
                 "status": "PROCESSING",  # PREPROCESS_DONE -> PROCESSING
+                "error_message": None,
             }).eq("id", video_id).execute()
             print(f"{_get_timestamp()} [DB] Updated videos.status to PROCESSING for video_id: {video_id}")
 
@@ -209,7 +210,36 @@ class JobAdapterMixin:
             data["error_message"] = error_message
             
         result = self.client.table("processing_jobs").update(data).eq("id", job_id).execute()
-        return result.data[0] if result.data else {}
+        job = result.data[0] if result.data else {}
+
+        status_upper = (status or "").upper()
+        if status_upper in ("DONE", "FAILED"):
+            # Keep videos.status in sync with terminal processing state so clients can
+            # reliably end the stream and render final/failed UI.
+            video_id = job.get("video_id")
+            if not video_id:
+                try:
+                    lookup = (
+                        self.client.table("processing_jobs")
+                        .select("video_id")
+                        .eq("id", job_id)
+                        .execute()
+                    )
+                    if lookup.data:
+                        video_id = lookup.data[0].get("video_id")
+                except Exception:
+                    video_id = None
+
+            if video_id:
+                try:
+                    if status_upper == "DONE":
+                        self.update_video_status(video_id, "DONE")
+                    else:
+                        self.update_video_status(video_id, "FAILED", error=error_message)
+                except Exception:
+                    pass
+
+        return job
     
     def update_processing_job_progress(
         self,
@@ -412,8 +442,57 @@ class JobAdapterMixin:
                 "extracted_text": vlm.get("extracted_text"),
             })
 
-        result = self.client.table("vlm_results").insert(records).execute()
-        return result.data if result.data else []
+        if not records:
+            return []
+
+        cap_ids = [row.get("cap_id") for row in records if row.get("cap_id")]
+        existing_map: Dict[str, str] = {}
+        if cap_ids:
+            query = self.client.table("vlm_results").select("id, cap_id").eq("video_id", video_id)
+            if processing_job_id:
+                query = query.eq("processing_job_id", processing_job_id)
+            in_method = getattr(query, "in_", None)
+            if callable(in_method):
+                query = in_method("cap_id", cap_ids)
+            else:
+                query = query.filter("cap_id", "in", f"({','.join(cap_ids)})")
+            result = query.execute()
+            if result.data:
+                existing_map = {
+                    row.get("cap_id"): row.get("id")
+                    for row in result.data
+                    if row.get("cap_id") and row.get("id")
+                }
+
+        updated_rows: List[Dict[str, Any]] = []
+        insert_rows: List[Dict[str, Any]] = []
+        for row in records:
+            cap_id = row.get("cap_id")
+            if cap_id and cap_id in existing_map:
+                payload = {
+                    "capture_id": row.get("capture_id"),
+                    "time_ranges": row.get("time_ranges"),
+                    "extracted_text": row.get("extracted_text"),
+                    "processing_job_id": row.get("processing_job_id"),
+                }
+                payload = {k: v for k, v in payload.items() if v is not None}
+                result = (
+                    self.client.table("vlm_results")
+                    .update(payload)
+                    .eq("id", existing_map[cap_id])
+                    .execute()
+                )
+                if result.data:
+                    updated_rows.extend(result.data)
+            else:
+                insert_rows.append(row)
+
+        inserted_rows: List[Dict[str, Any]] = []
+        if insert_rows:
+            result = self.client.table("vlm_results").insert(insert_rows).execute()
+            inserted_rows = result.data if result.data else []
+
+        return updated_rows + inserted_rows
     
     # =========================================================================
     # Summary Results

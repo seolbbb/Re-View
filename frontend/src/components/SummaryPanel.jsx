@@ -23,6 +23,8 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     const [streamKey, setStreamKey] = useState(0);
     const prevBatchRef = useRef(-1);
     const staleFlagRef = useRef(false);
+    const [preprocessInfo, setPreprocessInfo] = useState({ status: null });
+    const [pipelineMode, setPipelineMode] = useState('sequential');
 
     // 비디오 상태 확인: 처리 중인지 판단
     const isProcessing = videoStatus && !['DONE', 'FAILED'].includes((videoStatus).toUpperCase());
@@ -32,33 +34,47 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         if (!statusData) return;
         setVideoStatus(statusData.video_status);
         setErrorMessage(statusData.error_message || null);
+
+        // 전처리 상태 및 파이프라인 모드 추적
+        const ppJob = statusData.preprocess_job;
+        if (ppJob) setPreprocessInfo({ status: (ppJob.status || '').toUpperCase() });
+        setPipelineMode(statusData.pipeline_mode || 'sequential');
+
         const job = statusData.processing_job;
         if (job) {
             const current = job.progress_current || 0;
-            const total = job.progress_total || 1;
+            const total = job.progress_total || 0;
             const jobStatus = (job.status || '').toUpperCase();
 
-            // Stage-aware progress: each stage adds partial progress within the current batch
-            const stageWeight = { VLM_RUNNING: 0.3, SUMMARY_RUNNING: 0.6, JUDGE_RUNNING: 0.9 };
-            const basePct = total > 0 ? (current / total) * 100 : 0;
-            const batchWidth = total > 0 ? 100 / total : 0;
+            let percent;
+            if (jobStatus === 'DONE') {
+                percent = 100;
+            } else if (total > 0) {
+                // 기존 로직: total이 확정된 경우 (순차 파이프라인)
+                const basePct = (current / total) * 100;
+                const batchWidth = 100 / total;
+                const stageWeight = { VLM_RUNNING: 0.3, SUMMARY_RUNNING: 0.6, JUDGE_RUNNING: 0.9 };
 
-            // Guard: after current_batch increments, status may still show the
-            // previous batch's JUDGE_RUNNING for 1+ poll cycles. Suppress the
-            // stale bonus until status actually moves to the new batch's stage.
-            if (prevBatchRef.current >= 0 && current !== prevBatchRef.current) {
-                staleFlagRef.current = true;
-            }
-            prevBatchRef.current = current;
-            if (staleFlagRef.current && jobStatus !== 'JUDGE_RUNNING') {
-                staleFlagRef.current = false;
-            }
-            const stageBonus = staleFlagRef.current
-                ? 0
-                : (stageWeight[jobStatus] || 0) * batchWidth;
+                // Guard: after current_batch increments, status may still show the
+                // previous batch's JUDGE_RUNNING for 1+ poll cycles.
+                if (prevBatchRef.current >= 0 && current !== prevBatchRef.current) {
+                    staleFlagRef.current = true;
+                }
+                prevBatchRef.current = current;
+                if (staleFlagRef.current && jobStatus !== 'JUDGE_RUNNING') {
+                    staleFlagRef.current = false;
+                }
+                const stageBonus = staleFlagRef.current
+                    ? 0
+                    : (stageWeight[jobStatus] || 0) * batchWidth;
 
-            const percent = jobStatus === 'DONE' ? 100
-                : Math.min(Math.round(basePct + stageBonus), 99);
+                percent = Math.min(Math.round(basePct + stageBonus), 99);
+            } else if (current > 0) {
+                // 비동기 파이프라인: total 미정. 로그 기반 점진 증가 (최대 95%)
+                percent = Math.min(Math.round(95 * (1 - 1 / (1 + current * 0.3))), 95);
+            } else {
+                percent = 0;
+            }
 
             setProgressInfo({
                 current,
@@ -120,7 +136,8 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
 
     const stageLabel = (() => {
         const s = (progressInfo.stage || videoStatus || '').toUpperCase();
-        // 배치 정보는 오른쪽 진행률 표시에서만 보여줌 (메시지에는 포함하지 않음)
+        if (s === 'PROCESSING' && progressInfo.total === 0 && progressInfo.current === 0)
+            return '분석 시작 중...';
         if (s === 'VLM_RUNNING') return 'AI 분석 진행 중...';
         if (s === 'SUMMARY_RUNNING') return '요약 생성 중...';
         if (s === 'JUDGE_RUNNING') return '품질 평가 중...';
@@ -154,6 +171,13 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                         <div className="absolute inset-0 bg-white/20 w-full animate-[shimmer_2s_infinite] translate-x-[-100%]"></div>
                     </div>
                 </div>
+                {pipelineMode === 'async' && preprocessInfo.status === 'RUNNING' && (
+                    <div className="flex justify-end mt-1">
+                        <span className="text-[10px] text-gray-500 bg-surface-highlight px-2 py-0.5 rounded-full">
+                            전처리 병렬 진행 중
+                        </span>
+                    </div>
+                )}
             </div>
         );
     };
@@ -321,10 +345,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                         </div>
                     )}
 
-                    {/* 미해결 질문 (Open Questions) — expanded only */}
+                    {/* 열린 질문 (Open Questions) — expanded only */}
                     {isExpanded && openQuestions.length > 0 && (
                         <div className="mb-2">
-                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">미해결 질문</h5>
+                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">열린 질문</h5>
                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed italic">
                                 {openQuestions.map((q, i) => (
                                     <li key={i} className="markdown-inline">

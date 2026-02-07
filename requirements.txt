@@ -2,9 +2,10 @@ opencv-python-headless
 pydantic>=2.5.0
 python-dotenv
 requests
+pytest
 tenacity
 tqdm
-google-genai
+google-genai>=1.56.0
 google-adk
 pyyaml
 
@@ -12,5 +13,6 @@ fastapi
 numpy
 openai>=1.0.0
 supabase>=2.0.0
+boto3
 uvicorn[standard]
 langgraph

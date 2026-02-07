@@ -32,7 +32,11 @@ def read_jsonl(path: Path) -> Generator[Dict[str, Any], None, None]:
             stripped = line.strip()
             if not stripped:
                 continue
-            yield json.loads(stripped)
+            try:
+                yield json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                print(f"[ERROR] JSONL parse failed at {path}: '{stripped[:200]}...'")
+                continue # Skip malformed lines instead of crashing entire pipeline
 
 
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:

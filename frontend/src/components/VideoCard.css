@@ -121,6 +121,31 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.video-delete {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.video-delete:hover {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #ef4444;
+}
+
+.video-delete:active {
+    transform: scale(0.95);
+}
+
 .status-pulse {
     width: 6px;
     height: 6px;
@@ -130,9 +155,18 @@
 }
 
 .video-info {
-    padding: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
     background: var(--bg-card-solid);
     transition: background-color 0.3s ease;
+}
+
+.video-info-content {
+    flex: 1;
+    min-width: 0;
 }
 
 .video-title {

@@ -59,6 +59,37 @@ from datetime import datetime
 ROOT = Path(__file__).resolve().parents[2]
 
 # -----------------------------------------------------------------------------
+# Path Helpers
+# -----------------------------------------------------------------------------
+def _safe_rel_to(path: Path, base: Path) -> str:
+    """Best-effort relative path formatter for logs; never raises.
+
+    - If `path` can be represented relative to `base`, return that (POSIX-style).
+    - Otherwise, return an absolute-ish string representation.
+    """
+
+    try:
+        base_abs = Path(base).resolve()
+    except Exception:
+        base_abs = Path(base)
+
+    try:
+        p = Path(path)
+        if p.is_absolute():
+            p_abs = p.resolve()
+        else:
+            # Avoid "one path is relative and the other is absolute" errors in logs.
+            p_abs = (base_abs / p).resolve()
+    except Exception:
+        return str(path).replace("\\", "/")
+
+    try:
+        return str(p_abs.relative_to(base_abs)).replace("\\", "/")
+    except Exception:
+        return str(p_abs).replace("\\", "/")
+
+
+# -----------------------------------------------------------------------------
 # Local Module Imports
 # -----------------------------------------------------------------------------
 from src.audio.stt_router import STTRouter
@@ -157,7 +188,7 @@ def _process_judge_result(
             label = "Pipeline Judge"
         else:
             label = f"Pipeline batch {batch_index + 1} Judge"
-        print(f"  📊 {label}: {'PASS' if passed else 'FAIL'} (score: {final_score:.1f})")
+        print(f"  [Judge] {label}: {'PASS' if passed else 'FAIL'} (score: {final_score:.1f})")
     return passed, final_score
 
 
@@ -296,7 +327,6 @@ def run_capture(
     output_base: Path,
     *,
     threshold: float,
-    dedupe_threshold: float,
     min_interval: float,
     verbose: bool,
     video_name: str,
@@ -310,7 +340,6 @@ def run_capture(
         str(video_path),
         str(output_base),
         scene_threshold=threshold,
-        dedupe_threshold=dedupe_threshold,
         min_interval=min_interval,
         write_manifest=write_manifest,
         callback=callback,
@@ -558,12 +587,14 @@ def run_vlm_for_batch(
     # 더 정확히는 파일명 매칭을 해야 하지만, 배치 단위 디렉토리가 분리되어 있다면 개수 체크로 1차 방어 가능
     if not reuse_success and vlm_json_path.exists():
         try:
-             # 배치가 "batch_N" 폴더로 분리되어 있다고 가정하면, 
-             # 해당 폴더에 vlm.json이 존재한다는 것은 이미 처리가 끝났음을 의미할 수 있음.
-             # 단, 재시도/덮어쓰기 옵션에 따라 달라질 수 있음.
-             # 여기서는 파일이 존재하고 비어있지 않으면 재사용.
              existing_data = json.loads(vlm_json_path.read_text(encoding="utf-8"))
-             if existing_data.get("items"):
+             existing_items = existing_data.get("items", [])
+             # 필수 필드 검증: id와 cap_id가 있는 항목만 유효
+             valid_items = [
+                 item for item in existing_items
+                 if item.get("id") and item.get("cap_id")
+             ]
+             if valid_items and len(valid_items) == len(existing_items):
                  if show_progress:
                      print(f"{_get_timestamp()} [VLM] reuse: Found existing vlm.json with {len(existing_data['items'])} items. Skipping inference.", flush=True)
                      # [User Request] Show reused items count/info
@@ -808,6 +839,35 @@ def run_batch_fusion_pipeline(
     from src.fusion.summarizer import run_batch_summarizer
     from src.fusion.sync_engine import run_batch_sync_engine
 
+    # Normalize paths early so later relative_to/logging doesn't crash (Windows Path rules).
+    repo_root = Path(repo_root).resolve()
+
+    video_root_in = Path(video_root)
+    if video_root_in.is_absolute():
+        video_root = video_root_in.resolve()
+    else:
+        video_root = (repo_root / video_root_in).resolve()
+
+    def _abs_artifact(path: Path) -> Path:
+        p = Path(path)
+        if p.is_absolute():
+            return p.resolve()
+
+        cand_repo = (repo_root / p).resolve()
+        cand_video = (video_root / p).resolve()
+
+        # Prefer whichever one actually exists; fall back to repo_root-relative.
+        if cand_repo.exists():
+            return cand_repo
+        if cand_video.exists():
+            return cand_video
+        return cand_repo
+
+    captures_dir = _abs_artifact(captures_dir)
+    stt_json = _abs_artifact(stt_json)
+    if manifest_json is not None:
+        manifest_json = _abs_artifact(manifest_json)
+
     # captures_data가 있으면 직접 사용, 없으면 manifest_json에서 로드
     if captures_data is not None:
         manifest_payload = captures_data
@@ -923,9 +983,32 @@ def run_batch_fusion_pipeline(
     }
 
     cumulative_segment_count = 0
+    db_segment_offset = 0
+    use_db_offset = False
+
+    def _get_db_segment_offset() -> int:
+        if not adapter or not sync_to_db or not video_id:
+            return 0
+        try:
+            query = adapter.client.table("segments").select("segment_index").eq("video_id", video_id)
+            if processing_job_id:
+                query = query.eq("processing_job_id", processing_job_id)
+            query = query.order("segment_index", desc=True).limit(1)
+            result = query.execute()
+            if result.data:
+                return int(result.data[0].get("segment_index") or 0)
+        except Exception as exc:
+            print(f"{_get_timestamp()} [DB] Warning: failed to read max segment_index: {exc}")
+        return 0
+
+    if adapter and sync_to_db and processing_job_id:
+        db_segment_offset = _get_db_segment_offset()
+        if db_segment_offset > 0:
+            cumulative_segment_count = db_segment_offset
+            use_db_offset = True
     
     # [Fix] Resume Support: If starting from a later batch, count segments from previous batches
-    if start_batch_index > 0:
+    if start_batch_index > 0 and not use_db_offset:
         print(f"{_get_timestamp()} [Pipeline] Checking previous batches for segment offset...")
         for i in range(start_batch_index):
             prev_batch_idx = i + 1
@@ -942,7 +1025,37 @@ def run_batch_fusion_pipeline(
             else:
                 print(f"{_get_timestamp()}   - Batch {prev_batch_idx}: No segments file found (skipping count)")
         print(f"{_get_timestamp()} [Pipeline] Initial cumulative_segment_count set to {cumulative_segment_count}")
+    elif use_db_offset:
+        print(
+            f"{_get_timestamp()} [Pipeline] Using DB max segment_index offset: {cumulative_segment_count}"
+        )
     previous_context = ""
+    if start_batch_index > 0:
+        # Resume support: seed context from the most recent completed batch so the first
+        # processed batch can maintain terminology/consistency.
+        try:
+            from src.fusion.summarizer import extract_batch_context
+
+            for prev_idx in range(start_batch_index, 0, -1):
+                prev_summaries_path = (
+                    video_root
+                    / "batches"
+                    / f"batch_{prev_idx}"
+                    / "fusion"
+                    / "segment_summaries.jsonl"
+                )
+                if not prev_summaries_path.exists():
+                    continue
+                previous_context = extract_batch_context(prev_summaries_path) or ""
+                if previous_context:
+                    print(
+                        f"{_get_timestamp()} [Pipeline] Seeded previous_context from Batch {prev_idx}"
+                    )
+                break
+        except Exception as exc:
+            print(
+                f"{_get_timestamp()} [Pipeline] Warning: failed to seed previous_context: {exc}"
+            )
 
     accumulated_summaries_path = fusion_dir / "segment_summaries.jsonl"
     if not preserve_files and accumulated_summaries_path.exists():
@@ -975,11 +1088,11 @@ def run_batch_fusion_pipeline(
         batch_dir.mkdir(parents=True, exist_ok=True)
         
         # [User Request] Unified Terminal Output
-        # 예: [VLM] DONE [DB] SYNCING [Judge] WAITING [Summarize] WAITING
+        # 예: [VLM] INFERENCE_DONE [DB] UPLOAD_DONE [Judge] WAITING [Summarize] WAITING
         
         status_map = {
-            "VLM": "WAITING",
-            "DB": "WAITING", 
+            "VLM": "PENDING",
+            "DB": "PENDING", 
             "Judge": "WAITING",
             "Summarize": "WAITING"
         }
@@ -1004,21 +1117,24 @@ def run_batch_fusion_pipeline(
 
         _print_status()
 
-        # 1. VLM Extraction
-        status_map["VLM"] = "RUNNING..."
-        _print_status()
-
-        # DB 상태 업데이트: VLM_RUNNING
-        if adapter and processing_job_id:
-            try:
-                adapter.update_processing_job_status(processing_job_id, "VLM_RUNNING")
-            except Exception:
-                pass
-
+        # 1. VLM Inference (skip_vlm=True이면 이미 만들어진 vlm.json을 재사용)
         vlm_info = {"image_count": 0}
         batch_vlm_elapsed = 0.0
 
-        if not skip_vlm:
+        if skip_vlm:
+            status_map["VLM"] = "SKIP (precomputed)"
+            _print_status()
+        else:
+            status_map["VLM"] = "INFERENCING..."
+            _print_status()
+
+            # processing_job 상태 코드 업데이트 (DB 업로드 상태가 아니라 처리 파이프라인 단계 상태)
+            if adapter and processing_job_id:
+                try:
+                    adapter.update_processing_job_status(processing_job_id, "VLM_RUNNING")
+                except Exception:
+                    pass
+
             t_vlm = time.perf_counter()
             vlm_info = run_vlm_for_batch(
                 captures_dir=captures_dir,
@@ -1034,14 +1150,14 @@ def run_batch_fusion_pipeline(
                 video_id=video_id,
             )
             batch_vlm_elapsed = time.perf_counter() - t_vlm
-        
+            status_map["VLM"] = "INFERENCE_DONE"
+            _print_status()
+
         total_vlm_elapsed += batch_vlm_elapsed
-        status_map["VLM"] = "DONE"
-        _print_status()
 
         # 2. DB Upload (VLM Results)
         if adapter and processing_job_id and sync_to_db:
-            status_map["DB"] = "SYNCING..."
+            status_map["DB"] = "UPLOAD..."
             _print_status()
             try:
                 upload_vlm_results_for_batch(
@@ -1050,12 +1166,12 @@ def run_batch_fusion_pipeline(
                     processing_job_id,
                     batch_dir / "vlm.json",
                 )
-                status_map["DB"] = "DONE"
+                status_map["DB"] = "UPLOAD_DONE"
             except Exception:
-                status_map["DB"] = "FAIL"
+                status_map["DB"] = "UPLOAD_FAIL"
             _print_status()
         else:
-             status_map["DB"] = "SKIP"
+             status_map["DB"] = "UPLOAD_SKIP"
              _print_status()
 
         # 3. Fusion Config
@@ -1118,7 +1234,9 @@ def run_batch_fusion_pipeline(
         feedback_map = {}
         batch_passed = False
         batch_score = 0.0
-        
+        batch_prev_context = previous_context or None
+        last_batch_context = ""
+
         for attempt in range(1, 3):
             if attempt > 1:
                 print(f"\n[Pipeline] Attempt {attempt}/2: Retrying fusion due to judge feedback...", flush=True)
@@ -1143,12 +1261,14 @@ def run_batch_fusion_pipeline(
                 segments_units_jsonl=batch_dir / "fusion" / "segments_units.jsonl",
                 output_dir=batch_dir / "fusion",
                 config=config,
+                previous_context=batch_prev_context,
                 feedback_map=feedback_map,
-                limit=None, 
+                limit=None,
                 status_callback=_sum_status_cb,
                 verbose=True,
-                batch_label=f"Batch {start_batch_index + i + 1}",
+                batch_label=f"Batch {current_batch_global_idx}",
             )
+            last_batch_context = summarizer_result.get("context") or ""
             batch_summarizer_elapsed = time.perf_counter() - t_summarize
             total_summarizer_elapsed += batch_summarizer_elapsed
             
@@ -1185,7 +1305,7 @@ def run_batch_fusion_pipeline(
                 json_repair_attempts=getattr(config.judge, "json_repair_attempts", 3),
                 limit=limit, 
                 status_callback=_judge_status_cb,
-                batch_label=f"Batch {start_batch_index + i + 1}",
+                batch_label=f"Batch {current_batch_global_idx}",
             )
             batch_judge_elapsed = time.perf_counter() - t_judge
             total_judge_elapsed += batch_judge_elapsed
@@ -1213,6 +1333,9 @@ def run_batch_fusion_pipeline(
                 for item in segment_reports:
                     if item.get("segment_id") is not None:
                         feedback_map[int(item["segment_id"])] = str(item.get("feedback", "")).strip()
+
+        # Update context for the next batch using the latest summarizer output from this batch.
+        previous_context = last_batch_context
 
         status_map["Summarize"] = "DONE"
         status_map["Judge"] = f"DONE ({batch_score:.1f})" if batch_passed else f"FAIL ({batch_score:.1f})"
@@ -1247,7 +1370,7 @@ def run_batch_fusion_pipeline(
                         video_id,
                         processing_job_id,
                         batch_units_path,
-                        offset=cumulative_segment_count - current_batch_segments_count,
+                        offset=0,
                     )
 
                 if batch_summaries_path.exists():
@@ -1301,7 +1424,9 @@ def run_batch_fusion_pipeline(
         # 시간순 정렬
         all_vlm_items.sort(key=lambda x: int(x.get("timestamp_ms", 0)))
         write_json(root_vlm_path, {"items": all_vlm_items})
-        print(f"  [Standardization] Consolidated {len(all_vlm_items)} VLM items to {root_vlm_path.relative_to(ROOT)}")
+        print(
+            f"  [Standardization] Consolidated {len(all_vlm_items)} VLM items to {_safe_rel_to(root_vlm_path, ROOT)}"
+        )
 
     # stt.json이 루트에 없으면 (일반적으로는 이미 존재함) 검색해서 복제 또는 링크
     root_stt_path = video_root / "stt.json"
@@ -1314,7 +1439,9 @@ def run_batch_fusion_pipeline(
             if batch_stt_path.exists():
                 import shutil
                 shutil.copy2(batch_stt_path, root_stt_path)
-                print(f"  [Standardization] Copied stt.json to {root_stt_path.relative_to(ROOT)}")
+                print(
+                    f"  [Standardization] Copied stt.json to {_safe_rel_to(root_stt_path, ROOT)}"
+                )
                 break
 
     fusion_info["segment_count"] = cumulative_segment_count

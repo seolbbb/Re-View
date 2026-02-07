@@ -148,9 +148,17 @@ class VideoAdapterMixin:
             Dict: 업데이트된 비디오 레코드 정보를 반환
         """
         # 1. 업데이트할 데이터 준비
-        data = {"status": status}
-        if error:
-            data["error_message"] = error
+        #
+        # UX/streaming consistency: FAILED 상태를 벗어나는 순간 기존 error_message를
+        # 지워야 프론트가 "실패 배너"를 계속 유지하지 않습니다.
+        status_upper = (status or "").upper()
+        data: Dict[str, Any] = {"status": status}
+        if status_upper == "FAILED":
+            # 명시적으로 에러가 주어진 경우에만 overwrite (그 외에는 기존 메시지 유지)
+            if error is not None:
+                data["error_message"] = error
+        else:
+            data["error_message"] = None
         
         # 2. 업데이트 실행 (ID 기준)
         result = self.client.table("videos").update(data).eq("id", video_id).execute()
@@ -185,6 +193,22 @@ class VideoAdapterMixin:
         except Exception:
             return []
 
+    def list_videos_for_user(self, user_id: str) -> list:
+        """List videos for a specific user (newest first)."""
+        if not user_id:
+            return []
+        try:
+            result = (
+                self.client.table("videos")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception:
+            return []
+
     def update_video_storage_key(
         self,
         video_id: str,
@@ -206,6 +230,27 @@ class VideoAdapterMixin:
             .execute()
         )
         return result.data[0] if result.data else {}
+
+    def delete_video(self, video_id: str, user_id: str) -> bool:
+        """Delete a video row if it belongs to the given user.
+
+        This deletes only the DB row. Storage cleanup must be handled separately.
+        """
+        if not video_id or not user_id:
+            return False
+        try:
+            (
+                self.client.table("videos")
+                .delete()
+                .eq("id", video_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            # Some PostgREST configurations may return no representation for DELETE.
+            # Treat "no exception" as success; callers already verify ownership.
+            return True
+        except Exception:
+            return False
 
     def upload_video(
         self,
@@ -287,6 +332,8 @@ class VideoAdapterMixin:
                 print(f"[R2] Upload failed: {e}")
                 raise e
         else:
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (set R2_* env vars).")
             # Supabase Fallback: {video_id}/{filename}
             storage_path = f"{video_id}/{file_name}"
             with open(video_path, "rb") as f:

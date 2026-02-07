@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 # -----------------------------------------------------------------------------
 # Supabase Client Import
@@ -166,6 +166,9 @@ class BaseAdapter:
         # ---------------------------------------------------------------------
         # 2. Cloudflare R2 클라이언트 초기화 (선택적)
         # ---------------------------------------------------------------------
+        # R2 전용 모드: Supabase Storage fallback을 비활성화한다.
+        # - "1", "true", "yes" => True
+        self.r2_only = str(os.getenv("R2_ONLY_STORAGE", "1")).lower() in ("1", "true", "yes")
         self._init_r2_client()
 
     def _init_r2_client(self) -> None:
@@ -220,3 +223,57 @@ class BaseAdapter:
             str: ISO 8601 형식의 UTC 시간 (예: "2026-02-05T12:00:00+00:00")
         """
         return datetime.now(timezone.utc).isoformat()
+
+    # ---------------------------------------------------------------------
+    # Cloudflare R2 helpers
+    # ---------------------------------------------------------------------
+    def r2_delete_prefix(self, prefix: str) -> Dict[str, Any]:
+        """Delete every object under a given key prefix in the R2 bucket.
+
+        This is intentionally implemented as a prefix delete (list + batch delete)
+        so callers can reliably remove all artifacts for a video_id.
+
+        Returns:
+            Dict with keys:
+              - prefix: str
+              - total: int (objects found)
+              - deleted: int (objects deleted, best-effort)
+              - errors: list (delete_objects errors)
+        """
+        if not getattr(self, "s3_client", None):
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (check R2_* env vars)")
+            return {"prefix": prefix, "total": 0, "deleted": 0, "errors": []}
+
+        bucket = getattr(self, "r2_bucket", None)
+        if not bucket:
+            raise RuntimeError("R2 bucket is not configured (check R2_BUCKET/R2_BUCKET_VIDEOS)")
+
+        keys: List[str] = []
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key")
+                if key:
+                    keys.append(key)
+
+        total = len(keys)
+        deleted = 0
+        errors: List[Dict[str, Any]] = []
+
+        # S3-compatible delete_objects supports up to 1000 objects per call.
+        for i in range(0, total, 1000):
+            chunk = keys[i : i + 1000]
+            objs = [{"Key": key} for key in chunk]
+            try:
+                resp = self.s3_client.delete_objects(Bucket=bucket, Delete={"Objects": objs})
+            except Exception as exc:
+                errors.append({"Key": prefix, "Code": "DeleteObjectsFailed", "Message": str(exc)})
+                continue
+
+            deleted_items = resp.get("Deleted") or []
+            resp_errors = resp.get("Errors") or []
+            deleted += len(deleted_items) if deleted_items else max(0, len(objs) - len(resp_errors))
+            errors.extend(resp_errors)
+
+        return {"prefix": prefix, "total": total, "deleted": deleted, "errors": errors}

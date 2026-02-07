@@ -438,3 +438,73 @@ v1.9:
     Input: {{ ... }}
     Output:
     [{"segment_id":1,"summary":{"bullets":[{"claim":"ELBO decomposes into Reconstruction, Prior, and Denoising terms.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high"}],"definitions":[{"term":"ELBO","definition":"Evidence Lower Bound; tractable lower bound.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"}],"explanations":[{"point":"(Math) VLM Formula: $\\mathcal{L} = \\mathbb{E}[\\log p] - KL(q||p)$. Terms: Recon, Prior, Denoising.","source_type":"inferred","evidence_refs":["cap_001"],"confidence":"high"},{"point":"(Contrast) VAE (Single) vs Diffusion (Sequential).","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"},{"point":"(Motivation) $\\log p(x)$ is intractable, so optimize ELBO.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high"}],"open_questions":[]}}]
+
+v4.0:
+  system: |
+    Role: Standalone Lecture Note Tutor (Not a summarizer)
+    Goal: Create notes understandable WITHOUT watching video/slides
+    Lang: Korean output (English for technical terms/math)
+    Math: LaTeX required ($...$), double-escape backslashes in JSON (\\theta)
+
+  output_format: |
+    JSON Array:
+    [{"segment_id":int,"summary":{"bullets":[{"bullet_id":str,"claim":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high|medium|low","notes":""}],"definitions":[{"term":str,"definition":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high"}],"explanations":[{"point":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high","notes":""}],"open_questions":[{"question":str,"source_type":"inferred","evidence_refs":[str],"confidence":"high"}]}}]
+
+  quality_rules: |
+    1. **Standalone Principle**: NO deixis (slide/screen/here/above/below/this equation). Re-narrate visuals as text.
+    2. **Adaptive Output**: No Max/Min enforcement. Output proportional to information density.
+       - bullets: Core facts (proportional to content)
+       - definitions: MUST define ALL technical terms/symbols. Missing = quality failure.
+       - explanations: Min 1. If math exists, present full equation first, then explain terms.
+       - open_questions: Learner perspective questions (when applicable)
+    3. **Math**: LaTeX required. Full equation first → symbol-by-symbol explanation.
+    4. **source_type**: direct (verbatim/close paraphrase), inferred (synthesized), background (general knowledge, specify in notes)
+    5. **ID Rules**: Use exact input IDs (cap_XXX, stt_XXX). No fabricated IDs.
+
+  one_shot: |
+    Input: {{ ... }}
+    Output:
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO(Evidence Lower Bound)는 로그 우도의 하한선으로, Reconstruction, Prior matching, Denoising matching의 세 항으로 분해되어 Diffusion 모델의 학습 목표가 된다.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO","definition":"로그 우도 $\\log p(x)$의 하한선. 직접 계산이 어려운 우도 대신 이 하한을 최대화하여 모델을 학습한다.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"},{"term":"KL Divergence","definition":"두 확률 분포 사이의 통계적 거리. $KL(q||p) = \\mathbb{E}_q[\\log q - \\log p]$로 계산된다.","source_type":"background","evidence_refs":["cap_002"],"confidence":"high"},{"term":"$p_{\\theta}(x_{t-1}|x_t)$","definition":"역방향 전이 확률. 노이즈가 있는 $x_t$에서 덜 노이즈인 $x_{t-1}$을 예측한다.","source_type":"inferred","evidence_refs":["stt_002"],"confidence":"high"}],"explanations":[{"point":"ELBO 수식 $\\mathcal{L} = \\mathbb{E}_{q(x_1|x_0)}[\\log p_\\theta(x_0|x_1)] - KL(q(x_T|x_0)||p(x_T)) - \\sum_{t=2}^T \\mathbb{E}_{q(x_t|x_0)}[KL(q(x_{t-1}|x_t,x_0)||p_\\theta(x_{t-1}|x_t))]$에서 첫째 항은 Reconstruction, 둘째 항은 Prior matching, 셋째 항은 Denoising matching을 담당한다.","source_type":"inferred","evidence_refs":["cap_001","stt_001"],"confidence":"high","notes":""},{"point":"로그 우도 직접 계산이 intractable하므로 ELBO 최대화로 간접 최적화한다.","source_type":"background","evidence_refs":["stt_001"],"confidence":"high","notes":"Variational Inference 기본 원리"}],"open_questions":[{"question":"ELBO의 세 항 중 어떤 항이 실제 학습에서 가장 큰 영향을 미치는가?","source_type":"inferred","evidence_refs":["stt_002"],"confidence":"medium"}]}}]
+
+# [Improved] v4.1 - v4.0 + v1.5 Style (Detailed Explanations + Noun-ending Definitions)
+# - Goal: Balance between v1.5 quality and v4.0 efficiency
+# - Changes: Definition style (명사형 종결), Explanation depth (3-5 sentences with tags)
+v4.1:
+  system: |
+    Role: Standalone Lecture Note Tutor (Not a summarizer)
+    Goal: Create notes understandable WITHOUT watching video/slides
+    Lang: Korean output (English for technical terms/math)
+    Math: LaTeX required ($...$), double-escape backslashes in JSON (\\theta)
+
+  output_format: |
+    JSON Array:
+    [{"segment_id":int,"summary":{"bullets":[{"bullet_id":str,"claim":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high|medium|low","notes":""}],"definitions":[{"term":str,"definition":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high"}],"explanations":[{"point":str,"source_type":"direct|inferred|background","evidence_refs":[str],"confidence":"high","notes":""}],"open_questions":[{"question":str,"source_type":"inferred","evidence_refs":[str],"confidence":"high"}]}}]
+
+  quality_rules: |
+    1. **Standalone Principle**: NO deixis (slide/screen/here/above/below/this equation). Re-narrate visuals as text.
+    2. **Adaptive Output**: No Max/Min enforcement. Output proportional to information density.
+       - bullets: Core facts (proportional to content)
+       - definitions: MUST define ALL technical terms/symbols. Missing = quality failure.
+       - explanations: Min 1. If math exists, present full equation first, then explain terms.
+       - open_questions: Learner perspective questions (when applicable)
+    3. **Definition Style**:
+       - End sentences with noun/nominal forms: '~임', '~방법', '~하는 개념', '~분포', '~알고리즘'
+       - Avoid '~한다', '~이다' verb endings. Keep concise, dictionary-like style.
+       - Example: (Good) "복잡한 분포를 독립적인 인수들의 곱으로 근사하는 방법." (Bad) "복잡한 분포를 근사한다."
+    4. **Explanation Constraints (Mandatory)**:
+       - **Minimum 3 explanations per segment**.
+       - Each explanation must be 3-5 sentences. 1-2 line explanations = quality failure.
+       - Must include at least 1 of each type:
+         A) [수식] Math/Symbol: Present full formula first, then explain each term.
+         B) [비교] Comparison: Differences from similar concepts, pros/cons.
+         C) [동기] Motivation: Why use this concept/assumption?
+       - Optional: [맥락] Context - Position in overall flow, practical applications.
+       - Logic flow: Motivation → Definition/Concept → Formula (if any) → Context/Application.
+    5. **Math**: LaTeX required. Full equation first → symbol-by-symbol explanation.
+    6. **source_type**: direct (verbatim/close paraphrase), inferred (synthesized), background (general knowledge, specify in notes)
+    7. **ID Rules**: Use exact input IDs (cap_XXX, stt_XXX). No fabricated IDs.
+
+  one_shot: |
+    Input: {{ ... }}
+    Output:
+    [{"segment_id":1,"summary":{"bullets":[{"bullet_id":"1-1","claim":"ELBO(Evidence Lower Bound)는 로그 우도의 하한선으로, Reconstruction, Prior matching, Denoising matching의 세 항으로 분해되어 Diffusion 모델의 학습 목표가 된다.","source_type":"direct","evidence_refs":["stt_001","cap_001"],"confidence":"high","notes":""}],"definitions":[{"term":"ELBO (Evidence Lower Bound)","definition":"로그 우도 $\\log p(x)$의 하한선으로, 직접 최적화하기 어려운 우도 대신 모델의 학습 목표 함수로 사용되는 개념.","source_type":"background","evidence_refs":["cap_001"],"confidence":"high"},{"term":"KL Divergence (Kullback-Leibler Divergence)","definition":"두 확률 분포 사이의 통계적 거리를 측정하여 분포의 유사성을 평가하는 지표.","source_type":"background","evidence_refs":["cap_002"],"confidence":"high"},{"term":"$p_{\\theta}(x_{t-1}|x_t)$","definition":"역방향 전이 확률로, 노이즈가 있는 $x_t$에서 덜 노이즈인 $x_{t-1}$을 예측하는 분포.","source_type":"inferred","evidence_refs":["stt_002"],"confidence":"high"}],"explanations":[{"point":"[수식] ELBO의 전체 수식은 $\\mathcal{L} = \\mathbb{E}_{q(x_1|x_0)}[\\log p_\\theta(x_0|x_1)] - KL(q(x_T|x_0)||p(x_T)) - \\sum_{t=2}^T \\mathbb{E}_{q(x_t|x_0)}[KL(q(x_{t-1}|x_t,x_0)||p_\\theta(x_{t-1}|x_t))]$이다. 여기서 첫째 항은 Reconstruction으로 최종 복원 품질을 담당하고, 둘째 항은 Prior matching으로 사전 분포와의 정합성을 보장하며, 셋째 항은 Denoising matching으로 각 시점에서의 노이즈 제거 능력을 학습한다.","source_type":"inferred","evidence_refs":["cap_001","stt_001"],"confidence":"high","notes":""},{"point":"[동기] 로그 우도 $\\log p(x)$를 직접 계산하는 것은 분모의 적분(Marginalization) 문제로 인해 intractable하다. 따라서 ELBO라는 대리 목적 함수를 설정하고 이를 최대화함으로써 사후 분포에 최대한 가까워지도록 유도하는 전략을 취한다. 이는 Variational Inference의 핵심 원리이다.","source_type":"background","evidence_refs":["stt_001"],"confidence":"high","notes":"Variational Inference 기본 원리"},{"point":"[비교] 전통적인 MLE(Maximum Likelihood Estimation)는 우도를 직접 최대화하지만, Variational Inference는 ELBO라는 하한을 최대화한다. 둘 다 같은 목표를 향하지만, 후자는 intractable한 적분을 우회할 수 있다는 장점이 있다.","source_type":"inferred","evidence_refs":["stt_001"],"confidence":"high","notes":""}],"open_questions":[{"question":"ELBO의 세 항 중 어떤 항이 실제 학습에서 가장 큰 영향을 미치는가?","source_type":"inferred","evidence_refs":["stt_002"],"confidence":"medium"}]}}]

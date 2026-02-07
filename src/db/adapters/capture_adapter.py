@@ -100,9 +100,7 @@ class CaptureAdapterMixin:
             })
         
         if rows:
-            # bulk insert 실행
-            result = self.client.table(table_name).insert(rows).execute()
-            return result.data
+            return self._upsert_capture_rows(video_id, rows, table_name=table_name)
         return []
     
     def save_captures_from_file(
@@ -167,6 +165,8 @@ class CaptureAdapterMixin:
                 print(f"[R2] Capture upload failed: {e}")
                 raise e
         else:
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (set R2_* env vars).")
             # Legacy Supabase Upload
             storage_path = f"{video_id}/{file_name}"
             with open(image_path, "rb") as f:
@@ -239,6 +239,8 @@ class CaptureAdapterMixin:
                 print(f"[R2] Audio upload failed: {e}")
                 raise e
         else:
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (set R2_* env vars).")
             # Legacy Supabase Upload
             storage_path = f"{video_id}/{file_name}"
             with open(audio_path, "rb") as f:
@@ -281,6 +283,8 @@ class CaptureAdapterMixin:
                 print(f"[R2] Download failed: {e}")
                 raise e
         else:
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (set R2_* env vars).")
             # Legacy Supabase Download
             file_data = self.client.storage.from_(bucket).download(storage_path)
             with open(local_path, "wb") as f:
@@ -307,6 +311,8 @@ class CaptureAdapterMixin:
                 print(f"[R2] Signed URL gen failed: {e}")
                 return ""
         else:
+            if getattr(self, "r2_only", False):
+                raise RuntimeError("R2 storage is required (set R2_* env vars).")
             # Legacy Supabase
             result = self.client.storage.from_(bucket).create_signed_url(
                 path=storage_path,
@@ -470,9 +476,93 @@ class CaptureAdapterMixin:
 
         if rows:
             try:
-                db_result = self.client.table(table_name).insert(rows).execute()
-                results["db_saved"] = len(db_result.data)
+                db_rows = self._upsert_capture_rows(video_id, rows, table_name=table_name)
+                results["db_saved"] = len(db_rows)
             except Exception as e:
-                results["errors"].append(f"db insert error: {str(e)}")
+                results["errors"].append(f"db upsert error: {str(e)}")
 
         return results
+
+    def _upsert_capture_rows(
+        self,
+        video_id: str,
+        rows: List[Dict[str, Any]],
+        *,
+        table_name: str = "captures",
+    ) -> List[Dict[str, Any]]:
+        """cap_id/file_name 기준으로 존재하면 업데이트, 없으면 insert한다."""
+        cap_ids = [row.get("cap_id") for row in rows if row.get("cap_id")]
+        file_names = [row.get("file_name") for row in rows if row.get("file_name")]
+
+        existing_by_cap_id: Dict[str, Dict[str, Any]] = {}
+        existing_by_file: Dict[str, Dict[str, Any]] = {}
+
+        if cap_ids:
+            query = self.client.table(table_name).select(
+                "id, cap_id, file_name, storage_path, time_ranges, preprocess_job_id"
+            ).eq("video_id", video_id)
+            in_method = getattr(query, "in_", None)
+            if callable(in_method):
+                query = in_method("cap_id", cap_ids)
+            else:
+                query = query.filter("cap_id", "in", f"({','.join(cap_ids)})")
+            result = query.execute()
+            if result.data:
+                for row in result.data:
+                    cap_id = row.get("cap_id")
+                    if cap_id:
+                        existing_by_cap_id[cap_id] = row
+
+        if file_names:
+            query = self.client.table(table_name).select(
+                "id, cap_id, file_name, storage_path, time_ranges, preprocess_job_id"
+            ).eq("video_id", video_id)
+            in_method = getattr(query, "in_", None)
+            if callable(in_method):
+                query = in_method("file_name", file_names)
+            else:
+                query = query.filter("file_name", "in", f"({','.join(file_names)})")
+            result = query.execute()
+            if result.data:
+                for row in result.data:
+                    fname = row.get("file_name")
+                    if fname:
+                        existing_by_file[fname] = row
+
+        updated_rows: List[Dict[str, Any]] = []
+        insert_rows: List[Dict[str, Any]] = []
+
+        for row in rows:
+            cap_id = row.get("cap_id")
+            file_name = row.get("file_name")
+            existing = None
+            if cap_id and cap_id in existing_by_cap_id:
+                existing = existing_by_cap_id[cap_id]
+            elif file_name and file_name in existing_by_file:
+                existing = existing_by_file[file_name]
+
+            if existing:
+                update_payload = {
+                    "cap_id": cap_id or existing.get("cap_id"),
+                    "file_name": file_name or existing.get("file_name"),
+                    "storage_path": row.get("storage_path") or existing.get("storage_path"),
+                    "time_ranges": row.get("time_ranges") or existing.get("time_ranges"),
+                    "preprocess_job_id": row.get("preprocess_job_id") or existing.get("preprocess_job_id"),
+                }
+                result = (
+                    self.client.table(table_name)
+                    .update(update_payload)
+                    .eq("id", existing.get("id"))
+                    .execute()
+                )
+                if result.data:
+                    updated_rows.extend(result.data)
+            else:
+                insert_rows.append(row)
+
+        inserted_rows: List[Dict[str, Any]] = []
+        if insert_rows:
+            result = self.client.table(table_name).insert(insert_rows).execute()
+            inserted_rows = result.data if result.data else []
+
+        return updated_rows + inserted_rows

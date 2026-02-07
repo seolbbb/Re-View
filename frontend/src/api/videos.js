@@ -1,4 +1,4 @@
-import { get, post, BASE_URL } from './client';
+import { get, post, del, BASE_URL } from './client';
 import { supabase } from '../lib/supabase';
 
 // ---------------------------------------------------------------------------
@@ -23,17 +23,18 @@ export async function uploadToStorage(uploadUrl, file) {
   }
 }
 
-export async function completeUpload(videoId, storageKey) {
+export async function completeUpload(videoId, storageKey, pipelineMode = 'async') {
   return post('/api/videos/upload/complete', {
     video_id: videoId,
     storage_key: storageKey,
+    pipeline_mode: pipelineMode,
   });
 }
 
-export async function uploadVideo(file) {
+export async function uploadVideo(file, pipelineMode = 'async') {
   const { video_id, video_name, upload_url, storage_key } = await initUpload(file);
   await uploadToStorage(upload_url, file);
-  await completeUpload(video_id, storage_key);
+  await completeUpload(video_id, storage_key, pipelineMode);
   return { video_id, video_name, status: 'PREPROCESSING' };
 }
 
@@ -96,14 +97,39 @@ export function getVideoProgress(videoId) {
   return get(`/videos/${videoId}/progress`);
 }
 
-export function getVideoStreamUrl(videoId) {
-  return `${BASE_URL}/api/videos/${videoId}/stream`;
-}
-
-export function getThumbnailUrl(videoId) {
-  return `${BASE_URL}/api/videos/${videoId}/thumbnail`;
-}
-
 export function restartProcessing(videoId) {
-  return post('/process', { video_id: videoId });
+  // Ensure reruns publish results back into DB so the UI can read summaries.
+  return post('/process', { video_id: videoId, sync_to_db: true });
+}
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+export function deleteVideo(videoId) {
+  return del(`/api/videos/${videoId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Media Ticket (for <video>/<img> src without Authorization header)
+// ---------------------------------------------------------------------------
+
+export function getMediaTicket() {
+  return post('/api/media/ticket', {});
+}
+
+// ---------------------------------------------------------------------------
+// Media URLs
+// ---------------------------------------------------------------------------
+
+export function getVideoStreamUrl(videoId, ticket) {
+  if (!videoId) return null;
+  const q = ticket ? `?ticket=${encodeURIComponent(ticket)}` : '';
+  return `${BASE_URL}/api/videos/${videoId}/stream${q}`;
+}
+
+export function getThumbnailUrl(videoId, ticket) {
+  if (!videoId) return null;
+  const q = ticket ? `?ticket=${encodeURIComponent(ticket)}` : '';
+  return `${BASE_URL}/api/videos/${videoId}/thumbnail${q}`;
 }
