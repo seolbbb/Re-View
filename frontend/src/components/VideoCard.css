@@ -122,43 +122,28 @@
 }
 
 .video-delete {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    width: 34px;
-    height: 34px;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    color: rgba(255, 255, 255, 0.9);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-muted);
     cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.25s ease, transform 0.25s ease, background-color 0.25s ease, border-color 0.25s ease;
-}
-
-.video-card:hover .video-delete {
-    opacity: 1;
+    transition: all 0.2s ease;
 }
 
 .video-delete:hover {
-    background: rgba(239, 68, 68, 0.9);
-    border-color: rgba(239, 68, 68, 0.5);
-    transform: scale(1.05);
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #ef4444;
 }
 
-.video-delete[aria-disabled="true"] {
-    opacity: 0.35;
-    cursor: not-allowed;
-}
-
-.video-delete[aria-disabled="true"]:hover {
-    background: rgba(0, 0, 0, 0.6);
-    border-color: rgba(255, 255, 255, 0.12);
-    transform: none;
+.video-delete:active {
+    transform: scale(0.95);
 }
 
 .status-pulse {
@@ -170,9 +155,18 @@
 }
 
 .video-info {
-    padding: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
     background: var(--bg-card-solid);
     transition: background-color 0.3s ease;
+}
+
+.video-info-content {
+    flex: 1;
+    min-width: 0;
 }
 
 .video-title {

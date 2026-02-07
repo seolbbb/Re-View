@@ -23,21 +23,6 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
 
     return (
         <Link to={`/analysis/${id}`} className="video-card">
-            {onDelete && (
-                <button
-                    type="button"
-                    className="video-delete"
-                    title={status === 'done' ? '삭제' : '처리 중인 영상은 삭제가 제한될 수 있습니다'}
-                    aria-label="영상 삭제"
-                    onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onDelete(id);
-                    }}
-                >
-                    <Trash2 className="w-4 h-4" />
-                </button>
-            )}
             <div className="video-thumbnail">
                 {showImage ? (
                     <img src={imgSrc} alt={title} onError={() => setFailedSrc(imgSrc)} />
@@ -70,8 +55,25 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
                 </span>
             </div>
             <div className="video-info">
-                <h3 className="video-title">{title}</h3>
-                <span className="video-date"><Calendar className="w-3 h-3" />{date}</span>
+                <div className="video-info-content">
+                    <h3 className="video-title">{title}</h3>
+                    <span className="video-date"><Calendar className="w-3 h-3" />{date}</span>
+                </div>
+                {onDelete && (
+                    <button
+                        type="button"
+                        className="video-delete"
+                        title="삭제"
+                        aria-label="영상 삭제"
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onDelete(id, status);
+                        }}
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                )}
             </div>
         </Link>
     );
