@@ -131,7 +131,9 @@ class JobAdapterMixin:
     
     def get_preprocessing_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """전처리 작업을 조회합니다."""
-        result = self.client.table("preprocessing_jobs").select("*").eq("id", job_id).execute()
+        result = self.client.table("preprocessing_jobs").select(
+            "id, status, video_id, source, stt_backend, config_hash, created_at, started_at, ended_at, error_message"
+        ).eq("id", job_id).execute()
         return result.data[0] if result.data else None
     
     # =========================================================================
@@ -273,7 +275,9 @@ class JobAdapterMixin:
     
     def get_processing_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """처리 작업을 조회합니다."""
-        result = self.client.table("processing_jobs").select("*").eq("id", job_id).execute()
+        result = self.client.table("processing_jobs").select(
+            "id, status, video_id, triggered_by, run_no, current_batch, total_batch, created_at, started_at, ended_at, error_message"
+        ).eq("id", job_id).execute()
         return result.data[0] if result.data else None
     
     # =========================================================================
@@ -524,20 +528,21 @@ class JobAdapterMixin:
         format: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """최신 요약 결과를 조회합니다.
-        
+
         Args:
             video_id: 비디오 ID
             format: 포맷 필터 (선택)
-            
+
         Returns:
             Dict: 최신 summary_results 레코드 or None
         """
-        query = self.client.table("summary_results").select("*").eq("video_id", video_id)
+        query = self.client.table("summary_results").select(
+            "id, video_id, format, status, payload, processing_job_id, created_at"
+        ).eq("video_id", video_id)
         if format:
             query = query.eq("format", format)
         query = query.order("created_at", desc=True).limit(1)
-        
-        result = query.execute()
+
         result = query.execute()
         return result.data[0] if result.data else None
     
