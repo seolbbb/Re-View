@@ -75,9 +75,20 @@ class CaptureSttProducerConfig:
     stt_backend: str = "clova"
     write_local_json: bool = True
     capture_batch_size: int = 6
-    capture_threshold: float = 30.0
-    capture_dedupe_threshold: float = 0.92
-    capture_min_interval: float = 1.0
+
+    # Capture settings from config/capture/settings.yaml
+    capture_threshold: float = 0.15  # persistence_drop_ratio
+    capture_sample_interval: float = 1.0  # sample_interval_sec
+    capture_persistence_threshold: int = 6  # persistence_threshold
+    capture_min_orb_features: int = 50  # min_orb_features
+    capture_dedup_phash_threshold: int = 12  # dedup_phash_threshold
+    capture_dedup_orb_distance: int = 60  # dedup_orb_distance
+    capture_dedup_sim_threshold: float = 0.7  # dedup_sim_threshold
+    capture_enable_roi_detection: bool = True  # enable_roi_detection
+    capture_roi_padding: int = 5  # roi_padding
+    capture_enable_smart_roi: bool = True  # enable_smart_roi
+    capture_enable_adaptive_resize: bool = True  # enable_adaptive_resize
+
     capture_verbose: bool = False
 
     def __post_init__(self) -> None:
@@ -353,7 +364,7 @@ class AsyncCaptureSttProducer:
                 self.config.video_path,
                 self.capture_output_base,
                 threshold=self.config.capture_threshold,
-                min_interval=self.config.capture_min_interval,
+                min_interval=self.config.capture_sample_interval,
                 verbose=self.config.capture_verbose,
                 video_name=self.config.video_name,
                 write_manifest=self.config.write_local_json,
