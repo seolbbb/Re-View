@@ -945,7 +945,7 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
                 strict_batch_order=True,
                 sync_to_db=True,
                 upload_video_to_r2=False,
-                upload_audio_to_r2=True,
+                upload_audio_to_r2=False,  # [Fix] R2 오디오 업로드 비활성화
                 existing_video_id=video_id,
             )
         )
