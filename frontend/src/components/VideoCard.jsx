@@ -19,7 +19,8 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
     const currentStatus = statusConfig[status] || statusConfig.done;
 
     // Use thumbnail prop if provided (legacy), otherwise use API
-    const imgSrc = thumbnail || (thumbnailVideoId ? getThumbnailUrl(thumbnailVideoId, mediaTicket) : null);
+    // Require mediaTicket to be present to avoid 401 Unauthorized requests
+    const imgSrc = thumbnail || ((thumbnailVideoId && mediaTicket) ? getThumbnailUrl(thumbnailVideoId, mediaTicket) : null);
     const showImage = imgSrc && failedSrc !== imgSrc;
 
     return (

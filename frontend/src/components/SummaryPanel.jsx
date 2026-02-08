@@ -317,17 +317,17 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                     {isExpanded && definitions.length > 0 && (
                         <div className="mb-4">
                             <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">정의</h5>
-                            <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
-                                {definitions.map((d, i) => (
-                                    <li key={i} className="markdown-inline">
-                                        <span className="font-semibold text-[var(--text-primary)]">{d.term}</span>
+                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
+                                 {definitions.map((d, i) => (
+                                     <li key={i} className="markdown-inline">
+                                        <MarkdownRenderer inline className="font-semibold text-[var(--text-primary)]">{d.term}</MarkdownRenderer>
                                         {': '}
-                                        <MarkdownRenderer>{d.definition}</MarkdownRenderer>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
+                                        <MarkdownRenderer inline>{d.definition}</MarkdownRenderer>
+                                     </li>
+                                 ))}
+                             </ul>
+                         </div>
+                     )}
 
                     {/* 해설 (Explanations) — expanded only */}
                     {isExpanded && explanations.length > 0 && (
