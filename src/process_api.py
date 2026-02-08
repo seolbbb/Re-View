@@ -107,6 +107,7 @@ class ProcessRequest(BaseModel):
     limit: Optional[int] = None
     force_db: Optional[bool] = None
     sync_to_db: Optional[bool] = None
+    resume: Optional[bool] = None
 
 
 class ProcessResponse(BaseModel):
@@ -144,6 +145,9 @@ def process_pipeline(
     if request.video_id and sync_to_db is None:
         sync_to_db = True
 
+    resume = request.resume
+    existing_processing_job_id: Optional[str] = None
+
     # video_id 기반 요청만 인증/권한 체크 (video_name-only는 기존 dev/local 사용을 위해 허용)
     if request.video_id:
         adapter = get_supabase_adapter()
@@ -163,6 +167,11 @@ def process_pipeline(
                 detail="Pipeline is already running for this video",
             )
 
+        if resume is None:
+            resume = (video.get("status") or "").upper() == "FAILED"
+        if resume:
+            existing_processing_job_id = video.get("current_processing_job_id")
+
         # 재시작/재실행 요청은 즉시 상태를 PROCESSING으로 전환하고 기존 오류를 클리어한다.
         # (SSE가 FAILED에서 즉시 종료되는 문제 및 stale error banner 방지)
         try:
@@ -179,6 +188,8 @@ def process_pipeline(
         limit=request.limit,
         force_db=request.force_db,
         sync_to_db=sync_to_db,
+        existing_processing_job_id=existing_processing_job_id,
+        resume=bool(resume),
     )
 
     return ProcessResponse(status="started", message="processing started")
