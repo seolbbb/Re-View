@@ -33,14 +33,11 @@ class HybridSlideExtractor:
     1-Stage Online Deduplication 로직을 결합한 하이브리드 슬라이드 추출기입니다.
     """
     
-    # [Constants] Smart ROI
-    ROI_WARMUP_FRAMES = 30  # 30프레임(약 30초 @1fps) 동안 수집 후 Median Lock
-
     def __init__(
-        self, 
-        video_path: str, 
-        output_dir: str, 
-        persistence_drop_ratio: float = 0.4, 
+        self,
+        video_path: str,
+        output_dir: str,
+        persistence_drop_ratio: float = 0.4,
         sample_interval_sec: float = 0.5,
         persistence_threshold: int = 6,
         min_orb_features: int = 50,
@@ -50,6 +47,7 @@ class HybridSlideExtractor:
         enable_roi_detection: bool = True,
         roi_padding: int = 10,
         enable_smart_roi: bool = False,
+        roi_warmup_frames: int = 30,
         enable_adaptive_resize: bool = True,
         callback: Optional[Any] = None
     ):
@@ -72,6 +70,8 @@ class HybridSlideExtractor:
         - enable_roi_detection (bool): ROI(강의 화면 영역) 자동 감지 사용 여부
         - roi_padding (int): ROI 감지 시 추가할 여백 (픽셀)
         - enable_smart_roi (bool): Smart ROI (Median Lock) 사용 여부
+        - roi_warmup_frames (int): Smart ROI 활성화 시 Median Lock 전까지 수집할 프레임 수
+                                   (config/capture/settings.yaml의 roi_warmup_frames에서 주입)
         - enable_adaptive_resize (bool): 계층형 리사이징(Tiered Resize) 사용 여부
         - callback (func, optional): 진행 상황(Progress) 보고를 위한 콜백 함수
         """
@@ -105,7 +105,7 @@ class HybridSlideExtractor:
         
         # Smart ROI State
         self.roi_warmup_samples = []
-        self.roi_warmup_frames = self.ROI_WARMUP_FRAMES
+        self.roi_warmup_frames = roi_warmup_frames
         
         # 내부 상태 변수 (Persistence Logic)
         self.persistence_streak_map = None  # 특징점별 지속 횟수를 기록하는 히트맵 (32x32 Grid)

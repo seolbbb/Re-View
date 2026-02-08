@@ -1,15 +1,19 @@
 """
 [Intent]
 캡처 파이프라인에서 사용되는 모든 설정값(임계값, 경로, 옵션 등)을 관리하는 모듈입니다.
-YAML 설정 파일을 로드하고, 타입을 강제 변환하며, 유효성을 검증하여 안전한 CaptureSettings 객체를 제공합니다.
+YAML 설정 파일(config/capture/settings.yaml)을 로드하고, 타입을 강제 변환하며,
+유효성을 검증하여 안전한 CaptureSettings 불변 객체를 제공합니다.
 
 [Usage]
-- run_preprocess_pipeline.py: 초기화 시 설정을 로드하기 위해 호출
-- process_content.py: 캡처 엔진에 필요한 파라미터를 가져오기 위해 호출
+- src/run_pipeline_demo_async.py: load_capture_settings()로 설정 로드 → CaptureSttProducerConfig에 전달
+- src/capture/process_content.py: get_capture_settings()로 캡처 엔진(HybridSlideExtractor) 파라미터 주입
+- src/run_preprocess_pipeline.py: 초기화 시 설정 로드
 
 [Usage Method]
-- get_capture_settings(): 싱글톤 패턴으로 캐시된 설정 객체를 반환합니다.
+- get_capture_settings(): LRU 캐시 기반 싱글톤 패턴으로 CaptureSettings 객체를 반환합니다.
 - load_capture_settings(settings_path): 특정 경로의 YAML 파일에서 설정을 새로 로드합니다.
+- YAML → Dict[str, Any] → _coerce_* 헬퍼로 타입 변환 → CaptureSettings dataclass 생성
+- 입력/출력 경로에 대해 data/inputs, data/outputs 범위 보안 검증을 수행합니다.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ class CaptureSettings:
     enable_roi_detection: bool    # 레터박스(상하좌우 여백) 자동 감지 및 제거 활성화
     roi_padding: int              # 감지된 ROI 영역에 추가할 여백 (픽셀)
     enable_smart_roi: bool        # Smart ROI (Median Lock) 사용 여부
+    roi_warmup_frames: int        # Smart ROI Median Lock 전까지 수집할 프레임 수
     enable_adaptive_resize: bool  # 계층형 리사이징 사용 여부
 
 
@@ -73,17 +78,22 @@ def get_capture_settings() -> CaptureSettings:
 def load_capture_settings(*, settings_path: Optional[Path] = None) -> CaptureSettings:
     """
     [Usage File]
-    - run_preprocess_pipeline.py
-    
+    - src/run_pipeline_demo_async.py: run_async_demo() 내에서 캡처 설정 로드
+    - src/run_preprocess_pipeline.py: 초기화 시 설정 로드
+
     [Purpose]
     - 지정된 YAML 파일을 읽어 파싱하고, 유효성 검사를 거쳐 CaptureSettings 객체를 생성합니다.
     - 입력/출력 경로가 허용된 범위(data/inputs, data/outputs) 내에 있는지 보안 검사를 수행합니다.
-    
+
+    [Connection]
+    - config/capture/settings.yaml: YAML 설정 파일 (yaml.safe_load로 파싱)
+    - CaptureSettings: 파싱 결과를 담는 불변 dataclass
+
     [Args]
     - settings_path (Optional[Path]): 로드할 설정 파일의 경로 (기본값: config/capture/settings.yaml)
 
     [Returns]
-    - CaptureSettings: 초기화된 설정 객체
+    - CaptureSettings: 12개 캡처 파라미터가 타입 검증된 불변 설정 객체
     """
     path = settings_path or DEFAULT_SETTINGS_PATH
     if not path.exists():
@@ -149,6 +159,7 @@ def load_capture_settings(*, settings_path: Optional[Path] = None) -> CaptureSet
         enable_roi_detection=_coerce_bool(payload, "enable_roi_detection", True),
         roi_padding=_coerce_int(payload, "roi_padding", 10),
         enable_smart_roi=_coerce_bool(payload, "enable_smart_roi", False),
+        roi_warmup_frames=_coerce_int(payload, "roi_warmup_frames", 30),
         enable_adaptive_resize=_coerce_bool(payload, "enable_adaptive_resize", True),
     )
 
