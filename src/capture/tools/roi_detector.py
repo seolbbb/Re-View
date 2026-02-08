@@ -21,7 +21,7 @@ class RoiDetector:
     이미지의 픽셀 밝기(Intensity)를 행/열 단위로 분석하여 콘텐츠 영역과 배경(검은색 여백)을 구분합니다.
     """
 
-    def __init__(self, padding: int = 10, threshold: float = 10.0):
+    def __init__(self, padding: int = 5, threshold: float = 10.0):
         """
         [Usage File] hybrid_extractor.py
 
@@ -29,7 +29,7 @@ class RoiDetector:
         - 감지기 초기화 및 민감도 설정
 
         [Args]
-        - padding (int): 감지된 ROI 경계에 추가할 안전 여백 (픽셀, 기본값 10)
+        - padding (int): 감지된 ROI 경계에 추가할 안전 여백 (픽셀, 기본값 5)
         - threshold (float): 콘텐츠로 간주할 최소 픽셀 밝기 평균값 (0~255, 기본값 10.0)
         """
         self.padding = padding
