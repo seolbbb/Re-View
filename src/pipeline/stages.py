@@ -328,6 +328,7 @@ def run_capture(
     output_base: Path,
     *,
     threshold: float,
+    dedupe_threshold: Optional[float] = None,
     min_interval: float,
     verbose: bool,
     video_name: str,
@@ -337,6 +338,7 @@ def run_capture(
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
     # Note: dedup_enabled is ignored - new HybridSlideExtractor always uses pHash+ORB dedup
+    # Note: dedupe_threshold is ignored - dedup thresholds are configured via config/capture/settings.yaml
     metadata = process_single_video_capture(
         str(video_path),
         str(output_base),
@@ -344,6 +346,7 @@ def run_capture(
         min_interval=min_interval,
         write_manifest=write_manifest,
         callback=callback,
+        video_name_override=video_name,
     )
     return metadata
 
