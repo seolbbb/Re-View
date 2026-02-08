@@ -44,6 +44,7 @@ GET 실행
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -67,6 +68,8 @@ from src.run_process_pipeline import run_processing_pipeline
 from src.services.chat_session_store import ChatSessionStore
 from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Screentime Processing API")
 
@@ -961,13 +964,41 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
 
 @app.get("/api/videos")
 def list_videos(http_request: Request) -> Dict[str, Any]:
-    """비디오 목록 조회 (최신순)."""
+    """비디오 목록 조회 (최신순) + 썸네일 URL 일괄 포함."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
     user_id = _require_user_id(adapter, http_request)
     videos = adapter.list_videos_for_user(user_id)
+
+    # 썸네일 URL 일괄 조회 (N+1 제거)
+    video_ids = [v["id"] for v in videos if v.get("id")]
+    thumb_map: Dict[str, str] = {}
+    if video_ids:
+        try:
+            caps = (
+                adapter.client.table("captures")
+                .select("video_id, storage_path")
+                .in_("video_id", video_ids)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            # video_id별 첫 번째 capture만 사용 (created_at 기준 가장 이른 것)
+            for row in caps.data or []:
+                vid = row.get("video_id")
+                if vid and vid not in thumb_map and row.get("storage_path"):
+                    signed = adapter.get_signed_url(
+                        row["storage_path"], bucket="captures"
+                    )
+                    if signed:
+                        thumb_map[vid] = signed
+        except Exception:
+            logger.exception("Failed to batch-fetch thumbnail URLs")
+
+    for v in videos:
+        v["thumbnail_url"] = thumb_map.get(v.get("id"), None)
+
     return {"videos": videos}
 
 
@@ -1087,12 +1118,13 @@ def get_video_thumbnail(video_id: str, http_request: Request, ticket: Optional[s
     user_id = _require_user_id_from_request_or_ticket(adapter, http_request, ticket)
     video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
-    # DB에서 첫 번째 캡처의 storage_path 조회
+    # DB에서 첫 번째 캡처의 storage_path 조회 (created_at 기준)
     try:
         caps = (
             adapter.client.table("captures")
             .select("storage_path")
             .eq("video_id", video_id)
+            .order("created_at", desc=False)
             .limit(1)
             .execute()
         )
@@ -1101,9 +1133,12 @@ def get_video_thumbnail(video_id: str, http_request: Request, ticket: Optional[s
                 caps.data[0]["storage_path"], bucket="captures"
             )
             if signed_url:
-                return RedirectResponse(url=signed_url)
+                return RedirectResponse(
+                    url=signed_url,
+                    headers={"Cache-Control": "private, max-age=1800"},
+                )
     except Exception:
-        pass
+        logger.exception("Failed to get thumbnail signed URL for video %s", video_id)
 
     # Fallback: 로컬 파일시스템
     video_name = video.get("name", "")
