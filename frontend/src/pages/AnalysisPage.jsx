@@ -408,7 +408,7 @@ function AnalysisPage() {
                             // Normal View
                             <div ref={scrollContainerRef} className="flex flex-col overflow-y-auto custom-scrollbar p-6 lg:p-8 gap-8 min-w-0 h-full">
                                 {/* Video Player Section */}
-                                <div ref={videoSectionRef} className="flex flex-col gap-4 shrink-0">
+                                <div ref={videoSectionRef} className="flex flex-col gap-4 shrink-0 w-full max-w-[1600px] mx-auto">
                                     <div className={scrollPip
                                         ? "absolute bottom-6 right-6 w-80 lg:w-96 z-50 aspect-video animate-pipSlideIn transition-transform hover:scale-[1.02]"
                                         : ""}>
