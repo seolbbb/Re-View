@@ -54,11 +54,20 @@ export function AuthProvider({ children }) {
             return;
         }
 
-        // 현재 세션 확인
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setUser(session?.user ?? null);
-            setLoading(false);
+        // 현재 세션 확인 + 토큰 갱신
+        supabase.auth.getSession().then(async ({ data: { session } }) => {
+            let activeUser = null;
             if (session?.user) {
+                // 토큰이 있으면 실제 갱신 시도 (만료된 access_token 방지)
+                const { data, error } = await supabase.auth.refreshSession();
+                if (!error && data.session) {
+                    activeUser = data.session.user;
+                }
+                // refresh 실패 = refresh token 만료 → activeUser는 null 유지
+            }
+            setUser(activeUser);
+            setLoading(false);
+            if (activeUser) {
                 refreshMediaTicket();
             }
         });

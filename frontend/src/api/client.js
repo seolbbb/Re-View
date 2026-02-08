@@ -30,6 +30,27 @@ async function request(url, options = {}) {
     ...options,
   });
 
+  // 401이면 세션 갱신 후 1회 재시도
+  if (res.status === 401 && supabase) {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (!error && data.session?.access_token) {
+      const retryHeaders = { Authorization: `Bearer ${data.session.access_token}` };
+      const retryRes = await fetch(BASE_URL + url, {
+        headers: { 'Content-Type': 'application/json', ...retryHeaders, ...options.headers },
+        ...options,
+      });
+      if (retryRes.status === 204) return null;
+      if (retryRes.ok) return retryRes.json();
+      // 재시도도 실패하면 아래 에러 처리로
+      let message = retryRes.statusText;
+      try {
+        const body = await retryRes.json();
+        message = body.detail || body.message || message;
+      } catch { /* ignore */ }
+      throw new ApiError(retryRes.status, message);
+    }
+  }
+
   if (!res.ok) {
     let message = res.statusText;
     try {
@@ -60,20 +81,26 @@ export function del(url) {
   return request(url, { method: 'DELETE' });
 }
 
-export function postForm(url, formData) {
-  return getAuthHeaders().then((authHeaders) =>
-    fetch(BASE_URL + url, { method: 'POST', body: formData, headers: { ...authHeaders } })
-  ).then(async (res) => {
-    if (!res.ok) {
-      let message = res.statusText;
-      try {
-        const body = await res.json();
-        message = body.detail || body.message || message;
-      } catch {
-        // ignore
-      }
-      throw new ApiError(res.status, message);
+export async function postForm(url, formData) {
+  const authHeaders = await getAuthHeaders();
+  let res = await fetch(BASE_URL + url, { method: 'POST', body: formData, headers: { ...authHeaders } });
+
+  // 401이면 세션 갱신 후 1회 재시도
+  if (res.status === 401 && supabase) {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (!error && data.session?.access_token) {
+      const retryHeaders = { Authorization: `Bearer ${data.session.access_token}` };
+      res = await fetch(BASE_URL + url, { method: 'POST', body: formData, headers: { ...retryHeaders } });
     }
-    return res.json();
-  });
+  }
+
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = await res.json();
+      message = body.detail || body.message || message;
+    } catch { /* ignore */ }
+    throw new ApiError(res.status, message);
+  }
+  return res.json();
 }

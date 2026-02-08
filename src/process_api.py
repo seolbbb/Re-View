@@ -961,13 +961,40 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
 
 @app.get("/api/videos")
 def list_videos(http_request: Request) -> Dict[str, Any]:
-    """비디오 목록 조회 (최신순)."""
+    """비디오 목록 조회 (최신순) + 썸네일 URL 일괄 포함."""
     adapter = get_supabase_adapter()
     if not adapter:
         raise HTTPException(status_code=503, detail="Database not configured")
 
     user_id = _require_user_id(adapter, http_request)
     videos = adapter.list_videos_for_user(user_id)
+
+    # 썸네일 URL 일괄 조회 (N+1 제거)
+    video_ids = [v["id"] for v in videos if v.get("id")]
+    thumb_map: Dict[str, str] = {}
+    if video_ids:
+        try:
+            caps = (
+                adapter.client.table("captures")
+                .select("video_id, storage_path")
+                .in_("video_id", video_ids)
+                .execute()
+            )
+            # video_id별 첫 번째 capture만 사용
+            for row in caps.data or []:
+                vid = row.get("video_id")
+                if vid and vid not in thumb_map and row.get("storage_path"):
+                    signed = adapter.get_signed_url(
+                        row["storage_path"], bucket="captures"
+                    )
+                    if signed:
+                        thumb_map[vid] = signed
+        except Exception:
+            pass
+
+    for v in videos:
+        v["thumbnail_url"] = thumb_map.get(v.get("id"), None)
+
     return {"videos": videos}
 
 
@@ -1101,7 +1128,10 @@ def get_video_thumbnail(video_id: str, http_request: Request, ticket: Optional[s
                 caps.data[0]["storage_path"], bucket="captures"
             )
             if signed_url:
-                return RedirectResponse(url=signed_url)
+                return RedirectResponse(
+                    url=signed_url,
+                    headers={"Cache-Control": "public, max-age=1800"},
+                )
     except Exception:
         pass
 
