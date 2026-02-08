@@ -33,6 +33,7 @@ def process_single_video_capture(
     min_interval: Optional[float] = None,
     write_manifest: bool = True,
     callback: Optional[Any] = None,
+    video_name_override: Optional[str] = None,
 ) -> List[dict]:
     """
     [Usage File]
@@ -55,13 +56,15 @@ def process_single_video_capture(
     - min_interval (Optional[float]): 미사용 (하위 호환용으로 시그니처에만 존재)
     - write_manifest (bool): 처리 완료 후 manifest.json 파일 생성 여부
     - callback (Optional[Any]): 슬라이드 감지 시 호출되는 콜백 ("new"/"update" 이벤트와 slide_data 전달)
+    - video_name_override (Optional[str]): output_base 하위 폴더명 강제 지정.
+      파이프라인이 sanitize한 video_name과 캡처 저장 폴더를 일치시키는 용도.
 
     [Returns]
     - List[dict]: 추출된 슬라이드들의 메타데이터 리스트 (id, file_name, time_ranges)
     """
     settings = get_capture_settings()
     video_path_obj = Path(video_path)
-    video_name = video_path_obj.stem
+    video_name = video_name_override or video_path_obj.stem
     
     # 출력 경로 설정: {output_base}/{video_name}/captures
     video_output_dir = Path(output_base) / video_name

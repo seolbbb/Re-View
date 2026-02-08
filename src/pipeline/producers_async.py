@@ -434,13 +434,19 @@ class AsyncCaptureSttProducer:
             return rows
 
         enriched: List[Dict[str, Any]] = []
+        missing_count = 0
+        missing_examples: List[str] = []
         for row in rows:
             row_copy = dict(row)
             file_name = row_copy.get("file_name")
             storage_path = None
             if file_name:
                 image_path = self.captures_dir / file_name
-                if image_path.exists():
+                if not image_path.exists():
+                    missing_count += 1
+                    if len(missing_examples) < 3:
+                        missing_examples.append(str(file_name))
+                else:
                     try:
                         upload_result = adapter.upload_capture_image(self.context.video_id, image_path)
                         storage_path = upload_result.get("storage_path") if isinstance(upload_result, dict) else None
@@ -449,6 +455,14 @@ class AsyncCaptureSttProducer:
             if storage_path:
                 row_copy["storage_path"] = storage_path
             enriched.append(row_copy)
+
+        if missing_count:
+            examples = ", ".join(missing_examples)
+            extra = f" (e.g. {examples})" if examples else ""
+            pipeline_logger.log(
+                "DB",
+                f"capture upload skipped: {missing_count} missing file(s) under {self.captures_dir}{extra}",
+            )
 
         try:
             adapter.save_captures(
