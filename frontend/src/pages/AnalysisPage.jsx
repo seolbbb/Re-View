@@ -190,6 +190,12 @@ function AnalysisPage() {
     const videoElRef = useRef(null);
     const playbackStateRef = useRef({ time: 0, playing: false });
 
+    // Scroll-triggered PiP
+    const [scrollPip, setScrollPip] = useState(false);
+    const videoSectionRef = useRef(null);
+    const scrollContainerRef = useRef(null);
+    const scrollPipRef = useRef(false);
+
     // Current playback time (ms) for segment highlighting
     const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
     const timeThrottleRef = useRef(0);
@@ -213,6 +219,35 @@ function AnalysisPage() {
         setIsExpanded(expanded);
     }, []);
 
+    // Detect when video section scrolls out of view → show PiP
+    useEffect(() => {
+        if (isExpanded) {
+            setScrollPip(false);
+            scrollPipRef.current = false;
+            return;
+        }
+        const section = videoSectionRef.current;
+        const container = scrollContainerRef.current;
+        if (!section || !container) return;
+
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                const shouldPip = !entry.isIntersecting;
+                if (shouldPip === scrollPipRef.current) return;
+                scrollPipRef.current = shouldPip;
+                setScrollPip(shouldPip);
+            },
+            { root: container, threshold: 0 },
+        );
+
+        observer.observe(section);
+        return () => observer.disconnect();
+    }, [isExpanded]);
+
+    const handleScrollPipClose = useCallback(() => {
+        videoSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, []);
+
     const handleSeekTo = useCallback((timeMs) => {
         const v = videoElRef.current;
         if (!v) return;
@@ -221,6 +256,35 @@ function AnalysisPage() {
         if (v.paused) {
             v.play().catch(() => { });
         }
+    }, []);
+
+    // Keyboard shortcuts: Arrow keys (±5s seek), Spacebar (play/pause)
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            const tag = e.target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+
+            const v = videoElRef.current;
+            if (!v) return;
+
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                v.currentTime = Math.max(0, v.currentTime - 5);
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                v.currentTime = Math.min(v.duration || 0, v.currentTime + 5);
+            } else if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault();
+                if (v.paused) {
+                    v.play().catch(() => {});
+                } else {
+                    v.pause();
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
     }, []);
 
     useEffect(() => {
@@ -342,10 +406,25 @@ function AnalysisPage() {
                             </>
                         ) : (
                             // Normal View
-                            <div className="flex flex-col overflow-y-auto custom-scrollbar p-6 lg:p-8 gap-8 min-w-0 h-full">
+                            <div ref={scrollContainerRef} className="flex flex-col overflow-y-auto custom-scrollbar p-6 lg:p-8 gap-8 min-w-0 h-full">
                                 {/* Video Player Section */}
-                                <div className="flex flex-col gap-4">
-                                    <VideoPlayer isPip={false} videoId={videoId} videoElRef={videoElRef} playbackRestore={playbackStateRef} onTimeUpdate={handleTimeUpdate} />
+                                <div ref={videoSectionRef} className="flex flex-col gap-4 shrink-0">
+                                    <div className={scrollPip
+                                        ? "absolute bottom-6 right-6 w-80 lg:w-96 z-50 aspect-video animate-pipSlideIn transition-transform hover:scale-[1.02]"
+                                        : ""}>
+                                        <VideoPlayer
+                                            isPip={scrollPip}
+                                            onTogglePip={scrollPip ? handleScrollPipClose : undefined}
+                                            videoId={videoId}
+                                            videoElRef={videoElRef}
+                                            playbackRestore={playbackStateRef}
+                                            onTimeUpdate={handleTimeUpdate}
+                                            className={scrollPip
+                                                ? "relative w-full h-full rounded-xl overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.5)] border border-[var(--border-color)] ring-1 ring-white/5 group bg-black"
+                                                : undefined}
+                                        />
+                                    </div>
+                                    {scrollPip && <div style={{ aspectRatio: '16/9' }} className="rounded-xl" />}
                                 </div>
 
                                 {/* Summary Section */}

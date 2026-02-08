@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StickyNote, RefreshCw, Pencil, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
+import { StickyNote, RefreshCw, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
 import { getVideoSummaries, restartProcessing } from '../api/videos';
 import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -379,16 +379,12 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors bg-surface">
-                                <Pencil className="w-4 h-4" />
-                                Edit Notes
-                            </button>
                             <button
                                 onClick={onToggleExpand}
-                                className="text-white bg-primary hover:bg-[var(--accent-coral-dark)] text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-transparent transition-colors shadow-lg shadow-primary/20"
+                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors"
                             >
                                 <Minimize2 className="w-4 h-4" />
-                                Collapse View
+                                간단히 보기
                             </button>
                         </div>
                     </div>
@@ -407,10 +403,13 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             </div>
                             <button
                                 onClick={onToggleExpand}
-                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1 transition-colors"
+                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors"
                             >
                                 <Maximize2 className="w-4 h-4" />
-                                Expand
+                                <span className="flex flex-col items-start leading-tight">
+                                    <span className="font-medium">상세 보기</span>
+                                    <span className="text-[10px] text-gray-500">정의 · 해설 · 열린 질문</span>
+                                </span>
                             </button>
                         </div>
                     </>
