@@ -24,10 +24,11 @@ async function getAuthHeaders() {
 }
 
 async function request(url, options = {}) {
+  const { headers: optHeaders, ...restOptions } = options;
   const authHeaders = await getAuthHeaders();
   const res = await fetch(BASE_URL + url, {
-    headers: { 'Content-Type': 'application/json', ...authHeaders, ...options.headers },
-    ...options,
+    ...restOptions,
+    headers: { 'Content-Type': 'application/json', ...optHeaders, ...authHeaders },
   });
 
   // 401이면 세션 갱신 후 1회 재시도
@@ -36,8 +37,8 @@ async function request(url, options = {}) {
     if (!error && data.session?.access_token) {
       const retryHeaders = { Authorization: `Bearer ${data.session.access_token}` };
       const retryRes = await fetch(BASE_URL + url, {
-        headers: { 'Content-Type': 'application/json', ...retryHeaders, ...options.headers },
-        ...options,
+        ...restOptions,
+        headers: { 'Content-Type': 'application/json', ...optHeaders, ...retryHeaders },
       });
       if (retryRes.status === 204) return null;
       if (retryRes.ok) return retryRes.json();
@@ -90,7 +91,7 @@ export async function postForm(url, formData) {
     const { data, error } = await supabase.auth.refreshSession();
     if (!error && data.session?.access_token) {
       const retryHeaders = { Authorization: `Bearer ${data.session.access_token}` };
-      res = await fetch(BASE_URL + url, { method: 'POST', body: formData, headers: { ...retryHeaders } });
+      res = await fetch(BASE_URL + url, { method: 'POST', body: formData, headers: { ...authHeaders, ...retryHeaders } });
     }
   }
 
