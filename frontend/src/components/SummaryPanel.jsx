@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StickyNote, RefreshCw, Pencil, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
+import { StickyNote, RefreshCw, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
 import { getVideoSummaries, restartProcessing } from '../api/videos';
 import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -268,11 +268,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         return (
             <div
                 key={item.summary_id || index}
-                className={`group flex flex-col md:flex-row gap-2 md:gap-8 border-l-2 ${
-                    isActive
+                className={`group flex flex-col md:flex-row gap-2 md:gap-8 border-l-2 ${isActive
                         ? 'border-l-primary bg-primary/10'
                         : 'border-l-transparent'
-                } ${isExpanded ? 'p-5 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)] cursor-pointer'
+                    } ${isExpanded ? 'p-5 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)] cursor-pointer'
                     } ${isNew ? 'animate-fade-in' : ''} transition-colors`}
                 onClick={handleCardClick}
             >
@@ -282,11 +281,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             e.stopPropagation();
                             if (onSeekTo && item.start_ms != null) onSeekTo(item.start_ms);
                         }}
-                        className={`font-mono text-sm bg-surface/50 px-2 py-0.5 rounded border transition-colors h-fit cursor-pointer ${
-                            isActive
+                        className={`font-mono text-sm bg-surface/50 px-2 py-0.5 rounded border transition-colors h-fit cursor-pointer ${isActive
                                 ? 'text-primary border-primary/50 bg-primary/10'
                                 : 'text-gray-400 border-[var(--border-color)] group-hover:border-primary/50 hover:text-primary hover:bg-primary/10'
-                        }`}
+                            }`}
                         title={`${formatMs(item.start_ms)} 으로 이동`}
                     >
                         {formatMs(item.start_ms)}
@@ -364,7 +362,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     };
 
     return (
-        <div className={`flex flex-col ${isExpanded ? 'items-center p-6 lg:p-10 overflow-y-auto custom-scrollbar absolute inset-0' : 'gap-4 pb-12 max-w-4xl'}`}>
+        <div className={`flex flex-col ${isExpanded ? 'items-center p-6 lg:p-10 overflow-y-auto custom-scrollbar absolute inset-0' : 'gap-4 pb-12 w-full max-w-[1600px] mx-auto'}`}>
             <div className={`w-full ${isExpanded ? 'max-w-4xl flex flex-col gap-6 pb-24' : ''}`}>
                 {/* Header */}
                 {isExpanded ? (
@@ -379,16 +377,12 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors bg-surface">
-                                <Pencil className="w-4 h-4" />
-                                Edit Notes
-                            </button>
                             <button
                                 onClick={onToggleExpand}
-                                className="text-white bg-primary hover:bg-[var(--accent-coral-dark)] text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-transparent transition-colors shadow-lg shadow-primary/20"
+                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors"
                             >
                                 <Minimize2 className="w-4 h-4" />
-                                Collapse View
+                                간단히 보기
                             </button>
                         </div>
                     </div>
@@ -407,10 +401,13 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             </div>
                             <button
                                 onClick={onToggleExpand}
-                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1 transition-colors"
+                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors"
                             >
                                 <Maximize2 className="w-4 h-4" />
-                                Expand
+                                <span className="flex flex-col items-start leading-tight">
+                                    <span className="font-medium">상세 보기</span>
+                                    <span className="text-[10px] text-gray-500">정의 · 해설 · 열린 질문</span>
+                                </span>
                             </button>
                         </div>
                     </>

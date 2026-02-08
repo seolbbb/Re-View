@@ -88,55 +88,11 @@
 
 .hero-upload {
     max-width: 480px;
-    margin: 0 auto 52px;
+    margin: 0 auto;
     animation: fadeInUp 0.7s ease-out 0.15s both;
 }
 
-.hero-stats {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 36px;
-    animation: fadeInUp 0.7s ease-out 0.2s both;
-}
 
-.stat-item {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 16px 24px;
-    background: var(--glass-bg);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg);
-    transition: all 0.3s ease;
-}
-
-.stat-item:hover {
-    transform: translateY(-2px);
-    border-color: var(--border-glow);
-    box-shadow: var(--shadow-glow);
-}
-
-.stat-number {
-    font-size: 28px;
-    font-weight: 700;
-    background: var(--gradient-coral);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-}
-
-.stat-label {
-    font-size: 13px;
-    color: var(--text-muted);
-    font-weight: 500;
-}
-
-.stat-divider {
-    display: none;
-}
 
 /* ========================================
    Library Section - Premium
@@ -245,18 +201,7 @@
         font-size: 16px;
     }
 
-    .hero-stats {
-        flex-direction: column;
-        gap: 12px;
-    }
 
-    .stat-item {
-        width: 100%;
-        max-width: 280px;
-        flex-direction: row;
-        justify-content: space-between;
-        align-items: center;
-    }
 
     .section-header {
         flex-direction: column;
