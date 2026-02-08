@@ -252,6 +252,48 @@ class VideoAdapterMixin:
         except Exception:
             return False
 
+    # ---------------------------------------------------------------------
+    # Deletion cancellation marker
+    # ---------------------------------------------------------------------
+
+    def mark_video_delete_requested(self, video_id: str, *, when_iso: Optional[str] = None) -> bool:
+        """Mark a video as delete-requested (best-effort).
+
+        This is used as a cross-instance cancellation signal for long-running pipelines.
+        The DB schema must include videos.delete_requested_at.
+        """
+        if not video_id:
+            return False
+        if not when_iso:
+            from datetime import datetime, timezone
+
+            when_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            (
+                self.client.table("videos")
+                .update({"delete_requested_at": when_iso})
+                .eq("id", video_id)
+                .execute()
+            )
+            return True
+        except Exception:
+            return False
+
+    def clear_video_delete_requested(self, video_id: str) -> bool:
+        """Clear delete-requested marker (best-effort)."""
+        if not video_id:
+            return False
+        try:
+            (
+                self.client.table("videos")
+                .update({"delete_requested_at": None})
+                .eq("id", video_id)
+                .execute()
+            )
+            return True
+        except Exception:
+            return False
+
     def upload_video(
         self,
         video_id: str,
