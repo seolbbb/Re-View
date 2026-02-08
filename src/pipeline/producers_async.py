@@ -1,9 +1,20 @@
-"""비동기 Capture/STT producer 연동 모듈.
+"""
+[Intent]
+비동기 파이프라인에서 Capture(슬라이드 추출)와 STT(음성→텍스트) 두 Producer를
+asyncio 기반으로 병렬 실행하고, 결과를 오케스트레이터 큐에 이벤트로 게시하는 모듈입니다.
+기존 blocking 함수를 asyncio.to_thread로 감싸 non-blocking으로 실행합니다.
 
-현재 단계 목표:
-- 기존 blocking 함수(`run_capture`, `extract_audio`, `run_stt_only`)를 `asyncio.to_thread`로 실행
-- Capture 결과를 chunk 단위 이벤트로 오케스트레이터 큐에 게시
-- STT 완료 시 오케스트레이터 STT 게이트를 열기
+[Usage]
+- src/run_pipeline_demo_async.py: run_async_demo() 내에서 AsyncCaptureSttProducer 인스턴스 생성 및 실행
+- src/pipeline/orchestrator_async.py: capture_q, stt_gate 등 큐/이벤트와 연동
+
+[Usage Method]
+- CaptureSttProducerConfig에 config/capture/settings.yaml의 12개 파라미터를 주입
+- AsyncCaptureSttProducer.run()을 await하면 내부에서:
+  1) _run_stt_chain(): extract_audio → run_stt_only → SttDoneEvent 게시
+  2) _run_capture_loop(): run_capture(blocking) → 콜백으로 chunk 단위 CaptureChunkReadyEvent 게시
+  두 태스크가 asyncio.gather()로 병렬 실행됨
+- sync_to_db=True 시 Supabase API를 통해 캡처 이미지/STT 결과를 업로드
 """
 
 from __future__ import annotations
@@ -66,19 +77,43 @@ def _capture_end_ms(item: Mapping[str, Any]) -> int:
 
 @dataclass(frozen=True)
 class CaptureSttProducerConfig:
-    """Capture/STT producer 실행 설정."""
+    """
+    [Usage File]
+    - src/run_pipeline_demo_async.py: run_async_demo() 내에서 인스턴스 생성
 
-    video_path: Path
-    video_root: Path
-    video_name: str
-    capture_output_base: Optional[Path] = None
-    stt_backend: str = "clova"
-    write_local_json: bool = True
-    capture_batch_size: int = 6
-    capture_threshold: float = 30.0
-    capture_dedupe_threshold: float = 0.92
-    capture_min_interval: float = 1.0
-    capture_verbose: bool = False
+    [Purpose]
+    Capture/STT producer 실행에 필요한 모든 설정을 담는 불변 데이터 클래스입니다.
+    config/capture/settings.yaml의 12개 캡처 파라미터를 1:1로 매핑합니다.
+
+    [Connection]
+    - config/capture/settings.yaml → CaptureSettings → 이 Config로 전달
+    - _run_capture_loop()에서 capture_threshold, capture_sample_interval이 run_capture()에 전달
+    - 나머지 캡처 파라미터는 process_content.py → HybridSlideExtractor에서 settings.yaml 직접 로드로 적용
+    """
+
+    video_path: Path                # 입력 비디오 파일 절대 경로
+    video_root: Path                # 비디오별 출력 루트 ({output_base}/{video_name})
+    video_name: str                 # 비디오 식별용 정규화된 이름
+    capture_output_base: Optional[Path] = None  # 캡처 출력 최상위 디렉토리 (None이면 video_root.parent)
+    stt_backend: str = "clova"      # STT 백엔드 ("clova", "whisper" 등)
+    write_local_json: bool = True   # STT/캡처 결과를 로컬 JSON으로 저장할지 여부
+    capture_batch_size: int = 6     # VLM/Fusion에 전달할 캡처 청크 크기
+
+    # --- config/capture/settings.yaml 1:1 매핑 (기본값 = settings.yaml 기본값) ---
+    capture_threshold: float = 0.15             # persistence_drop_ratio: 슬라이드 종료 판정 비율 (0.0~1.0)
+    capture_sample_interval: float = 1.0        # sample_interval_sec: 프레임 샘플링 간격 (초)
+    capture_persistence_threshold: int = 6      # persistence_threshold: 특징점 지속 프레임 수
+    capture_min_orb_features: int = 50          # min_orb_features: 최소 특징점 개수
+    capture_dedup_phash_threshold: int = 12     # dedup_phash_threshold: pHash 해밍 거리 임계값
+    capture_dedup_orb_distance: int = 60        # dedup_orb_distance: ORB 매칭 거리 임계값
+    capture_dedup_sim_threshold: float = 0.7    # dedup_sim_threshold: 유사도 비율 임계값
+    capture_enable_roi_detection: bool = True   # enable_roi_detection: ROI 자동 감지 활성화
+    capture_roi_padding: int = 5                # roi_padding: ROI 영역 여백 (픽셀)
+    capture_enable_smart_roi: bool = True       # enable_smart_roi: Smart ROI Median Lock 활성화
+    capture_roi_warmup_frames: int = 30         # roi_warmup_frames: Smart ROI 수집 프레임 수
+    capture_enable_adaptive_resize: bool = True # enable_adaptive_resize: 계층형 리사이징 활성화
+
+    capture_verbose: bool = False   # 캡처 상세 로그 출력 여부
 
     def __post_init__(self) -> None:
         if not self.video_name.strip():
@@ -353,7 +388,7 @@ class AsyncCaptureSttProducer:
                 self.config.video_path,
                 self.capture_output_base,
                 threshold=self.config.capture_threshold,
-                min_interval=self.config.capture_min_interval,
+                min_interval=self.config.capture_sample_interval,
                 verbose=self.config.capture_verbose,
                 video_name=self.config.video_name,
                 write_manifest=self.config.write_local_json,

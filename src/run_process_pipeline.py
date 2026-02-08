@@ -82,6 +82,7 @@ else:
 from src.db import get_supabase_adapter, sync_processing_results_to_db, upsert_final_summary_results
 from src.db.adapters import compute_config_hash
 from src.pipeline.benchmark import BenchmarkTimer, print_benchmark_report
+from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 from src.pipeline.stages import (
     generate_fusion_config,
     run_batch_fusion_pipeline,
@@ -119,6 +120,88 @@ def _get_timestamp() -> str:
     now = datetime.now()
     return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
 
+
+
+def _detect_completed_batches(video_root: Path) -> int:
+    """Count consecutive completed PASSed batches starting from batch_1."""
+    batches_dir = video_root / "batches"
+    if not batches_dir.exists():
+        return 0
+
+    completed = 0
+    idx = 1
+    while True:
+        batch_dir = batches_dir / f"batch_{idx}"
+        judge_path = batch_dir / "judge.json"
+        summaries_path = batch_dir / "fusion" / "segment_summaries.jsonl"
+        units_path = batch_dir / "fusion" / "segments_units.jsonl"
+        if not (judge_path.exists() and summaries_path.exists() and units_path.exists()):
+            break
+        try:
+            payload = json.loads(judge_path.read_text(encoding="utf-8"))
+        except Exception:
+            break
+        if not isinstance(payload, dict) or payload.get("pass") is not True:
+            break
+        completed += 1
+        idx += 1
+    return completed
+
+
+def _compute_skip_captures(video_root: Path, completed_batches: int, batch_size: int) -> int:
+    """Estimate how many captures were consumed by completed batches."""
+    if completed_batches <= 0:
+        return 0
+
+    total = 0
+    batches_dir = video_root / "batches"
+    for idx in range(1, completed_batches + 1):
+        vlm_path = batches_dir / f"batch_{idx}" / "vlm.json"
+        count = None
+        if vlm_path.exists():
+            try:
+                payload = json.loads(vlm_path.read_text(encoding="utf-8"))
+                items = payload.get("items")
+                if isinstance(items, list):
+                    count = len(items)
+            except Exception:
+                count = None
+        if not count:
+            count = int(batch_size)
+        total += int(count)
+
+    if total <= 0:
+        total = int(completed_batches) * int(batch_size)
+    return total
+
+
+def _rebuild_fusion_accumulators(video_root: Path, completed_batches: int) -> None:
+    """Rebuild fusion/*.jsonl accumulators from completed batches (PASS only)."""
+    fusion_dir = video_root / "fusion"
+    fusion_dir.mkdir(parents=True, exist_ok=True)
+
+    summaries_acc = fusion_dir / "segment_summaries.jsonl"
+    units_acc = fusion_dir / "segments_units.jsonl"
+    summaries_acc.write_text("", encoding="utf-8")
+    units_acc.write_text("", encoding="utf-8")
+
+    batches_dir = video_root / "batches"
+    for idx in range(1, completed_batches + 1):
+        batch_fusion_dir = batches_dir / f"batch_{idx}" / "fusion"
+        src_pairs = [
+            (batch_fusion_dir / "segment_summaries.jsonl", summaries_acc),
+            (batch_fusion_dir / "segments_units.jsonl", units_acc),
+        ]
+        for src, dest in src_pairs:
+            if not src.exists():
+                continue
+            content = src.read_text(encoding="utf-8")
+            if not content:
+                continue
+            with dest.open("a", encoding="utf-8") as handle:
+                handle.write(content)
+                if not content.endswith("\n"):
+                    handle.write("\n")
 
 def _apply_qwen_vlm_overrides(repo_root: Path) -> Path:
     """Qwen 전용 환경/설정 override를 적용한다."""
@@ -163,6 +246,8 @@ def run_processing_pipeline(
     *,
     video_name: Optional[str],
     video_id: Optional[str] = None,
+    existing_processing_job_id: Optional[str] = None,
+    resume: bool = False,
     output_base: str = "data/outputs",
     batch_mode: Optional[bool] = None,
     batch_size: Optional[int] = None,
@@ -550,25 +635,31 @@ def run_processing_pipeline(
     if sync_to_db or use_db:
         adapter_for_job = get_supabase_adapter()
         if adapter_for_job and video_id:
-            try:
-                # Processing 관련 config 파일들의 해시 계산
-                config_hash = compute_config_hash([
-                    ROOT / "config" / "fusion" / "settings.yaml",
-                    ROOT / "config" / "judge" / "settings.yaml",
-                    ROOT / "config" / "pipeline" / "settings.yaml",
-                    ROOT / "config" / "vlm" / "settings.yaml",
-                ])
+            if resume and existing_processing_job_id:
+                processing_job_id = existing_processing_job_id
+                print(f"{_get_timestamp()} [DB] Resuming processing_job: {processing_job_id}")
+            else:
+                try:
+                    # Compute config hash for this processing job.
+                    config_hash = compute_config_hash([
+                        ROOT / "config" / "fusion" / "settings.yaml",
+                        ROOT / "config" / "judge" / "settings.yaml",
+                        ROOT / "config" / "pipeline" / "settings.yaml",
+                        ROOT / "config" / "vlm" / "settings.yaml",
+                    ])
 
-                job = adapter_for_job.create_processing_job(
-                    video_id,
-                    triggered_by="MANUAL",
-                    config_hash=config_hash,
-                )
-                processing_job_id = job.get("id")
-                if processing_job_id:
-                    print(f"{_get_timestamp()} [DB] Created processing_job: {processing_job_id} (config_hash: {config_hash})")
-            except Exception as e:
-                print(f"{_get_timestamp()} [DB] Warning: Failed to create processing_job: {e}")
+                    job = adapter_for_job.create_processing_job(
+                        video_id,
+                        triggered_by="MANUAL",
+                        config_hash=config_hash,
+                    )
+                    processing_job_id = job.get("id")
+                    if processing_job_id:
+                        print(
+                            f"{_get_timestamp()} [DB] Created processing_job: {processing_job_id} (config_hash: {config_hash})"
+                        )
+                except Exception as e:
+                    print(f"{_get_timestamp()} [DB] Warning: Failed to create processing_job: {e}")
 
     # 메타데이터와 타이머를 초기화한다.
     timer = BenchmarkTimer()
@@ -622,6 +713,9 @@ def run_processing_pipeline(
         print(f"\n{_get_timestamp()} Starting processing pipeline (batch_mode={batch_mode})...")
         print("-" * 50)
 
+        # Early cancel (e.g., user deleted the video while a BackgroundTask is running).
+        raise_if_cancel_requested(adapter_for_job, video_id)
+
         if batch_mode:
             current_adapter = adapter_for_job
             if continuous and not current_adapter:
@@ -653,31 +747,59 @@ def run_processing_pipeline(
             processed_ids = set()
             for c in pending_captures:
                 cid = str(c.get("id") or c.get("cap_id") or "")
-                if cid: processed_ids.add(cid)
+                if cid:
+                    processed_ids.add(cid)
 
-            next_batch_idx = 0
+            total_captures_count_all = len(pending_captures)
+            completed_batches = 0
+            skip_captures = 0
+            if resume and existing_processing_job_id:
+                completed_batches = _detect_completed_batches(video_root)
+                if completed_batches > 0:
+                    _rebuild_fusion_accumulators(video_root, completed_batches)
+                skip_captures = _compute_skip_captures(video_root, completed_batches, batch_size)
+                if skip_captures > 0:
+                    pending_captures = pending_captures[skip_captures:]
+                print(
+                    f"{_get_timestamp()} [Pipeline] Resume enabled: completed_batches={completed_batches}, "
+                    f"skip_captures={skip_captures}, next_batch={completed_batches + 1}"
+                )
+
+            next_batch_idx = completed_batches
             total_segments_acc = 0
             vlm_elapsed_acc = 0.0
 
-            # 전체 배치 수 미리 계산하여 DB에 설정 (프론트엔드 진행률 표시용)
-            total_captures_count = len(pending_captures)
+            # Precompute total batches for DB progress (used by the frontend).
+            total_captures_count = total_captures_count_all
             if total_captures_count > 0 and batch_size > 0:
                 import math
                 total_batches_estimated = math.ceil(total_captures_count / batch_size)
             else:
                 total_batches_estimated = 1
 
-            # DB에 total_batch 초기 설정
+            # Initialize total_batch/current_batch in DB.
             if current_adapter and processing_job_id:
                 try:
-                    current_adapter.update_processing_job_progress(processing_job_id, 0, total_batches_estimated)
-                    print(f"{_get_timestamp()} [DB] Initialized total_batch: 0/{total_batches_estimated}")
+                    current_adapter.update_processing_job_progress(
+                        processing_job_id, completed_batches, total_batches_estimated
+                    )
+                    print(
+                        f"{_get_timestamp()} [DB] Initialized total_batch: "
+                        f"{completed_batches}/{total_batches_estimated}"
+                    )
                 except Exception as e:
                     print(f"{_get_timestamp()} [DB] Warning: Failed to initialize total_batch: {e}")
 
-            print(f"{_get_timestamp()} [{'Continuous' if continuous else 'Batch'} Mode] Started processing loop (captures={total_captures_count}, batches={total_batches_estimated})")
+            remaining_captures = len(pending_captures)
+            print(
+                f"{_get_timestamp()} [{'Continuous' if continuous else 'Batch'} Mode] "
+                f"Started processing loop (captures_total={total_captures_count}, "
+                f"remaining={remaining_captures}, batches={total_batches_estimated})"
+            )
 
             while True:
+                raise_if_cancel_requested(current_adapter, video_id)
+
                 # 1. 전처리 작업 상태 확인 (Continuous 모드일 때만)
                 preprocess_done = False
                 if continuous and current_adapter and video_id:
@@ -701,6 +823,8 @@ def run_processing_pipeline(
 
                 # 2. 대기 중인 캡처 처리
                 while True:
+                    raise_if_cancel_requested(current_adapter, video_id)
+
                     chunk_size = batch_size
                     # 처리 가능 여부 판단
                     can_process = False
@@ -721,9 +845,10 @@ def run_processing_pipeline(
                     # 청크 추출 및 실행
                     chunk = pending_captures[:chunk_size]
                     pending_captures = pending_captures[chunk_size:]
-                    
+                     
                     print(f"\n{_get_timestamp()} [Pipeline] Processing batch {next_batch_idx + 1} (Size: {len(chunk)})")
-                    
+                    raise_if_cancel_requested(current_adapter, video_id)
+                     
                     # 다음 청크가 있으면 그 시작 시간을 강제 종료 시간으로 설정 (Clamping)
                     # 이를 통해 청크 단위로 실행되더라도 시간 범위가 겹치지 않게 함
                     forced_end_ms = None
@@ -770,6 +895,7 @@ def run_processing_pipeline(
                 if current_adapter and video_id:
                     print(f"{_get_timestamp()} [Pipeline] Waiting for input... (Pending: {len(pending_captures)} < Batch: {batch_size}, Preprocess: {'RUNNING' if not preprocess_done else 'DONE'})")
                     # print(f"           Sleeping {poll_interval}s...") # 간결한 로그를 위해 생략 혹은 필요한 경우 활성화
+                    raise_if_cancel_requested(current_adapter, video_id)
                     time.sleep(poll_interval)
                     try:
                         # captures 테이블에서 video_id로 조회
@@ -834,6 +960,8 @@ def run_processing_pipeline(
             fusion_info = {} # 마지막 fusion_info 정보는 의미가 퇴색되므로 초기화 혹은 마지막 값 사용
         else:
             # 단일 모드에서는 VLM 실행 후 Fusion으로 넘어간다.
+            raise_if_cancel_requested(adapter_for_job, video_id)
+
             vlm_image_count, vlm_elapsed = timer.time_stage(
                 "vlm",
                 run_vlm_qwen,
@@ -845,6 +973,7 @@ def run_processing_pipeline(
                 concurrency=vlm_concurrency,
                 show_progress=vlm_show_progress,
             )
+            raise_if_cancel_requested(adapter_for_job, video_id)
 
             # Fusion 설정 파일을 생성해 파이프라인에 전달한다.
             template_config = ROOT / "config" / "fusion" / "settings.yaml"
@@ -904,6 +1033,9 @@ def run_processing_pipeline(
             json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+        # Don't upload or mark DONE after delete is requested.
+        raise_if_cancel_requested(adapter_for_job, video_id)
 
         if sync_to_db and processing_job_id and adapter_for_job:
             # Final summary_results UPSERT (timeline, tldr 포맷 저장)
@@ -969,6 +1101,32 @@ def run_processing_pipeline(
         rel_report_path = os.path.relpath(report_path, ROOT)
         print(f"{_get_timestamp()} Outputs: {rel_video_root}")
         print(f"{_get_timestamp()} Benchmark: {rel_report_path}")
+
+    except PipelineCanceled as exc:
+        # Canceled by user deletion request; exit quietly (no re-raise).
+        timer.end_total()
+        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
+        run_meta["status"] = "canceled"
+        run_meta["error"] = str(exc)
+        run_meta.setdefault("durations_sec", {})
+        run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
+        run_meta_path.write_text(
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if processing_job_id and adapter_for_job:
+            try:
+                adapter_for_job.update_processing_job_status(
+                    processing_job_id,
+                    "FAILED",
+                    error_message=f"canceled: {exc}",
+                )
+            except Exception:
+                pass
+
+        print(f"\n{_get_timestamp()} Processing canceled: {exc}")
+        return
 
     except Exception as exc:
         # 에러 발생 시 상태를 기록한 뒤 예외를 다시 올린다.

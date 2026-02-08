@@ -61,11 +61,7 @@ function HomePage() {
             setVideos((prev) => (prev || []).filter((v) => v.id !== deleteTarget.id));
             window.dispatchEvent(new Event('videos:changed'));
         } catch (err) {
-            if (err?.status === 409) {
-                setError('아직 처리 중인 영상은 삭제할 수 없습니다.');
-            } else {
-                setError(err?.message || 'Failed to delete video');
-            }
+            setError(err?.message || 'Failed to delete video');
         } finally {
             setDeleteTarget(null);
         }

@@ -22,15 +22,27 @@ def extract_audio(
     codec: str = "libmp3lame",
     mp3_bitrate: str = "128k",
     mono_method: str = "auto",
+    save_file: bool = True,
 ) -> Path:
-    """미디어 파일에서 오디오를 추출해 파일로 저장한다."""
+    """미디어 파일에서 오디오를 추출해 파일로 저장한다.
+
+    [Args]
+    - save_file (bool): False일 경우 임시 파일을 생성했다가 삭제 (메모리 처리용)
+    """
     media_path = Path(media_path).expanduser()
     if not media_path.exists():
         raise FileNotFoundError(f"Media file not found: {media_path}")
 
     ext = CODEC_TO_EXT.get(codec, ".wav")
     output_path = Path(output_path) if output_path else Path("data/outputs") / f"{media_path.stem}{ext}"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # save_file=False일 때는 임시 디렉토리 사용
+    if not save_file:
+        import tempfile
+        temp_dir = tempfile.mkdtemp()
+        output_path = Path(temp_dir) / f"temp_audio{ext}"
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if mono_method in ("left", "right", "phase-fix", "auto") and channels != 1:
         raise ValueError("mono-method requires channels=1.")
