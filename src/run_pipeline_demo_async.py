@@ -54,6 +54,7 @@ from src.pipeline.producers_async import (
     CaptureSttProducerConfig,
 )
 from src.pipeline.vlm_worker_async import AsyncVlmWorker, VlmWorkerConfig
+from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 
 QWEN_BASE_URL_DEFAULT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL_DEFAULT = "qwen3-vl-32b-instruct"
@@ -287,6 +288,7 @@ async def run_async_demo(
     video_id = None
     preprocess_job_id = None
     processing_job_id = None
+    adapter_for_cancel = None
     if sync_to_db:
         from src.db import get_supabase_adapter
         from src.db.adapters import compute_config_hash
@@ -294,6 +296,7 @@ async def run_async_demo(
         adapter = get_supabase_adapter()
         if not adapter:
             raise RuntimeError("Supabase adapter not configured; set SUPABASE_URL/SUPABASE_KEY.")
+        adapter_for_cancel = adapter
 
         if existing_video_id:
             video_id = existing_video_id
@@ -438,9 +441,69 @@ async def run_async_demo(
     fusion_task = asyncio.create_task(fusion_worker.run(), name="fusion_worker")
     core_tasks = [producer_task, vlm_task, fusion_task]
 
+    async def _watch_delete_requested() -> None:
+        # Block forever until a delete/cancel signal is observed.
+        # The caller cancels this task on normal completion/failure.
+        if not video_id:
+            while True:
+                await asyncio.sleep(3600)
+        while True:
+            raise_if_cancel_requested(adapter_for_cancel, video_id)
+            await asyncio.sleep(1)
+
+    cancel_watch_task = asyncio.create_task(_watch_delete_requested(), name="cancel_watcher")
+    # asyncio.gather() returns a Future (not a coroutine), so don't wrap it with create_task().
+    core_gather = asyncio.gather(*core_tasks)
+
     try:
-        producer_result, vlm_chunk_count, _fusion_processed = await asyncio.gather(*core_tasks)
+        done, _pending = await asyncio.wait(
+            {core_gather, cancel_watch_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if cancel_watch_task in done and not cancel_watch_task.cancelled():
+            cancel_exc: PipelineCanceled = PipelineCanceled("delete_requested")
+            try:
+                await cancel_watch_task
+            except PipelineCanceled as exc:
+                cancel_exc = exc
+            except Exception as exc:
+                cancel_exc = PipelineCanceled(str(exc))
+
+            await orchestrator.stop(reason="delete_requested")
+            for task in core_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*core_tasks, return_exceptions=True)
+            core_gather.cancel()
+            await asyncio.gather(core_gather, return_exceptions=True)
+            await fusion_consumer_task
+            await error_consumer_task
+
+            # 취소 상태 업데이트 (best-effort; the row may already be deleted).
+            if sync_to_db and processing_job_id:
+                try:
+                    from src.db import get_supabase_adapter
+                    adapter = get_supabase_adapter()
+                    if adapter:
+                        adapter.update_processing_job_status(
+                            processing_job_id, "FAILED", error_message=f"canceled: {cancel_exc}"
+                        )
+                        adapter.update_video_status(video_id, "FAILED", error=f"canceled: {cancel_exc}")
+                except Exception:
+                    pass
+
+            raise cancel_exc
+
+        # Core tasks finished first (success or failure).
+        cancel_watch_task.cancel()
+        await asyncio.gather(cancel_watch_task, return_exceptions=True)
+        producer_result, vlm_chunk_count, _fusion_processed = await core_gather
+
     except Exception as exc:
+        cancel_watch_task.cancel()
+        await asyncio.gather(cancel_watch_task, return_exceptions=True)
+
         for task in core_tasks:
             if not task.done():
                 task.cancel()
@@ -497,6 +560,10 @@ async def run_async_demo(
                         print(f"[DB] Warning: summary_results upsert failed: {summary_exc}")
             except Exception:
                 pass
+    finally:
+        if not cancel_watch_task.done():
+            cancel_watch_task.cancel()
+            await asyncio.gather(cancel_watch_task, return_exceptions=True)
 
     return AsyncDemoResult(
         run_id=run_id,

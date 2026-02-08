@@ -82,6 +82,7 @@ else:
 from src.db import get_supabase_adapter, sync_processing_results_to_db, upsert_final_summary_results
 from src.db.adapters import compute_config_hash
 from src.pipeline.benchmark import BenchmarkTimer, print_benchmark_report
+from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 from src.pipeline.stages import (
     generate_fusion_config,
     run_batch_fusion_pipeline,
@@ -622,6 +623,9 @@ def run_processing_pipeline(
         print(f"\n{_get_timestamp()} Starting processing pipeline (batch_mode={batch_mode})...")
         print("-" * 50)
 
+        # Early cancel (e.g., user deleted the video while a BackgroundTask is running).
+        raise_if_cancel_requested(adapter_for_job, video_id)
+
         if batch_mode:
             current_adapter = adapter_for_job
             if continuous and not current_adapter:
@@ -678,6 +682,8 @@ def run_processing_pipeline(
             print(f"{_get_timestamp()} [{'Continuous' if continuous else 'Batch'} Mode] Started processing loop (captures={total_captures_count}, batches={total_batches_estimated})")
 
             while True:
+                raise_if_cancel_requested(current_adapter, video_id)
+
                 # 1. 전처리 작업 상태 확인 (Continuous 모드일 때만)
                 preprocess_done = False
                 if continuous and current_adapter and video_id:
@@ -701,6 +707,8 @@ def run_processing_pipeline(
 
                 # 2. 대기 중인 캡처 처리
                 while True:
+                    raise_if_cancel_requested(current_adapter, video_id)
+
                     chunk_size = batch_size
                     # 처리 가능 여부 판단
                     can_process = False
@@ -721,9 +729,10 @@ def run_processing_pipeline(
                     # 청크 추출 및 실행
                     chunk = pending_captures[:chunk_size]
                     pending_captures = pending_captures[chunk_size:]
-                    
+                     
                     print(f"\n{_get_timestamp()} [Pipeline] Processing batch {next_batch_idx + 1} (Size: {len(chunk)})")
-                    
+                    raise_if_cancel_requested(current_adapter, video_id)
+                     
                     # 다음 청크가 있으면 그 시작 시간을 강제 종료 시간으로 설정 (Clamping)
                     # 이를 통해 청크 단위로 실행되더라도 시간 범위가 겹치지 않게 함
                     forced_end_ms = None
@@ -770,6 +779,7 @@ def run_processing_pipeline(
                 if current_adapter and video_id:
                     print(f"{_get_timestamp()} [Pipeline] Waiting for input... (Pending: {len(pending_captures)} < Batch: {batch_size}, Preprocess: {'RUNNING' if not preprocess_done else 'DONE'})")
                     # print(f"           Sleeping {poll_interval}s...") # 간결한 로그를 위해 생략 혹은 필요한 경우 활성화
+                    raise_if_cancel_requested(current_adapter, video_id)
                     time.sleep(poll_interval)
                     try:
                         # captures 테이블에서 video_id로 조회
@@ -834,6 +844,8 @@ def run_processing_pipeline(
             fusion_info = {} # 마지막 fusion_info 정보는 의미가 퇴색되므로 초기화 혹은 마지막 값 사용
         else:
             # 단일 모드에서는 VLM 실행 후 Fusion으로 넘어간다.
+            raise_if_cancel_requested(adapter_for_job, video_id)
+
             vlm_image_count, vlm_elapsed = timer.time_stage(
                 "vlm",
                 run_vlm_qwen,
@@ -845,6 +857,7 @@ def run_processing_pipeline(
                 concurrency=vlm_concurrency,
                 show_progress=vlm_show_progress,
             )
+            raise_if_cancel_requested(adapter_for_job, video_id)
 
             # Fusion 설정 파일을 생성해 파이프라인에 전달한다.
             template_config = ROOT / "config" / "fusion" / "settings.yaml"
@@ -904,6 +917,9 @@ def run_processing_pipeline(
             json.dumps(run_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+        # Don't upload or mark DONE after delete is requested.
+        raise_if_cancel_requested(adapter_for_job, video_id)
 
         if sync_to_db and processing_job_id and adapter_for_job:
             # Final summary_results UPSERT (timeline, tldr 포맷 저장)
@@ -969,6 +985,32 @@ def run_processing_pipeline(
         rel_report_path = os.path.relpath(report_path, ROOT)
         print(f"{_get_timestamp()} Outputs: {rel_video_root}")
         print(f"{_get_timestamp()} Benchmark: {rel_report_path}")
+
+    except PipelineCanceled as exc:
+        # Canceled by user deletion request; exit quietly (no re-raise).
+        timer.end_total()
+        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
+        run_meta["status"] = "canceled"
+        run_meta["error"] = str(exc)
+        run_meta.setdefault("durations_sec", {})
+        run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
+        run_meta_path.write_text(
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if processing_job_id and adapter_for_job:
+            try:
+                adapter_for_job.update_processing_job_status(
+                    processing_job_id,
+                    "FAILED",
+                    error_message=f"canceled: {exc}",
+                )
+            except Exception:
+                pass
+
+        print(f"\n{_get_timestamp()} Processing canceled: {exc}")
+        return
 
     except Exception as exc:
         # 에러 발생 시 상태를 기록한 뒤 예외를 다시 올린다.

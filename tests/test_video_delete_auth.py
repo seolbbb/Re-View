@@ -15,9 +15,23 @@ class FakeAdapter:
         self.processing_jobs = {}
         self.deleted_prefixes = []
         self.deleted_videos = []
+        self.delete_marks = []
+        self.delete_clears = []
 
     def get_video(self, video_id: str):
         return self.videos.get(video_id)
+
+    def mark_video_delete_requested(self, video_id: str, *, when_iso: str | None = None) -> bool:
+        self.delete_marks.append((video_id, when_iso))
+        if video_id in self.videos:
+            self.videos[video_id]["delete_requested_at"] = when_iso or "now"
+        return True
+
+    def clear_video_delete_requested(self, video_id: str) -> bool:
+        self.delete_clears.append(video_id)
+        if video_id in self.videos:
+            self.videos[video_id]["delete_requested_at"] = None
+        return True
 
     def delete_video(self, video_id: str, user_id: str) -> bool:
         self.deleted_videos.append((video_id, user_id))
@@ -65,11 +79,12 @@ def test_delete_video_owner_ok(client):
 
     res = http.delete("/api/videos/v1", headers={"Authorization": "Bearer owner"})
     assert res.status_code == 204
+    assert adapter.delete_marks == [("v1", None)]
     assert adapter.deleted_prefixes == ["v1/"]
     assert adapter.deleted_videos == [("v1", "owner")]
 
 
-def test_delete_video_blocks_while_job_active(client):
+def test_delete_video_allows_while_job_active(client):
     http, adapter = client
     adapter.videos["v1"] = {
         "id": "v1",
@@ -83,8 +98,9 @@ def test_delete_video_blocks_while_job_active(client):
     }
 
     res = http.delete("/api/videos/v1", headers={"Authorization": "Bearer owner"})
-    assert res.status_code == 409
-    assert adapter.deleted_videos == []
+    assert res.status_code == 204
+    assert adapter.delete_marks == [("v1", None)]
+    assert adapter.deleted_videos == [("v1", "owner")]
 
 
 def test_delete_video_allows_stuck_job(client):
@@ -102,5 +118,6 @@ def test_delete_video_allows_stuck_job(client):
 
     res = http.delete("/api/videos/v1", headers={"Authorization": "Bearer owner"})
     assert res.status_code == 204
+    assert adapter.delete_marks == [("v1", None)]
     assert adapter.deleted_videos == [("v1", "owner")]
 

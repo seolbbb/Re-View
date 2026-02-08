@@ -65,6 +65,7 @@ from pydantic import BaseModel
 from src.db import get_supabase_adapter
 from src.run_process_pipeline import run_processing_pipeline
 from src.services.chat_session_store import ChatSessionStore
+from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 
 
 app = FastAPI(title="Screentime Processing API")
@@ -555,7 +556,9 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
         print(f"  Re:View API Pipeline: {video_id}")
         print("=" * 60)
         print(f"1. Starting 'Preprocessing'...")
-        
+
+        raise_if_cancel_requested(adapter, video_id)
+         
         # 1. 전처리 (existing_video_id로 기존 레코드 재사용, DB 중복 생성 방지)
         run_preprocess_pipeline(
             video=video_path,
@@ -563,6 +566,7 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
             write_local_json=True,
             existing_video_id=video_id,
         )
+        raise_if_cancel_requested(adapter, video_id)
         if adapter:
             _update_video_duration(adapter, video_id, video_path)
             _ensure_preprocess_job_finalized(adapter, video_id)
@@ -571,12 +575,16 @@ def _run_full_pipeline(video_path: str, video_id: str) -> None:
         print(f"\n2. Starting 'Processing'...")
         # 2. 처리 파이프라인
         video_name = Path(video_path).stem
+        raise_if_cancel_requested(adapter, video_id)
         run_processing_pipeline(
             video_name=video_name,
             video_id=video_id,
             sync_to_db=True,
             force_db=True,
         )
+    except PipelineCanceled:
+        # Cancel is expected when the user deletes a video mid-processing.
+        return
     except Exception as exc:
         if adapter:
             adapter.update_video_status(video_id, "FAILED", error=str(exc))
@@ -844,6 +852,7 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         tmp_dir, tmp_path = _download_from_storage(adapter, video_id, storage_key)
 
         print(f"\n1. Starting 'Preprocessing'...")
+        raise_if_cancel_requested(adapter, video_id)
         # 2. 전처리
         run_preprocess_pipeline(
             video=str(tmp_path),
@@ -851,6 +860,7 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
             write_local_json=True,
             existing_video_id=video_id,
         )
+        raise_if_cancel_requested(adapter, video_id)
         if adapter:
             _update_video_duration(adapter, video_id, str(tmp_path))
             _ensure_preprocess_job_finalized(adapter, video_id) # Added this line
@@ -859,12 +869,15 @@ def _run_full_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         print(f"\n2. Starting 'Processing'...") # Added print header
         # 3. 처리 파이프라인
         video_name = tmp_path.stem
+        raise_if_cancel_requested(adapter, video_id)
         run_processing_pipeline(
             video_name=video_name,
             video_id=video_id,
             sync_to_db=True,
             force_db=True,
         )
+    except PipelineCanceled:
+        return
     except Exception as exc:
         if adapter:
             adapter.update_video_status(video_id, "FAILED", error=str(exc))
@@ -888,6 +901,7 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
         tmp_dir, tmp_path = _download_from_storage(adapter, video_id, storage_key)
 
         # 2. 비디오 duration 업데이트
+        raise_if_cancel_requested(adapter, video_id)
         _update_video_duration(adapter, video_id, str(tmp_path))
 
         # 3. Qwen VLM override 적용
@@ -903,6 +917,7 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
             output_base = output_base.resolve()
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
+        raise_if_cancel_requested(adapter, video_id)
         asyncio.run(
             run_async_demo(
                 video_path=tmp_path,
@@ -923,6 +938,8 @@ def _run_async_pipeline_from_storage(video_id: str, storage_key: str) -> None:
                 existing_video_id=video_id,
             )
         )
+    except PipelineCanceled:
+        return
     except Exception as exc:
         if adapter:
             adapter.update_video_status(video_id, "FAILED", error=str(exc))
@@ -971,19 +988,34 @@ def delete_video(video_id: str, http_request: Request) -> Response:
     user_id = _require_user_id(adapter, http_request)
     video = _require_video_owner(adapter, user_id=user_id, video_id=video_id)
 
-    if _is_video_actively_processing(adapter, video):
-        raise HTTPException(status_code=409, detail="Video is still processing")
+    # Allow deletes even while processing. Best-effort cancellation:
+    # - In-memory marker helps stop BackgroundTasks quickly in the same process.
+    # - DB marker (videos.delete_requested_at) is a cross-instance signal.
+    from src.pipeline.cancel import request_local_cancel, clear_local_cancel
+
+    request_local_cancel(video_id)
+    marked = adapter.mark_video_delete_requested(video_id)
+    if not marked:
+        # Marker may fail if the DB schema hasn't been migrated yet. Deletion still proceeds.
+        pass
 
     # Storage cleanup first so failures are retryable (DB row remains).
     try:
         storage_result = _delete_storage_objects_for_video(adapter, video_id, video)
     except RuntimeError as exc:
+        # Roll back cancel markers on failure so users can retry or continue processing.
+        adapter.clear_video_delete_requested(video_id)
+        clear_local_cancel(video_id)
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
+        adapter.clear_video_delete_requested(video_id)
+        clear_local_cancel(video_id)
         raise HTTPException(status_code=502, detail=f"Storage delete failed: {exc}")
 
     errors = storage_result.get("errors") or []
     if errors:
+        adapter.clear_video_delete_requested(video_id)
+        clear_local_cancel(video_id)
         raise HTTPException(
             status_code=502,
             detail=f"Failed to delete storage objects ({len(errors)} errors)",
@@ -993,6 +1025,8 @@ def delete_video(video_id: str, http_request: Request) -> Response:
     if not adapter.delete_video(video_id, user_id):
         raise HTTPException(status_code=500, detail="Failed to delete video")
 
+    # Cleanup local cancellation marker (DB row is gone anyway).
+    clear_local_cancel(video_id)
     return Response(status_code=204)
 
 
