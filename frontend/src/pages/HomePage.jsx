@@ -98,22 +98,7 @@ function HomePage() {
                         <div className="hero-upload">
                             <UploadArea />
                         </div>
-                        <div className="hero-stats">
-                            <div className="stat-item">
-                                <span className="stat-number">{videos.length}</span>
-                                <span className="stat-label">분석된 영상</span>
-                            </div>
-                            <div className="stat-divider"></div>
-                            <div className="stat-item">
-                                <span className="stat-number">98%</span>
-                                <span className="stat-label">정확도</span>
-                            </div>
-                            <div className="stat-divider"></div>
-                            <div className="stat-item">
-                                <span className="stat-number">2분</span>
-                                <span className="stat-label">평균 분석 시간</span>
-                            </div>
-                        </div>
+
                     </div>
                 </section>
 

@@ -322,9 +322,13 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
             restorePlayback();
         };
         const onEnd = () => setPlaying(false);
+        const onPlay = () => setPlaying(true);
+        const onPause = () => setPlaying(false);
         v.addEventListener('timeupdate', onTime);
         v.addEventListener('loadedmetadata', onDur);
         v.addEventListener('ended', onEnd);
+        v.addEventListener('play', onPlay);
+        v.addEventListener('pause', onPause);
 
         if (v.readyState >= 1) {
             setDuration(v.duration);
@@ -335,6 +339,8 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
             v.removeEventListener('timeupdate', onTime);
             v.removeEventListener('loadedmetadata', onDur);
             v.removeEventListener('ended', onEnd);
+            v.removeEventListener('play', onPlay);
+            v.removeEventListener('pause', onPause);
         };
     }, [streamUrl]);
 

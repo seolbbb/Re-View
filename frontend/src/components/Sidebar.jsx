@@ -1,14 +1,16 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Video, Home, Library, History, CheckCircle, ChevronsUpDown, Loader2, LogOut } from 'lucide-react';
-import { listVideos } from '../api/videos';
+import { Video, Home, Library, History, CheckCircle, ChevronsUpDown, Loader2, LogOut, Trash2 } from 'lucide-react';
+import { listVideos, deleteVideo } from '../api/videos';
+import ConfirmModal from './ConfirmModal';
 import { useAuth } from '../context/AuthContext';
 
 function Sidebar() {
     const [recentVideos, setRecentVideos] = useState([]);
     const [loading, setLoading] = useState(true);
     const [profileOpen, setProfileOpen] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState(null);
     const profileRef = useRef(null);
     const { user, signOut } = useAuth();
     const navigate = useNavigate();
@@ -48,6 +50,29 @@ function Sidebar() {
         document.addEventListener('mousedown', handleClick);
         return () => document.removeEventListener('mousedown', handleClick);
     }, []);
+
+    const handleDeleteRequest = (e, videoId, status) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDeleteTarget({ id: videoId, status });
+    };
+
+    const handleDeleteConfirm = async () => {
+        if (!deleteTarget) return;
+        try {
+            await deleteVideo(deleteTarget.id);
+            setRecentVideos((prev) => prev.filter((v) => v.id !== deleteTarget.id));
+            window.dispatchEvent(new Event('videos:changed'));
+        } catch (err) {
+            console.error('Delete failed:', err);
+        } finally {
+            setDeleteTarget(null);
+        }
+    };
+
+    const handleDeleteCancel = () => {
+        setDeleteTarget(null);
+    };
 
     const handleSignOut = async () => {
         setProfileOpen(false);
@@ -125,10 +150,18 @@ function Sidebar() {
                                 className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-surface-highlight group"
                             >
                                 {getStatusIcon(v.status)}
-                                <div className="flex flex-col truncate">
+                                <div className="flex flex-col truncate flex-1 min-w-0">
                                     <p className="text-[var(--text-primary)] text-sm font-medium truncate">{v.name || v.original_filename}</p>
                                     <p className="text-gray-400 text-xs truncate">{formatTimeAgo(v.created_at)}</p>
                                 </div>
+                                <button
+                                    onClick={(e) => handleDeleteRequest(e, v.id, v.status)}
+                                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-400 transition-all shrink-0 p-1 rounded hover:bg-red-500/10"
+                                    title="삭제"
+                                    aria-label="영상 삭제"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                             </Link>
                         ))}
                     </div>
@@ -166,6 +199,18 @@ function Sidebar() {
                     <ChevronsUpDown className="w-[18px] h-[18px] text-gray-400 ml-auto" />
                 </button>
             </div>
+            <ConfirmModal
+                isOpen={deleteTarget !== null}
+                title="영상 삭제"
+                message={deleteTarget?.status?.toUpperCase() === 'PROCESSING'
+                    ? '이 영상은 현재 처리 중입니다.\n정말 삭제하시겠습니까?'
+                    : '이 영상을 삭제하시겠습니까?\n삭제된 영상은 복구할 수 없습니다.'}
+                confirmText="삭제"
+                cancelText="취소"
+                onConfirm={handleDeleteConfirm}
+                onCancel={handleDeleteCancel}
+                variant="danger"
+            />
         </aside>
     );
 }

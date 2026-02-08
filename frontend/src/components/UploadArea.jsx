@@ -13,8 +13,14 @@ function UploadArea() {
     const navigate = useNavigate();
     const { setCurrentVideoId, setCurrentVideoName } = useVideo();
 
+    const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+
     const handleFile = async (file) => {
         if (!file) return;
+        if (file.size > MAX_FILE_SIZE) {
+            setError('파일 크기가 200MB를 초과합니다.');
+            return;
+        }
         setUploading(true);
         setError(null);
         try {
@@ -84,7 +90,7 @@ function UploadArea() {
                     <p className="upload-text">클릭하여 업로드</p>
                 </>
             )}
-            <p className="upload-hint">MP4, MOV, AVI (최대 2GB)</p>
+            <p className="upload-hint">MP4, MOV, AVI (최대 200MB)</p>
             {error && <p className="upload-error" style={{ color: '#ef4444', fontSize: '0.875rem', marginTop: '0.5rem' }}>{error}</p>}
         </div>
     );

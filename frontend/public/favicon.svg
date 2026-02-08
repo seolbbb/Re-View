@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" shape-rendering="geometricPrecision">
+  <defs>
+    <!-- Smoother, richer gradients -->
+    <linearGradient id="gradLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffe4dc;stop-opacity:1" /> <!-- Very light peach highlight -->
+      <stop offset="100%" style="stop-color:#f4a89a;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="gradMedium" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f4a89a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e07e63;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="gradDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e07e63;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#bf5b41;stop-opacity:1" /> <!-- Deep shadow -->
+    </linearGradient>
+  </defs>
+
+  <!-- Centering adjustment: 
+       Original Bounds X: ~20-100 (Width 80). Center 60.
+       Original Bounds Y: ~5-105 (Height 100). Center 55.
+       Target Center: 50, 50.
+       Shift X: -10, Shift Y: -5.
+       Scale: 0.85 (to include shadow and padding).
+       Transform: translate( (50 - 60*0.85), (50 - 55*0.85) ) = translate( -1, 3.25 )  -> rounding to integer for cleanliness
+  -->
+  <g transform="translate(-1, 3) scale(0.85)">
+     
+     <!-- Refined Structure: Removed potential awkward overlaps, ensured tight isometric joins -->
+     
+     <!-- 1. LEFT PILLAR -->
+     <!-- Left Face (Darkest) -->
+     <path d="M20 20 L50 35 L50 95 L20 80 Z" fill="url(#gradDark)"/>
+     <!-- Top Face (Lightest) -->
+     <path d="M20 20 L50 5 L80 20 L50 35 Z" fill="url(#gradLight)"/>
+     
+     <!-- 2. RIGHT LOOP / TOP SECTION -->
+     <!-- Mid Connection Face (Medium) -->
+     <path d="M50 35 L50 95 L80 80 L80 20 Z" fill="url(#gradMedium)" opacity="0.95"/> <!-- Main body fill -->
+     
+     <!-- Top Diagonal (Light) -->
+     <path d="M50 35 L80 20 L100 30 L70 45 Z" fill="url(#gradLight)"/>
+     <!-- Top Diagonal Thickness (Dark Side) -->
+     <path d="M100 30 L100 70 L70 85 L70 45 Z" fill="url(#gradDark)"/>
+     
+     <!-- 3. BRIDGE / CENTER -->
+     <!-- Underface (Dark Shadow) -->
+     <path d="M50 50 L80 35 L80 50 L50 65 Z" fill="url(#gradDark)" opacity="0.8"/>
+     
+     <!-- 4. LEG OUTWARD -->
+     <!-- Leg Top Face (Medium/Light mix) -->
+     <path d="M50 65 L80 50 L105 85 L75 100 Z" fill="url(#gradMedium)"/>
+     <!-- Leg Thickness (Dark Side) -->
+     <path d="M75 100 L105 85 L105 90 L75 105 Z" fill="url(#gradDark)"/>
+
+     <!-- 5. HIGHLIGHTS & DETAILS (Subtle White Strokes) -->
+     <path d="M20 20 L50 5 L80 20" stroke="white" stroke-width="0.8" opacity="0.4" stroke-linecap="round" stroke-linejoin="round"/>
+     <path d="M20 20 L20 80" stroke="white" stroke-width="0.8" opacity="0.15" stroke-linecap="round"/>
+     <path d="M50 5 L50 35" stroke="white" stroke-width="0.8" opacity="0.15" stroke-linecap="round"/>
+     <path d="M100 30 L70 45" stroke="white" stroke-width="0.8" opacity="0.3" stroke-linecap="round"/>
+  </g>
+</svg>
