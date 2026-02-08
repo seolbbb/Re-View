@@ -140,6 +140,7 @@ function HomePage() {
                                 <VideoCard
                                     id={video.id}
                                     title={video.name || video.original_filename}
+                                    thumbnail={video.thumbnail_url}
                                     thumbnailVideoId={video.id}
                                     duration={formatDuration(video.duration_sec)}
                                     date={formatDate(video.created_at)}

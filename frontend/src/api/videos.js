@@ -1,5 +1,4 @@
 import { get, post, del, BASE_URL } from './client';
-import { supabase } from '../lib/supabase';
 
 // ---------------------------------------------------------------------------
 // Signed URL 기반 3단계 업로드 (FastAPI 경유)
@@ -35,49 +34,45 @@ export async function uploadVideo(file, pipelineMode = 'async') {
   const { video_id, video_name, upload_url, storage_key } = await initUpload(file);
   await uploadToStorage(upload_url, file);
   await completeUpload(video_id, storage_key, pipelineMode);
+  invalidateVideosCache();
   return { video_id, video_name, status: 'PREPROCESSING' };
 }
 
 // ---------------------------------------------------------------------------
-// 조회 API (Supabase 직접 쿼리 - RLS 적용)
+// 조회 API (FastAPI 경유 — 썸네일 URL 포함, sessionStorage 캐시)
 // ---------------------------------------------------------------------------
 
+const VIDEOS_CACHE_KEY = 'videos_cache';
+const VIDEOS_CACHE_TTL = 60_000; // 1분
+
 export async function listVideos() {
-  if (!supabase) {
-    // Supabase 미설정 시 기존 FastAPI 사용
-    return get('/api/videos');
-  }
+  // sessionStorage 캐시 확인
+  try {
+    const cached = sessionStorage.getItem(VIDEOS_CACHE_KEY);
+    if (cached) {
+      const { data, ts } = JSON.parse(cached);
+      if (Date.now() - ts < VIDEOS_CACHE_TTL) {
+        return data;
+      }
+    }
+  } catch { /* ignore */ }
 
-  // 현재 로그인한 사용자 세션 확인
-  const { data: { session } } = await supabase.auth.getSession();
+  const data = await get('/api/videos');
 
-  if (!session?.user) {
-    return { videos: [] };
-  }
+  // 캐시 저장
+  try {
+    sessionStorage.setItem(VIDEOS_CACHE_KEY, JSON.stringify({ data, ts: Date.now() }));
+  } catch { /* ignore */ }
 
-  const { data, error } = await supabase
-    .from('videos')
-    .select('*')
-    .eq('user_id', session.user.id)  // 로그인한 유저의 영상만 필터링
-    .order('created_at', { ascending: false });
+  return data;
+}
 
-  if (error) throw error;
-  return { videos: data };
+export function invalidateVideosCache() {
+  try { sessionStorage.removeItem(VIDEOS_CACHE_KEY); } catch { /* ignore */ }
 }
 
 export async function getVideoSummary(videoId) {
-  if (!supabase) {
-    return get(`/videos/${videoId}/summary`);
-  }
-
-  const { data, error } = await supabase
-    .from('summary_results')
-    .select('*')
-    .eq('video_id', videoId)
-    .single();
-
-  if (error) throw error;
-  return data;
+  return get(`/videos/${videoId}/summary`);
 }
 
 export async function getVideoSummaries(videoId) {
@@ -106,8 +101,10 @@ export function restartProcessing(videoId) {
 // Delete
 // ---------------------------------------------------------------------------
 
-export function deleteVideo(videoId) {
-  return del(`/api/videos/${videoId}`);
+export async function deleteVideo(videoId) {
+  const result = await del(`/api/videos/${videoId}`);
+  invalidateVideosCache();
+  return result;
 }
 
 // ---------------------------------------------------------------------------

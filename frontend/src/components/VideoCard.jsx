@@ -6,7 +6,8 @@ import { useAuth } from '../context/AuthContext';
 import './VideoCard.css';
 
 function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, status = 'done', onDelete }) {
-    const [failedSrc, setFailedSrc] = useState(null);
+    const [useFallback, setUseFallback] = useState(false);
+    const [fallbackFailed, setFallbackFailed] = useState(false);
     const { mediaTicket } = useAuth();
 
     const statusConfig = {
@@ -18,16 +19,24 @@ function VideoCard({ id, title, thumbnail, thumbnailVideoId, duration, date, sta
 
     const currentStatus = statusConfig[status] || statusConfig.done;
 
-    // Use thumbnail prop if provided (legacy), otherwise use API
-    // Require mediaTicket to be present to avoid 401 Unauthorized requests
-    const imgSrc = thumbnail || ((thumbnailVideoId && mediaTicket) ? getThumbnailUrl(thumbnailVideoId, mediaTicket) : null);
-    const showImage = imgSrc && failedSrc !== imgSrc;
+    // signed URL → /thumbnail 엔드포인트 fallback → placeholder
+    const fallbackSrc = (thumbnailVideoId && mediaTicket) ? getThumbnailUrl(thumbnailVideoId, mediaTicket) : null;
+    const imgSrc = (!useFallback && thumbnail) ? thumbnail : fallbackSrc;
+    const showImage = imgSrc && !fallbackFailed;
+
+    const handleImgError = () => {
+        if (!useFallback && fallbackSrc) {
+            setUseFallback(true);
+        } else {
+            setFallbackFailed(true);
+        }
+    };
 
     return (
         <Link to={`/analysis/${id}`} className="video-card">
             <div className="video-thumbnail">
                 {showImage ? (
-                    <img src={imgSrc} alt={title} onError={() => setFailedSrc(imgSrc)} />
+                    <img src={imgSrc} alt={title} onError={handleImgError} />
                 ) : (
                     <div className="video-thumbnail-placeholder" style={{
                         background: 'linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-secondary) 100%)',
