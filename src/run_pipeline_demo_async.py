@@ -1,12 +1,24 @@
 """
-Queue/Event 기반 비동기 데모 파이프라인 엔트리포인트.
+[Intent]
+Queue/Event 기반 비동기 파이프라인의 메인 엔트리포인트입니다.
+비디오 입력으로부터 슬라이드 추출, 음성 분석, VLM 이미지 분석, 요약/평가까지
+전체 파이프라인을 asyncio.gather()로 병렬 실행합니다.
 
-실행 흐름:
-1) Producer: Audio/STT + Capture 이벤트 생성
-2) VLM Worker: Capture chunk를 VLM 처리
-3) Fusion Worker: STT gate 이후 Fusion/Summary/Judge 처리
+[Usage]
+- CLI에서 직접 실행: python src/run_pipeline_demo_async.py --video <path> [options]
+- 내부 모듈로 호출: run_async_demo() 함수를 직접 await
 
-세 워커를 `asyncio.gather()`로 동시에 실행한다.
+[Usage Method]
+- main() → argparse로 CLI 인자 파싱 → run_async_demo() 호출
+- run_async_demo() 내부 실행 흐름:
+  1) config/capture/settings.yaml → load_capture_settings() → CaptureSettings 로드
+  2) CaptureSettings의 12개 파라미터를 CaptureSttProducerConfig에 1:1 매핑
+  3) Producer(Capture+STT), VLM Worker, Fusion Worker를 asyncio.gather()로 동시 실행
+  4) sync_to_db=True 시 Supabase API로 진행 상태/결과 업로드
+
+- 실행 흐름:
+  Producer(Capture+STT) → capture_q → VLM Worker → vlm_done_q → Fusion Worker → fusion_q
+                        → stt_gate ────────────────────────────↗
 """
 
 from __future__ import annotations
@@ -399,6 +411,7 @@ async def run_async_demo(
             capture_enable_roi_detection=bool(capture_settings.enable_roi_detection),
             capture_roi_padding=int(capture_settings.roi_padding),
             capture_enable_smart_roi=bool(capture_settings.enable_smart_roi),
+            capture_roi_warmup_frames=int(capture_settings.roi_warmup_frames),
             capture_enable_adaptive_resize=bool(capture_settings.enable_adaptive_resize),
             capture_verbose=False,
         ),
