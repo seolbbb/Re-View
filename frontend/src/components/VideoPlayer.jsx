@@ -346,20 +346,30 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
 
     // Tooltip position: use fixed positioning to escape overflow-hidden
     const getTooltipFixedStyle = () => {
-        if (!hoverInfo || !progressBarRef.current) return { position: 'fixed', visibility: 'hidden' };
-        const barRect = progressBarRef.current.getBoundingClientRect();
-        const tooltipWidth = thumbUrl ? 164 : 56;
-        const halfW = tooltipWidth / 2;
-        // Clamp so tooltip doesn't overflow beyond the progress bar edges
-        const barX = barRect.left + Math.max(halfW, Math.min(hoverInfo.x, barRect.width - halfW));
-        const barY = barRect.top;
-        return {
-            position: 'fixed',
-            left: `${barX}px`,
-            top: `${barY}px`,
-            transform: 'translate(-50%, -100%)',
-            paddingBottom: '12px',
-        };
+        const bar = progressBarRef.current;
+        if (!hoverInfo || !bar) return { position: 'fixed', visibility: 'hidden', pointerEvents: 'none' };
+        
+        try {
+            const barRect = bar.getBoundingClientRect();
+            if (!barRect) return { position: 'fixed', visibility: 'hidden', pointerEvents: 'none' };
+
+            const tooltipWidth = thumbUrl ? 164 : 56;
+            const halfW = tooltipWidth / 2;
+            // Clamp so tooltip doesn't overflow beyond the progress bar edges
+            const barX = barRect.left + Math.max(halfW, Math.min(hoverInfo.x, barRect.width - halfW));
+            const barY = barRect.top;
+            return {
+                position: 'fixed',
+                left: `${barX}px`,
+                top: `${barY}px`,
+                transform: 'translate(-50%, -100%)',
+                paddingBottom: '12px',
+                pointerEvents: 'none',
+                zIndex: 9999,
+            };
+        } catch (err) {
+            return { position: 'fixed', visibility: 'hidden', pointerEvents: 'none' };
+        }
     };
 
     return (
@@ -483,11 +493,11 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
                                                     onMouseDown={(e) => {
                                                         e.preventDefault();
                                                         e.stopPropagation();
+                                                        const sliderRect = e.currentTarget.getBoundingClientRect();
                                                         handleVolumeChange(e);
                                                         const onMove = (ev) => {
-                                                            const rect = e.currentTarget.getBoundingClientRect();
-                                                            const y = rect.bottom - ev.clientY;
-                                                            const pct = Math.max(0, Math.min(1, y / rect.height));
+                                                            const y = sliderRect.bottom - ev.clientY;
+                                                            const pct = Math.max(0, Math.min(1, y / sliderRect.height));
                                                             applyVolume(pct);
                                                         };
                                                         const onUp = () => {
