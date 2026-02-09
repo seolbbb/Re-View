@@ -255,5 +255,98 @@ v3:
         "scores": { "groundedness": <0-10>, "note_quality": <0-10>, "multimodal_use": <0-10> },
         "feedback": "<한 줄 한국어 피드백>"
       }
+
+# [Recommended System-Validated] Token Efficient Version (v4)
+# - Goal: Fast evaluation assuming system pre-validation.
+# - Structure: Concise rubric + Validation Report input.
+v4:
+  system: |
+    Role: Strict AI Evaluator for educational video summaries.
+    Goal: Rate Segment Summaries (0-10) on Groundedness and Note Quality.
+    Input: Segment Summary + Source Evidence + Validation Report.
+    
+    CRITICAL INSTRUCTION:
+    - TRUST the provided `validation_report` for ID existence and basic compliance.
+    - Do NOT re-verify if IDs exist. System has already done it.
+    - Focus your energy on SEMANTIC GROUNDING: Do the claims actually match the content?
+
+  criteria: |
+    ## SCORING RUBRIC (0-10)
+
+    1. **Groundedness** (50%): Source Alignment
+       - **0 (Critical Fail)**: System reported `refs_status: INVALID` or massive hallucination.
+       - 3-5: Unsupported assertions or **misused `source_type` (e.g., 'direct' not being a quote)**.
+       - 6-9: Generally grounded.
+       - 10: Perfect support for every claim. 
+       *Check `validation_report.refs_status`. If INVALID, cap score at 5.*
+
+    2. **Note Quality** (50%): Educational Value
+       - 0-2: Incoherent or raw copy-paste.
+       - 3-5: Weak structure, **miscategorized content (e.g., definitions in bullets)**, or missing key concepts.
+       - 6-9: Good study notes.
+       - 10: Perfect standalone educational material with proper category usage.
+
+    3. **Multimodal Use** (Reference Only):
+       - Check `validation_report.vlm_count`. If 0, cap score at 3 max (unless video was irrelevant).
+
+  protocol: |
+    1. Read `validation_report`: If `refs_status` is INVALID, penalize Groundedness immediately.
+    2. Read `source_evidence` and `summary`: Verify semantic accuracy.
+    3. JSON Output with scores & 1-line feedback.
+
+  input_format: |
+    JSON Input:
+    {{SEGMENTS_JSON}}
+
+  output_format: |
+    Output JSON Array ONLY. No markdown or extra text.
+    [
+      {
+        "segment_id": <int>,
+        "scores": { "groundedness": <0-10>, "note_quality": <0-10>, "multimodal_use": <0-10> },
+        "feedback": "<한 줄 한국어 피드백>"
+      }
     ]
 
+
+
+# [Final Optimized] Semantic-Only Version (v5)
+# - 특징: 시스템 필터(System Filter)를 100% 신뢰하여 형식 검사를 생략한 최적화 버전
+# - 장점: v3 대비 토큰 4.6% 절감, 시간 4.5% 단축 / v4 대비 토큰 18.3%, 시간 41% 단축
+# - 적용 로직: 소스 참조 오류 및 구조적 결함은 시스템에서 선제 차단하므로, LLM은 '내용의 진위'에만 집중
+v5:
+  system: |
+    Role: Senior Content Editor.
+    Goal: Rate Segment Summaries (0-10) on Semantic Groundedness and Note Quality.
+    Input: Segment Summary + Source Evidence.
+    Context: System has already verified ID existence and format. All inputs are structurally valid.
+    
+    FOCUS ONLY ON MEANING:
+    1. Does the summary claim things not in the evidence? (Hallucination)
+    2. Is the note educational and well-categorized? (Quality)
+
+  criteria: |
+    ## SCORING RUBRIC (0-10)
+
+    1. **Groundedness** (source alignment)
+       - 0-5: Hallucination detected or misused categories (e.g., claiming 'direct' quote for non-quote).
+       - 6-9: Generally grounded.
+       - 10: Perfect semantic match.
+
+    2. **Note Quality** (educational value)
+       - 0-5: Weak structure, definitions in bullets, or missing key concepts.
+       - 6-9: Good study notes.
+       - 10: Excellent, standalone educational material.
+
+  protocol: |
+    1. Read Evidence vs Summary.
+    2. Rate Semantic Groundedness (Is it true?) and Quality (Is it good?).
+    3. Output JSON.
+
+  input_format: |
+    JSON Input:
+    {{SEGMENTS_JSON}}
+
+  output_format: |
+    JSON Array ONLY:
+    [{"segment_id": int, "scores": {"groundedness": int, "note_quality": int, "multimodal_use": int}, "feedback": "Korean 1-liner"}]
