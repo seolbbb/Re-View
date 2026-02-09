@@ -1,7 +1,6 @@
 <div align="center">
 
 # Re:View
-
 **강의 영상을 보지 않아도 이해할 수 있는 AI 강의 노트**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
@@ -15,6 +14,7 @@
 
 [시작하기](#-getting-started) &nbsp;&bull;&nbsp; [아키텍처](#-architecture) &nbsp;&bull;&nbsp; [기여하기](#-contributing) &nbsp;&bull;&nbsp; [팀원 소개](#-team)
 
+![Image](https://github.com/user-attachments/assets/bb4a8ae7-8f00-4b53-a9c9-441211d15f67)
 </div>
 
 ---
