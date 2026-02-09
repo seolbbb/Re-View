@@ -1,10 +1,42 @@
-"""세그먼트 요약을 LLM으로 평가하는 Judge 모듈.
+"""
+[Intent - 모듈 목적]
+Fusion 파이프라인에서 생성된 세그먼트 요약(Segment Summary)을 LLM 기반으로 평가하는 Judge 모듈입니다.
+Groundedness(근거 충실도), Note Quality(노트 품질), Multimodal Use(멀티모달 활용도)를 기준으로
+0-10점 척도로 평가하며, 최종 점수는 Groundedness와 Note Quality의 가중 평균으로 계산됩니다.
 
-파이프라인에서 호출되며 입력/출력 경로는 호출자가 전달한다.
+[Usage - 활용처]
+1. 파이프라인 내부 호출:
+   - src/pipeline/stages.py의 process_fusion_pipeline() → run_judge()
+   - src/pipeline/fusion_worker_async.py의 AsyncFusionSummaryJudgeWorker → run_judge()
+
+2. 독립 실행:
+   - python -m src.judge --segments-units <path> --segment-summaries <path>
+
+3. API 호출:
+   - 서버 환경에서 Supabase 연동 시 processing_job_id 기반 평가 결과 저장
+
+[Usage Method - 사용 방식]
+1. 입력 파일 준비:
+   - segments_units.jsonl: Fusion 단계에서 생성된 세그먼트별 원본 데이터
+   - segment_summaries.jsonl: Summarizer 단계에서 생성된 세그먼트별 요약
+
+2. 설정 파일:
+   - config/judge/settings.yaml: 배치 크기, 워커 수, JSON 복구 시도 횟수 등
+   - config/fusion/settings.yaml: LLM 설정 (모델명, 타임아웃 등)
+
+3. 실행 흐름:
+   run_judge()
+     → [1단계] 데이터 로드 및 정합성 체크
+     → [2단계] 평가 페이로드 구성
+     → [3단계] 프롬프트 템플릿 로드
+     → [4단계] 배치 평가 실행 (병렬)
+     → [5단계] 결과 집계 및 점수 계산
+     → [6단계] 결과 저장 (옵션)
 """
 
 from __future__ import annotations
 
+# 표준 라이브러리
 import json
 import os
 import threading
@@ -13,45 +45,177 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+# 외부 라이브러리
 import yaml
 
+# 프로젝트 경로 설정
 ROOT = Path(__file__).resolve().parents[2]
 
-
-def _get_timestamp() -> str:
-    """[YYYY-MM-DD | HH:MM:SS.mmm] 형식의 타임스탬프를 반환한다."""
-    now = datetime.now()
-    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
-
+# 내부 모듈
 from src.fusion.config import ConfigBundle
-from src.fusion.io_utils import read_jsonl, write_json, write_jsonl, update_token_usage
-from src.fusion.gemini import init_gemini_client, run_with_retries, GeminiClientBundle
+from src.fusion.gemini import GeminiClientBundle, init_gemini_client, run_with_retries
+from src.fusion.io_utils import read_jsonl, update_token_usage, write_json, write_jsonl
 
-
-PROMPTS_PATH = ROOT / "config" / "judge" / "prompts.yaml"
+# 설정 경로 및 상수
 PROMPT_PAYLOAD_TOKEN = "{{SEGMENTS_JSON}}"
-JUDGE_TEMPERATURE = 0.2
-MAX_SCORE = 10
+
+# 스레드 로컬 스토리지
+
 _THREAD_LOCAL = threading.local()
 
 
+# ========================================
+# [섹션 1: 유틸리티 함수 - 범용 헬퍼]
+# ========================================
+
+def _get_timestamp() -> str:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 _evaluate_batch() (로그 출력용)
+    - src/judge/judge.py의 run_judge() (로그 출력용)
+
+    [목적]
+    현재 시각을 [YYYY-MM-DD | HH:MM:SS.mmm] 형식의 문자열로 반환하여
+    Judge 실행 로그에서 배치별 시작/완료 시간을 추적합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Returns]
+    str: [YYYY-MM-DD | HH:MM:SS.mmm] 형식 타임스탬프
+    """
+    now = datetime.now()
+    return f"[{now.strftime('%Y-%m-%d | %H:%M:%S')}.{now.strftime('%f')[:3]}]"
 
 
-def _get_thread_client_bundle(config: ConfigBundle) -> GeminiClientBundle:
-    """thread 로컬에 Gemini 클라이언트를 캐시한다."""
-    bundle = getattr(_THREAD_LOCAL, "client_bundle", None)
-    if bundle is None:
-        bundle = init_gemini_client(config)
-        _THREAD_LOCAL.client_bundle = bundle
-    return bundle
+def _clamp_score(value: Any, max_score: int) -> int:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (결과 집계 시)
+
+    [목적]
+    LLM이 반환한 점수를 [0, max_score] 범위로 정규화합니다.
+    비정상 값(None, 문자열 등)을 안전하게 처리하여 항상 유효한 정수를 반환합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    value (Any): LLM에서 반환된 점수 값
+    max_score (int): 최대 점수
+
+    [Returns]
+    int: 정규화된 점수 (0 이상 max_score 이하)
+    """
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(max_score, score))
 
 
+def _normalize_feedback(value: Any) -> str:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (결과 집계 시)
+
+    [목적]
+    LLM이 반환한 피드백 문자열을 한 줄로 정리합니다.
+    줄바꿈, 탭, 연속된 공백을 단일 공백으로 변환하여 JSON 저장 시 가독성을 높입니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    value (Any): LLM에서 반환된 피드백 값
+
+    [Returns]
+    str: 한 줄로 정리된 피드백 문자열
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return " ".join(text.split())
+
+
+def _compute_final_score(groundedness: int, note_quality: int) -> float:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (결과 집계 시)
+
+    [목적]
+    Groundedness와 Note Quality의 가중 평균으로 최종 점수를 계산합니다.
+    Judge v3 기준 가중치는 각각 50%입니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    groundedness (int): 근거 충실도 점수 (0-10)
+    note_quality (int): 노트 품질 점수 (0-10)
+
+    [Returns]
+    float: 최종 점수 (소수점 둘째 자리까지 반올림)
+    """
+    return round(0.50 * groundedness + 0.50 * note_quality, 2)
+
+
+def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (배치 분할 시)
+
+    [목적]
+    세그먼트 리스트를 고정 크기의 배치로 분할합니다.
+    병렬 처리 및 LLM API 호출 최적화를 위해 사용됩니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    items (List[Dict[str, Any]]): 분할할 세그먼트 페이로드 리스트
+    size (int): 배치 크기
+
+    [Returns]
+    List[List[Dict[str, Any]]]: 배치 리스트
+    """
+    if size <= 0:
+        return [items]
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def _strip_code_fences(text: str) -> str:
-    """LLM 출력의 코드 블록 펜스를 제거한다."""
+    """
+    [사용 파일]
+    - src/judge/judge.py의 _evaluate_batch() (LLM 응답 파싱 시)
+
+    [목적]
+    LLM이 반환한 JSON 응답에서 마크다운 코드 블록 펜스(```)를 제거합니다.
+    일부 LLM이 JSON을 ```json ... ``` 형태로 감싸 반환하는 경우를 처리합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    text (str): LLM 응답 원문
+
+    [Returns]
+    str: 코드 펜스가 제거된 순수 JSON 문자열
+    """
     stripped = text.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
@@ -63,30 +227,160 @@ def _strip_code_fences(text: str) -> str:
     return stripped
 
 
-def _repair_prompt(bad_json: str) -> str:
-    """잘못된 JSON을 수정하도록 요청하는 프롬프트를 만든다."""
-    return (
-        "You returned invalid JSON. Return a valid JSON array only, "
-        "matching the required schema. No markdown or extra text.\n\n"
-        f"Bad output:\n{bad_json}"
-    )
+# ========================================
+# [섹션 2: 클라이언트 관리]
+# ========================================
 
-
-def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
-    """리스트를 고정 크기의 배치로 분할한다."""
-    if size <= 0:
-        return [items]
-    return [items[i : i + size] for i in range(0, len(items), size)]
-
-
-def _load_prompt_template(prompt_version: Optional[str]) -> Tuple[str, str]:
-    """config/judge/prompts.yaml에서 프롬프트 템플릿을 로드한다.
-    
-    Legacy 형식 (template 키) 또는 Modular 형식 (system/criteria/protocol 등 키)을 지원한다.
+def _get_thread_client_bundle(config: ConfigBundle) -> GeminiClientBundle:
     """
-    if not PROMPTS_PATH.exists():
-        raise FileNotFoundError(f"Judge prompt config not found: {PROMPTS_PATH}")
-    payload = yaml.safe_load(PROMPTS_PATH.read_text(encoding="utf-8"))
+    [사용 파일]
+    - src/judge/judge.py의 _evaluate_batch() (배치 평가 시)
+
+    [목적]
+    스레드 로컬 스토리지에 Gemini 클라이언트를 캐시하여 재사용합니다.
+    병렬 처리(ThreadPoolExecutor) 시 각 스레드마다 독립적인 클라이언트를 유지하며,
+    중복 생성을 방지하여 성능을 최적화합니다.
+
+    [연결 여부]
+    - API 연결: Gemini API (init_gemini_client 호출 시)
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    config (ConfigBundle): Fusion 설정 번들
+
+    [Returns]
+    GeminiClientBundle: Gemini 클라이언트 번들
+    """
+    bundle = getattr(_THREAD_LOCAL, "client_bundle", None)
+    if bundle is None:
+        bundle = init_gemini_client(config)
+        _THREAD_LOCAL.client_bundle = bundle
+    return bundle
+
+
+# ========================================
+# [섹션 3: 데이터 로드 함수]
+# ========================================
+
+def _load_segments_units(path: Path) -> Dict[int, Dict[str, Any]]:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (1단계: 데이터 로드)
+
+    [목적]
+    Fusion 단계에서 생성된 segments_units.jsonl 파일을 읽어
+    segment_id를 키로 하는 딕셔너리로 변환합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: segments_units.jsonl 읽기
+    - DB 연결: 없음
+
+    [Args 설명]
+    path (Path): segments_units.jsonl 파일 경로
+
+    [Returns]
+    Dict[int, Dict[str, Any]]: segment_id → 세그먼트 데이터 매핑
+    """
+    segments: Dict[int, Dict[str, Any]] = {}
+    for row in read_jsonl(path):
+        segment_id = row.get("segment_id")
+        if segment_id is None:
+            continue
+        segments[int(segment_id)] = row
+    return segments
+
+
+def _load_segment_summaries(path: Path) -> Dict[int, Dict[str, Any]]:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (1단계: 데이터 로드)
+
+    [목적]
+    Summarizer 단계에서 생성된 segment_summaries.jsonl 파일을 읽어
+    segment_id를 키로 하는 딕셔너리로 변환합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: segment_summaries.jsonl 읽기
+    - DB 연결: 없음
+
+    [Args 설명]
+    path (Path): segment_summaries.jsonl 파일 경로
+
+    [Returns]
+    Dict[int, Dict[str, Any]]: segment_id → 요약 데이터 매핑
+    """
+    summaries: Dict[int, Dict[str, Any]] = {}
+    for row in read_jsonl(path):
+        segment_id = row.get("segment_id")
+        if segment_id is None:
+            continue
+        summaries[int(segment_id)] = row
+    return summaries
+
+
+def _merge_segments(
+    segments_units: Dict[int, Dict[str, Any]],
+    segment_summaries: Dict[int, Dict[str, Any]],
+) -> Tuple[List[int], List[int], List[int]]:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (1단계: 데이터 정합성 체크)
+
+    [목적]
+    segments_units와 segment_summaries의 segment_id를 비교하여
+    매칭되는 ID와 누락된 ID를 파악합니다. 데이터 정합성 검증에 사용됩니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    segments_units (Dict[int, Dict[str, Any]]): segment_id → units 데이터
+    segment_summaries (Dict[int, Dict[str, Any]]): segment_id → summary 데이터
+
+    [Returns]
+    Tuple[List[int], List[int], List[int]]: (matched, missing_units, missing_summaries)
+    """
+    unit_ids = set(segments_units.keys())
+    summary_ids = set(segment_summaries.keys())
+    missing_units = sorted(summary_ids - unit_ids)
+    missing_summaries = sorted(unit_ids - summary_ids)
+    matched = sorted(unit_ids & summary_ids)
+    return matched, missing_units, missing_summaries
+
+
+# ========================================
+# [섹션 4: 프롬프트 및 스키마 구성]
+# ========================================
+
+def _load_prompt_template(prompts_path: Path, prompt_version: Optional[str]) -> Tuple[str, str]:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (2단계: 프롬프트 로드)
+
+    [목적]
+    지정된 경로의 prompts.yaml에서 Judge 프롬프트 템플릿을 로드합니다.
+    Legacy 형식(template 키)과 Modular 형식(system/criteria/protocol 등 키)을 모두 지원합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: prompts.yaml 읽기
+    - DB 연결: 없음
+
+    [Args 설명]
+    prompts_path (Path): prompts.yaml 파일 경로
+    prompt_version (Optional[str]): 사용할 프롬프트 버전 (None이면 첫 번째 키 사용)
+
+    [Returns]
+    Tuple[str, str]: (selected_version, prompt_template)
+    """
+    if not prompts_path.exists():
+        raise FileNotFoundError(f"Judge prompt config not found: {prompts_path}")
+    payload = yaml.safe_load(prompts_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not payload:
         raise ValueError("Judge prompt config must be a mapping.")
     selected_version = prompt_version or next(iter(payload.keys()))
@@ -119,6 +413,103 @@ def _load_prompt_template(prompt_version: Optional[str]) -> Tuple[str, str]:
     raise ValueError(f"Judge prompt template is empty: {selected_version}")
 
 
+def _build_response_schema() -> Dict[str, Any]:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (2단계: 스키마 구성)
+    - src/judge/judge.py의 _evaluate_batch() (LLM 호출 시)
+
+    [목적]
+    Gemini API의 구조화된 출력(Structured Output)을 위한 JSON 스키마를 생성합니다.
+    LLM이 반드시 지정된 형식의 JSON 배열을 반환하도록 강제합니다.
+
+    [연결 여부]
+    - API 연결: Gemini API (response_schema 파라미터로 전달)
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Returns]
+    Dict[str, Any]: JSON Schema 정의
+    """
+    score_schema = {
+        "type": "object",
+        "required": ["groundedness", "note_quality", "multimodal_use"],
+        "properties": {
+            "groundedness": {"type": "integer"},
+            "note_quality": {"type": "integer"},
+            "multimodal_use": {"type": "integer"},
+        },
+    }
+    item_schema: Dict[str, Any] = {
+        "type": "object",
+        "required": ["segment_id", "scores", "feedback"],
+        "properties": {
+            "segment_id": {"type": "integer"},
+            "scores": score_schema,
+            "feedback": {"type": "string"},
+        },
+    }
+    return {"type": "array", "items": item_schema}
+
+
+def _build_prompt(prompt_template: str, segments_payload: List[Dict[str, Any]]) -> str:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 _evaluate_batch() (LLM 호출 시)
+
+    [목적]
+    프롬프트 템플릿에 평가 대상 세그먼트 데이터를 주입하여 최종 프롬프트를 생성합니다.
+    템플릿의 {{SEGMENTS_JSON}} 토큰을 실제 JSON 데이터로 대체합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    prompt_template (str): Judge 프롬프트 템플릿 원문
+    segments_payload (List[Dict[str, Any]]): 평가할 세그먼트 데이터 리스트
+
+    [Returns]
+    str: 세그먼트 데이터가 주입된 최종 프롬프트
+    """
+    if PROMPT_PAYLOAD_TOKEN not in prompt_template:
+        raise ValueError(f"Judge prompt missing token: {PROMPT_PAYLOAD_TOKEN}")
+    payload_json = json.dumps(segments_payload, ensure_ascii=False)
+    return prompt_template.replace(PROMPT_PAYLOAD_TOKEN, payload_json)
+
+
+def _repair_prompt(bad_json: str) -> str:
+    """
+    [사용 파일]
+    - src/judge/judge.py의 _evaluate_batch() (JSON 파싱 실패 시)
+
+    [목적]
+    LLM이 반환한 JSON이 파싱 불가능할 때, 수정을 요청하는 프롬프트를 생성합니다.
+    잘못된 JSON 원문을 포함하여 LLM이 오류를 인식하고 수정하도록 유도합니다.
+
+    [연결 여부]
+    - API 연결: 없음
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    bad_json (str): LLM이 반환한 잘못된 JSON 문자열
+
+    [Returns]
+    str: JSON 수정 요청 프롬프트
+    """
+    return (
+        "You returned invalid JSON. Return a valid JSON array only, "
+        "matching the required schema. No markdown or extra text.\n\n"
+        f"Bad output:\n{bad_json}"
+    )
+
+
+# ========================================
+# [섹션 5: 배치 평가 실행]
+# ========================================
+
 def _evaluate_batch(
     *,
     config: ConfigBundle,
@@ -131,7 +522,33 @@ def _evaluate_batch(
     verbose: bool,
     batch_label: Optional[str] = None,
 ) -> Tuple[Dict[int, Dict[str, Any]], int]:
-    """배치 단위로 LLM 평가를 실행하고 결과를 반환한다."""
+    """
+    [사용 파일]
+    - src/judge/judge.py의 run_judge() (4단계: 배치 평가)
+
+    [목적]
+    세그먼트 배치를 LLM에 전달하여 평가하고, JSON 응답을 파싱하여 결과를 반환합니다.
+    JSON 파싱 실패 시 복구 프롬프트로 재시도하여 안정성을 높입니다.
+
+    [연결 여부]
+    - API 연결: Gemini API (run_with_retries 호출)
+    - 파일 I/O: 없음
+    - DB 연결: 없음
+
+    [Args 설명]
+    config (ConfigBundle): Fusion 설정 번들
+    response_schema (Dict[str, Any]): Gemini 응답 스키마
+    prompt_template (str): Judge 프롬프트 템플릿
+    batch (List[Dict[str, Any]]): 평가할 세그먼트 배치
+    batch_index (int): 현재 배치 인덱스
+    batch_total (int): 전체 배치 수
+    json_repair_attempts (int): JSON 복구 재시도 횟수
+    verbose (bool): 상세 로그 출력 여부
+    batch_label (Optional[str]): 배치 라벨
+
+    [Returns]
+    Tuple[Dict[int, Dict[str, Any]], int]: (llm_results, total_tokens)
+    """
     # 1. 배치 처리 시작 시간 측정
     seg_ids = [int(item.get("segment_id", -1)) for item in batch]
     if verbose:
@@ -147,7 +564,7 @@ def _evaluate_batch(
         client_bundle,
         prompt,
         response_schema,
-        temperature=JUDGE_TEMPERATURE,
+        temperature=config.judge.temperature,
         response_mime_type=config.raw.llm_gemini.response_mime_type,
         timeout_sec=config.raw.llm_gemini.timeout_sec,
         max_retries=config.raw.llm_gemini.max_retries,
@@ -184,7 +601,7 @@ def _evaluate_batch(
                 client_bundle,
                 _repair_prompt(llm_text),
                 response_schema,
-                temperature=JUDGE_TEMPERATURE,
+                temperature=config.judge.temperature,
                 response_mime_type=config.raw.llm_gemini.response_mime_type,
                 timeout_sec=config.raw.llm_gemini.timeout_sec,
                 max_retries=config.raw.llm_gemini.max_retries,
@@ -205,93 +622,9 @@ def _evaluate_batch(
     return results, total_tokens
 
 
-def _load_segments_units(path: Path) -> Dict[int, Dict[str, Any]]:
-    """segments_units.jsonl을 segment_id 기준 dict로 로드한다."""
-    segments: Dict[int, Dict[str, Any]] = {}
-    for row in read_jsonl(path):
-        segment_id = row.get("segment_id")
-        if segment_id is None:
-            continue
-        segments[int(segment_id)] = row
-    return segments
-
-
-def _load_segment_summaries(path: Path) -> Dict[int, Dict[str, Any]]:
-    """segment_summaries.jsonl을 segment_id 기준 dict로 로드한다."""
-    summaries: Dict[int, Dict[str, Any]] = {}
-    for row in read_jsonl(path):
-        segment_id = row.get("segment_id")
-        if segment_id is None:
-            continue
-        summaries[int(segment_id)] = row
-    return summaries
-
-
-def _merge_segments(
-    segments_units: Dict[int, Dict[str, Any]],
-    segment_summaries: Dict[int, Dict[str, Any]],
-) -> Tuple[List[int], List[int], List[int]]:
-    """매칭/누락된 segment_id 목록을 반환한다."""
-    unit_ids = set(segments_units.keys())
-    summary_ids = set(segment_summaries.keys())
-    missing_units = sorted(summary_ids - unit_ids)
-    missing_summaries = sorted(unit_ids - summary_ids)
-    matched = sorted(unit_ids & summary_ids)
-    return matched, missing_units, missing_summaries
-
-
-def _build_prompt(prompt_template: str, segments_payload: List[Dict[str, Any]]) -> str:
-    """프롬프트 템플릿에 입력 payload를 주입한다."""
-    if PROMPT_PAYLOAD_TOKEN not in prompt_template:
-        raise ValueError(f"Judge prompt missing token: {PROMPT_PAYLOAD_TOKEN}")
-    payload_json = json.dumps(segments_payload, ensure_ascii=False)
-    return prompt_template.replace(PROMPT_PAYLOAD_TOKEN, payload_json)
-
-
-def _build_response_schema() -> Dict[str, Any]:
-    """Gemini 응답 스키마를 구성한다."""
-    score_schema = {
-        "type": "object",
-        "required": ["groundedness", "note_quality", "multimodal_use"],
-        "properties": {
-            "groundedness": {"type": "integer"},
-            "note_quality": {"type": "integer"},
-            "multimodal_use": {"type": "integer"},
-        },
-    }
-    item_schema: Dict[str, Any] = {
-        "type": "object",
-        "required": ["segment_id", "scores", "feedback"],
-        "properties": {
-            "segment_id": {"type": "integer"},
-            "scores": score_schema,
-            "feedback": {"type": "string"},
-        },
-    }
-    return {"type": "array", "items": item_schema}
-
-
-def _clamp_score(value: Any, max_score: int = MAX_SCORE) -> int:
-    """점수를 [0, max_score] 범위로 정규화한다."""
-    try:
-        score = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(max_score, score))
-
-
-def _normalize_feedback(value: Any) -> str:
-    """피드백 문자열을 한 줄로 정리한다."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    return " ".join(text.split())
-
-
-def _compute_final_score(groundedness: int, note_quality: int) -> float:
-    """가중치 기반 최종 점수를 계산한다."""
-    return round(0.50 * groundedness + 0.50 * note_quality, 2)
-
+# ========================================
+# [섹션 6: 메인 함수]
+# ========================================
 
 def run_judge(
     *,
@@ -309,7 +642,41 @@ def run_judge(
     status_callback: Optional[Callable[[int], None]] = None,
     batch_label: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Judge를 실행하고 결과를 반환한다."""
+    """
+    [사용 파일]
+    - src/pipeline/stages.py의 process_fusion_pipeline()
+    - src/pipeline/fusion_worker_async.py의 AsyncFusionSummaryJudgeWorker
+    - src/judge/__main__.py
+
+    [목적]
+    Fusion 파이프라인에서 생성된 세그먼트 요약을 LLM으로 평가하는 Judge 모듈의 메인 함수입니다.
+    데이터 로드 → 프롬프트 구성 → 배치 평가 → 결과 집계 → 파일 저장의 전체 흐름을 관리합니다.
+
+    [연결 여부]
+    - API 연결: Gemini API (LLM 평가 및 토큰 카운팅)
+    - 파일 I/O:
+      - 입력: segments_units.jsonl, segment_summaries.jsonl
+      - 출력: judge_report.json, judge_segments.jsonl (write_outputs=True 시)
+    - DB 연결: 없음
+
+    [Args 설명]
+    config (ConfigBundle): Fusion 설정 번들
+    segments_units_path (Path): segments_units.jsonl 파일 경로
+    segment_summaries_path (Path): segment_summaries.jsonl 파일 경로
+    output_report_path (Path): 전체 평가 리포트 저장 경로
+    output_segments_path (Path): 세그먼트별 평가 결과 저장 경로
+    batch_size (int): 배치 크기
+    workers (int): 병렬 평가 스레드 수
+    json_repair_attempts (int): JSON 복구 재시도 횟수
+    limit (Optional[int]): 평가할 세그먼트 수 제한 (테스트용)
+    verbose (bool): 상세 로그 출력 여부
+    write_outputs (bool): 결과 파일 저장 여부
+    status_callback (Optional[Callable]): 토큰 사용량 콜백
+    batch_label (Optional[str]): 배치 라벨
+
+    [Returns]
+    Dict[str, Any]: Judge 실행 결과 (report, segment_reports, token_usage 포함)
+    """
     # 1. 데이터 로드 및 정합성 체크
     segments_units = _load_segments_units(segments_units_path)
     segment_summaries = _load_segment_summaries(segment_summaries_path)
@@ -334,9 +701,6 @@ def run_judge(
         if "transcript_units" in unit and unit["transcript_units"]:
             unit.pop("transcript_text", None)
             
-        # visual_text가 있으면 visual_units(상세 구조)는 Judge가 굳이 알 필요 없을 수 있음 (선택적 최적화)
-        # 여기서는 일단 transcript 중복만 제거하여 안정성 확보
-        
         payloads.append(
             {
                 "segment_id": seg_id,
@@ -346,7 +710,9 @@ def run_judge(
         )
 
     response_schema = _build_response_schema()
-    prompt_version, prompt_template = _load_prompt_template(config.judge.prompt_version)
+    prompt_version, prompt_template = _load_prompt_template(
+        config.judge_prompts_path, config.judge.prompt_version
+    )
 
     # 3. 토큰 사용량 측정
     try:
@@ -395,7 +761,6 @@ def run_judge(
             llm_results.update(batch_result)
             total_judge_tokens += batch_tokens
     else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_batch = {
                 executor.submit(
@@ -429,9 +794,9 @@ def run_judge(
         if not llm_item:
             raise ValueError(f"Missing LLM result for segment_id={seg_id}")
         llm_scores = llm_item.get("scores", {}) if isinstance(llm_item, dict) else {}
-        groundedness = _clamp_score(llm_scores.get("groundedness"))      # 근거 충실도 (출처/컨텍스트 기반 응답)
-        note_quality = _clamp_score(llm_scores.get("note_quality"))      # 결과물 품질 (명확성·구조·요약력)
-        multimodal_use = _clamp_score(llm_scores.get("multimodal_use"))  # 멀티모달 정보 활용 적절성
+        groundedness = _clamp_score(llm_scores.get("groundedness"), config.judge.max_score)
+        note_quality = _clamp_score(llm_scores.get("note_quality"), config.judge.max_score)
+        multimodal_use = _clamp_score(llm_scores.get("multimodal_use"), config.judge.max_score)
         final_score = _compute_final_score(groundedness, note_quality)
         feedback = _normalize_feedback(llm_item.get("feedback"))
         if not feedback:
@@ -465,7 +830,7 @@ def run_judge(
     avg_final = round(sum(final_scores) / len(final_scores), 2)
 
     report: Dict[str, Any] = {
-        "score_scale": {"min": 0, "max": MAX_SCORE},
+        "score_scale": {"min": 0, "max": config.judge.max_score},
         "scores_avg": {
             "groundedness": avg_groundedness,
             "note_quality": avg_note_quality,
