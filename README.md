@@ -314,19 +314,22 @@ python src/run_fusion_only.py --video_name "lecture"
       <a href="https://github.com/kdmin3318">
         <img src="https://avatars.githubusercontent.com/u/206398757?v=4" width="100" height="100" style="border-radius:50%;" alt="kdmin3318"/><br/>
         <sub><b>kdmin3318</b></sub>
-      </a>
+      </a><br/>
+      <sub>김동민</sub
     </td>
     <td align="center" width="150">
       <a href="https://github.com/tjrrms">
         <img src="https://avatars.githubusercontent.com/u/229415141?v=4" width="100" height="100" style="border-radius:50%;" alt="tjrrms"/><br/>
         <sub><b>tjrrms</b></sub>
-      </a>
+      </a><br/>
+      <sub>한석근</sub>
     </td>
     <td align="center" width="150">
       <a href="https://github.com/Hu-tech-hub">
         <img src="https://avatars.githubusercontent.com/u/177188868?v=4" width="100" height="100" style="border-radius:50%;" alt="Hu-tech-hub"/><br/>
         <sub><b>Hu-tech-hub</b></sub>
-      </a>
+      </a><br/>
+      <sub>김상엽</sub>
     </td>
   </tr>
 </table>
@@ -343,6 +346,9 @@ python src/run_fusion_only.py --video_name "lecture"
 | [Project Guide](./docs/project-guide.md) | 코드베이스 구조, 모듈별 핵심 파일, 설정 |
 | [Chatbot Feature](./docs/chatbot.md) | 챗봇 기능 (RAG, 후속 질문, SSE 스트리밍) |
 | [Supabase Schema](./src/db/supabase_schema.sql) | 데이터베이스 스키마 (PostgreSQL + pgvector) |
+| [Wrap-UP Report]()| 프로젝트 Wrap-UP Report |
+| [프레젠테이션](https://docs.google.com/presentation/d/1ZFcaOO7feSyVKRvsXfohC9DQlManLjaM/edit?usp=sharing&ouid=111985547724410584485&rtpof=true&sd=true) | 프로젝트 발표 PPT |
+
 
 ---
 
