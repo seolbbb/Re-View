@@ -12,7 +12,7 @@
 강의 영상에서 **슬라이드를 자동 추출**하고, **음성을 텍스트로 변환**하여,<br/>
 시각 정보와 청각 정보가 완벽히 동기화된 **독립형 강의 노트**를 생성합니다.
 
-[시작하기](#-getting-started) &nbsp;&bull;&nbsp; [아키텍처](#-architecture) &nbsp;&bull;&nbsp; [기여하기](#-contributing) &nbsp;&bull;&nbsp; [팀원 소개](#-team)
+[시작하기](#getting-started) &nbsp;&bull;&nbsp; [아키텍처](#architecture) &nbsp;&bull;&nbsp; [기여하기](#contributing) &nbsp;&bull;&nbsp; [팀원 소개](#team)
 
 ![Image](https://github.com/user-attachments/assets/bb4a8ae7-8f00-4b53-a9c9-441211d15f67)
 </div>
