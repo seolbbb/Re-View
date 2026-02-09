@@ -80,11 +80,6 @@ def _get_timestamp() -> str:
     현재 시각을 [YYYY-MM-DD | HH:MM:SS.mmm] 형식의 문자열로 반환하여
     Judge 실행 로그에서 배치별 시작/완료 시간을 추적합니다.
 
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
-
     [Returns]
     str: [YYYY-MM-DD | HH:MM:SS.mmm] 형식 타임스탬프
     """
@@ -100,11 +95,6 @@ def _clamp_score(value: Any, max_score: int) -> int:
     [목적]
     LLM이 반환한 점수를 [0, max_score] 범위로 정규화합니다.
     비정상 값(None, 문자열 등)을 안전하게 처리하여 항상 유효한 정수를 반환합니다.
-
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
 
     [Args 설명]
     value (Any): LLM에서 반환된 점수 값
@@ -129,11 +119,6 @@ def _normalize_feedback(value: Any) -> str:
     LLM이 반환한 피드백 문자열을 한 줄로 정리합니다.
     줄바꿈, 탭, 연속된 공백을 단일 공백으로 변환하여 JSON 저장 시 가독성을 높입니다.
 
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
-
     [Args 설명]
     value (Any): LLM에서 반환된 피드백 값
 
@@ -155,11 +140,6 @@ def _compute_final_score(groundedness: int, note_quality: int) -> float:
     Groundedness와 Note Quality의 가중 평균으로 최종 점수를 계산합니다.
     Judge v3 기준 가중치는 각각 50%입니다.
 
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
-
     [Args 설명]
     groundedness (int): 근거 충실도 점수 (0-10)
     note_quality (int): 노트 품질 점수 (0-10)
@@ -178,11 +158,6 @@ def _chunked(items: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]
     [목적]
     세그먼트 리스트를 고정 크기의 배치로 분할합니다.
     병렬 처리 및 LLM API 호출 최적화를 위해 사용됩니다.
-
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
 
     [Args 설명]
     items (List[Dict[str, Any]]): 분할할 세그먼트 페이로드 리스트
@@ -204,11 +179,6 @@ def _strip_code_fences(text: str) -> str:
     [목적]
     LLM이 반환한 JSON 응답에서 마크다운 코드 블록 펜스(```)를 제거합니다.
     일부 LLM이 JSON을 ```json ... ``` 형태로 감싸 반환하는 경우를 처리합니다.
-
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
 
     [Args 설명]
     text (str): LLM 응답 원문
@@ -333,11 +303,6 @@ def _merge_segments(
     segments_units와 segment_summaries의 segment_id를 비교하여
     매칭되는 ID와 누락된 ID를 파악합니다. 데이터 정합성 검증에 사용됩니다.
 
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
-
     [Args 설명]
     segments_units (Dict[int, Dict[str, Any]]): segment_id → units 데이터
     segment_summaries (Dict[int, Dict[str, Any]]): segment_id → summary 데이터
@@ -461,11 +426,6 @@ def _build_prompt(prompt_template: str, segments_payload: List[Dict[str, Any]]) 
     프롬프트 템플릿에 평가 대상 세그먼트 데이터를 주입하여 최종 프롬프트를 생성합니다.
     템플릿의 {{SEGMENTS_JSON}} 토큰을 실제 JSON 데이터로 대체합니다.
 
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
-
     [Args 설명]
     prompt_template (str): Judge 프롬프트 템플릿 원문
     segments_payload (List[Dict[str, Any]]): 평가할 세그먼트 데이터 리스트
@@ -487,11 +447,6 @@ def _repair_prompt(bad_json: str) -> str:
     [목적]
     LLM이 반환한 JSON이 파싱 불가능할 때, 수정을 요청하는 프롬프트를 생성합니다.
     잘못된 JSON 원문을 포함하여 LLM이 오류를 인식하고 수정하도록 유도합니다.
-
-    [연결 여부]
-    - API 연결: 없음
-    - 파일 I/O: 없음
-    - DB 연결: 없음
 
     [Args 설명]
     bad_json (str): LLM이 반환한 잘못된 JSON 문자열
@@ -709,78 +664,248 @@ def run_judge(
             }
         )
 
-    response_schema = _build_response_schema()
+
+def _validate_segment(unit: Dict[str, Any], summary: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    [Purpose]
+    세그먼트 요약의 정합성(ID 존재 여부, 금지어 등)을 시스템 레벨에서 검증합니다.
+
+    [Args]
+    unit (Dict): 원본 데이터 (transcript_units, visual_units 포함)
+    summary (Dict): LLM이 생성한 요약 (evidence_refs 포함)
+
+    [Returns]
+    Dict: validation_report (valid refs, compliance issues, critical_fail 여부 등)
+    """
+    # 1. ID 검증 (Reference Check)
+    evidence_refs = summary.get("evidence_refs", [])
+    if not isinstance(evidence_refs, list):
+        evidence_refs = []
+
+    stt_ids = {u.get("id") for u in unit.get("transcript_units", []) if u.get("id")}
+    vlm_ids = {u.get("id") for u in unit.get("visual_units", []) if u.get("id")}
+    
+    invalid_refs = []
+    stt_ref_count = 0
+    vlm_ref_count = 0
+
+    for ref in evidence_refs:
+        if not isinstance(ref, str):
+            continue
+        if ref in stt_ids:
+            stt_ref_count += 1
+        elif ref in vlm_ids:
+            vlm_ref_count += 1
+        else:
+            invalid_refs.append(ref)
+
+    refs_status = "VALID" if not invalid_refs else "INVALID"
+
+    # 2. 규칙 준수 (Compliance Check)
+    banned_words = ["슬라이드", "화면", "그림", "보시면", "위/아래", "여기", "방금", "앞에서", "다음으로", "이 수식", "마지막 항"]
+    content_text = json.dumps(summary, ensure_ascii=False)
+    
+    compliance_issues = []
+    # 3. 필수 키 검증 (Missing Keys)
+    # - summary: Critical Failure (평가 불가)
+    # - confidence, source_type: Compliance Issue (감점 요인)
+    # [Update for v4.1] confidence/source_type are now nested in bullets/definitions/explanations
+    critical_keys = ["summary"]
+    
+    # Check top-level critical keys
+    for key in critical_keys:
+        if key not in summary or not summary[key]:
+            compliance_issues.append(f"Missing critical key: {key}")
+            
+    # Check nested recommended keys (confidence, source_type)
+    # v4.1 구조: summary -> bullets -> [ {confidence, ...}, ... ]
+    required_nested_keys = ["confidence", "source_type"]
+    critical_nested_errors = []
+    sub_lists = ["bullets", "definitions", "explanations"]
+    
+    if "summary" in summary and isinstance(summary["summary"], dict):
+        summary_content = summary["summary"]
+        for list_key in sub_lists:
+            if list_key in summary_content and isinstance(summary_content[list_key], list):
+                for idx, item in enumerate(summary_content[list_key]):
+                    for req_key in required_nested_keys:
+                        if req_key not in item:
+                            critical_nested_errors.append(f"Missing key in {list_key}[{idx}]: {req_key}")
+    
+    for err in critical_nested_errors:
+        compliance_issues.append(err)
+
+    compliance_status = "PASS" if not compliance_issues else "ISSUES"
+
+    # 4. 치명적 오류 (Critical Failure) 판별
+    # - 요약 내용(summary)이 아예 없는 경우
+    # - 필수 메타데이터(confidence, source_type)가 누락된 경우 (Strict Mode)
+    # - [Optimized] 참조 오류(invalid_refs)가 있는 경우도 Critical로 처리하여 LLM 비용 절감
+    critical_fail = False
+    if "summary" not in summary or not summary["summary"]:
+        critical_fail = True
+    if critical_nested_errors:
+        critical_fail = True
+    if invalid_refs:
+        critical_fail = True
+    
+    return {
+        "refs_status": refs_status,
+        "invalid_refs": invalid_refs,
+        "stt_ref_count": stt_ref_count,
+        "vlm_ref_count": vlm_ref_count,
+        "compliance_status": compliance_status,
+        "compliance_issues": compliance_issues,
+        "critical_fail": critical_fail,
+    }
+
+def run_judge(
+    segments_units_path: Path,
+    segment_summaries_path: Path,
+    output_report_json: Path,
+    output_segments_jsonl: Path,
+    config: ConfigBundle,
+    limit: Optional[int] = None,
+    verbose: bool = False,
+    write_outputs: bool = True,
+):
+    """
+    [Intent]
+    Judge 모듈의 메인 엔트리포인트입니다.
+    데이터 로드 -> 프롬프트 준비 -> 배치 평가 -> 결과 집계를 수행합니다.
+    """
+    t0 = _get_timestamp()
+    if verbose:
+        print(f"[{t0}] Starting Judge module...")
+
+    # 1. 데이터 로드 및 병합
+    units_map = _load_segments_units(segments_units_path)
+    if verbose:
+        print(f"Loaded {len(units_map)} segment units.")
+
+    summaries = _load_segment_summaries(segment_summaries_path)
+    if verbose:
+        print(f"Loaded {len(summaries)} segment summaries.")
+
+    matched_ids, missing_units_ids, missing_summaries_ids = _merge_segments(units_map, summaries)
+    
+    # 데이터 매핑 재구성 (Loop에서 사용)
+    merged_data = {
+        seg_id: (units_map[seg_id], summaries[seg_id]) 
+        for seg_id in matched_ids
+    }
+
+    if limit and limit > 0:
+        matched_ids = matched_ids[:limit]
+        if verbose:
+            print(f"Limiting evaluation to first {limit} segments.")
+
+    missing_units = len(missing_units_ids)
+    missing_summaries = len(missing_summaries_ids)
+
+    # 2. 프롬프트 템플릿 로드
     prompt_version, prompt_template = _load_prompt_template(
         config.judge_prompts_path, config.judge.prompt_version
     )
+    if verbose:
+        print(f"Using prompt version: {prompt_version}")
 
-    # 3. 토큰 사용량 측정
-    try:
-        full_prompt = _build_prompt(prompt_template, payloads)
-        client_bundle = init_gemini_client(config)
-        token_result = client_bundle.client.models.count_tokens(
-            model=client_bundle.model,
-            contents=full_prompt
-        )
-        input_tokens = token_result.total_tokens
-        output_dir = segments_units_path.parent
-        update_token_usage(
-            output_dir=output_dir,
-            component="judge",
-            input_tokens=input_tokens,
-            model=client_bundle.model,
-            extra={"segments_count": len(payloads)}
-        )
-        if status_callback:
-            status_callback(input_tokens)
-    except Exception as exc:
-        pass
+    response_schema = _build_response_schema()
 
-    llm_results: Dict[int, Dict[str, Any]] = {}
+    # 3. 평가 실행 (배치 단위 + System Validation Short-circuit)
+    llm_results: Dict[int, Any] = {}
+    batch_size = config.judge.batch_size
+    batches = list(_chunked(matched_ids, batch_size))
     total_judge_tokens = 0
-    batches = _chunked(payloads, batch_size)
+    
+    # 설정: System Filter 활성화 여부 (Config에 없으면 기본값 False 처리)
+    enable_system_filter = getattr(config.judge, "enable_system_filter", False)
+
     if verbose:
         print(
-            f"{_get_timestamp()} [JUDGE] batches={len(batches)} batch_size={batch_size} workers={workers}"
+            f"{_get_timestamp()} [JUDGE] batches={len(batches)} batch_size={batch_size} workers={config.judge.workers} sys_filter={enable_system_filter}"
         )
-    
-    # 4. 배치 평가 실행 (단일/병렬)
-    if workers == 1 or len(batches) == 1:
-        for idx, batch in enumerate(batches, start=1):
-            batch_result, batch_tokens = _evaluate_batch(
-                config=config,
-                response_schema=response_schema,
-                prompt_template=prompt_template,
-                batch=batch,
-                batch_index=idx,
-                batch_total=len(batches),
-                json_repair_attempts=json_repair_attempts,
-                verbose=verbose,
-                batch_label=f"{batch_label} ({idx}/{len(batches)})" if batch_label else None,
-            )
-            llm_results.update(batch_result)
-            total_judge_tokens += batch_tokens
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_to_batch = {
-                executor.submit(
-                    _evaluate_batch,
+
+    with ThreadPoolExecutor(max_workers=config.judge.workers) as executor:
+        future_to_batch = {}
+        
+        for idx, batch_ids in enumerate(batches, start=1):
+            # 3-1. System Validation 및 Payload 구성
+            batch_items = []
+            valid_batch_ids = []
+            skipped_results = {} # seg_id -> result dict
+
+            for seg_id in batch_ids:
+                unit, summary = merged_data[seg_id]
+                val_report = _validate_segment(unit, summary)
+                
+                # 최적화: Critical Failure 시 LLM 스킵
+                if enable_system_filter and val_report["critical_fail"]:
+                    skipped_results[seg_id] = {
+                        "segment_id": seg_id,
+                        "scores": {
+                            "groundedness": 0,
+                            "note_quality": 0,
+                            "multimodal_use": 0
+                        },
+                        "feedback": f"SYSTEM_FAIL: {'; '.join(val_report['compliance_issues'] or ['Critical Error'])}"
+                    }
+                    continue
+
+                # 정상 항목은 LLM Payload 구성
+                item_payload = {
+                    "segment_id": seg_id,
+                    "validation_report": {
+                        "refs_status": val_report["refs_status"],
+                        "invalid_refs": val_report["invalid_refs"],
+                        "compliance_status": val_report["compliance_status"],
+                        "compliance_issues": val_report["compliance_issues"],
+                        "vlm_count": val_report["vlm_ref_count"]
+                    },
+                    "source_refs": {
+                        "stt_ids": sorted(list({u.get("id") for u in unit.get("transcript_units", []) if u.get("id")})),
+                        "vlm_ids": sorted(list({u.get("id") for u in unit.get("visual_units", []) if u.get("id")}))
+                    },
+                    "summary": summary
+                }
+                batch_items.append(item_payload)
+                valid_batch_ids.append(seg_id)
+            
+            # 미리 처리된 결과(Short-circuit) 저장
+            llm_results.update(skipped_results)
+
+            # LLM 호출이 필요한 항목이 있다면 실행
+            if batch_items:
+                # _evaluate_batch는 내부적으로 _build_prompt를 호출하므로 여기서 직접 호출하지 않고 템플릿과 데이터를 전달합니다.
+                future = executor.submit(
+                    _evaluate_batch, 
                     config=config,
                     response_schema=response_schema,
                     prompt_template=prompt_template,
-                    batch=batch,
+                    batch=batch_items, # Pass the PROCESSED items with validation report
                     batch_index=idx,
                     batch_total=len(batches),
-                    json_repair_attempts=json_repair_attempts,
+                    json_repair_attempts=config.judge.json_repair_attempts,
                     verbose=verbose,
-                    batch_label=f"{batch_label} ({idx}/{len(batches)})" if batch_label else None,
-                ): idx
-                for idx, batch in enumerate(batches, start=1)
-            }
-            for future in as_completed(future_to_batch):
+                    batch_label=f"Batch {idx}/{len(batches)}"
+                )
+                future_to_batch[future] = valid_batch_ids
+        # 결과 수집
+        for future in as_completed(future_to_batch):
+            batch_ids = future_to_batch[future]
+            try:
                 batch_result, batch_tokens = future.result()
                 llm_results.update(batch_result)
                 total_judge_tokens += batch_tokens
+            except Exception as exc:
+                print(f"Batch {batch_ids} generated an exception: {exc}")
+                # 에러 발생 시 0점 처리
+                for seg_id in batch_ids:
+                    if seg_id not in llm_results:
+                         llm_results[seg_id] = {
+                            "scores": {"groundedness": 0, "note_quality": 0, "multimodal_use": 0}, 
+                            "feedback": "Evaluation Failed"
+                        }
 
     # 5. 결과 집계 및 점수 계산
     segment_reports: List[Dict[str, Any]] = []
@@ -849,6 +974,9 @@ def run_judge(
         },
     }
 
+    if verbose:
+        print(f"{_get_timestamp()} [JUDGE] Total Tokens: {total_judge_tokens}")
+
     result = {
         "report": report, 
         "segment_reports": segment_reports,
@@ -857,6 +985,6 @@ def run_judge(
     if write_outputs:
         report["meta"]["segments_units_path"] = str(segments_units_path)
         report["meta"]["segment_summaries_path"] = str(segment_summaries_path)
-        write_json(output_report_path, report)
-        write_jsonl(output_segments_path, segment_reports)
+        write_json(output_report_json, report)
+        write_jsonl(output_segments_jsonl, segment_reports)
     return result

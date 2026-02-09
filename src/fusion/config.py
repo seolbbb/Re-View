@@ -61,6 +61,7 @@ class JudgeConfig(BaseModel):
     temperature: float = Field(0.2, ge=0.0, le=1.0)
     max_score: int = Field(10, ge=1)
     prompts_file: str = "prompts.yaml"
+    enable_system_filter: bool = False
 
 
 class DeveloperApiConfig(BaseModel):
