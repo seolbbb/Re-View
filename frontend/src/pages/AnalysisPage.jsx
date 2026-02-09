@@ -9,7 +9,7 @@ import VideoPlayer from '../components/VideoPlayer';
 import ChatBot from '../components/ChatBot';
 import SummaryPanel from '../components/SummaryPanel';
 import katex from 'katex';
-import { Menu, ChevronRight, Sun, Moon, Download, ChevronDown, Video } from 'lucide-react';
+import { Menu, ChevronRight, Sun, Moon, Download, ChevronDown, Video, Bot } from 'lucide-react';
 
 function formatMs(ms) {
     if (ms == null) return '--:--';
@@ -142,6 +142,8 @@ function AnalysisPage() {
     const { setCurrentVideoId } = useVideo();
     const [videoInfo, setVideoInfo] = useState(null);
     const [exportOpen, setExportOpen] = useState(false);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+    const [chatbotOpen, setChatbotOpen] = useState(false);
     const exportRef = useRef(null);
 
     // Close export dropdown on outside click
@@ -154,6 +156,16 @@ function AnalysisPage() {
         document.addEventListener('mousedown', handleClick);
         return () => document.removeEventListener('mousedown', handleClick);
     }, []);
+
+    // Body scroll lock for mobile overlays
+    useEffect(() => {
+        if (sidebarOpen || chatbotOpen) {
+            document.body.classList.add('no-scroll');
+        } else {
+            document.body.classList.remove('no-scroll');
+        }
+        return () => document.body.classList.remove('no-scroll');
+    }, [sidebarOpen, chatbotOpen]);
 
     const handleHeaderStatus = useCallback((statusData) => {
         if (!statusData) return;
@@ -319,20 +331,23 @@ function AnalysisPage() {
 
 
     return (
-        <div className="bg-[var(--bg-primary)] text-[var(--text-primary)] font-display flex h-screen overflow-hidden selection:bg-primary/40 selection:text-white transition-colors duration-300" data-theme={theme}>
+        <div className="bg-[var(--bg-primary)] text-[var(--text-primary)] font-display flex h-screen overflow-hidden selection:bg-primary/40 selection:text-white transition-colors duration-300 relative" data-theme={theme}>
             {/* Left Sidebar */}
-            <Sidebar />
+            <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
             {/* Main Content Area */}
             <main className="flex-1 flex flex-col min-w-0 h-full relative bg-[var(--bg-primary)] transition-colors duration-300">
                 {/* Header / Breadcrumbs */}
                 <header className="h-16 flex items-center justify-between px-6 border-b border-[var(--border-color)] bg-[var(--bg-primary)]/95 backdrop-blur z-30 shrink-0">
                     <div className="flex items-center gap-2">
-                        <a href="/" className="text-gray-400 hover:text-[var(--text-primary)] transition-colors" title="홈으로">
+                        <a href="/" className="text-gray-400 hover:text-[var(--text-primary)] transition-colors hidden sm:block" title="홈으로">
                             <Video className="w-5 h-5" />
                         </a>
-                        <button className="md:hidden mr-2 text-gray-400">
-                            <Menu className="w-5 h-5" />
+                        <button
+                            onClick={() => setSidebarOpen(true)}
+                            className="lg:hidden mr-2 text-gray-400 hover:text-primary transition-colors"
+                        >
+                            <Menu className="w-6 h-6" />
                         </button>
                         <a href="/" className="text-gray-400 text-sm font-medium hover:text-[var(--text-primary)] transition-colors">Library</a>
                         <ChevronRight className="w-4 h-4 text-gray-400" />
@@ -434,7 +449,20 @@ function AnalysisPage() {
                     </div>
 
                     {/* Right Column: AI Chatbot */}
-                    <ChatBot videoId={videoId} />
+                    <ChatBot
+                        videoId={videoId}
+                        isOpen={chatbotOpen}
+                        onClose={() => setChatbotOpen(false)}
+                    />
+
+                    {/* Mobile Chat Toggle Button */}
+                    <button
+                        onClick={() => setChatbotOpen(true)}
+                        className="lg:hidden fixed bottom-6 left-6 z-40 bg-primary text-white p-4 rounded-full shadow-2xl hover:scale-110 active:scale-95 transition-all"
+                        title="AI Chat"
+                    >
+                        <Bot className="w-6 h-6" />
+                    </button>
                 </div>
             </main>
         </div>

@@ -685,3 +685,17 @@ button {
 .chat-markdown .markdown-body blockquote {
   margin: 4px 0;
 }
+
+/* ========================================
+   Mobile Utilities
+   ======================================== */
+
+.no-scroll {
+  overflow: hidden !important;
+}
+
+@media (max-width: 1024px) {
+  .custom-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
