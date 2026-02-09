@@ -8,7 +8,7 @@ const MIN_WIDTH = 280;
 const MAX_WIDTH = 600;
 const DEFAULT_WIDTH = 360;
 
-function ChatBot({ videoId }) {
+function ChatBot({ videoId, isOpen, onClose }) {
     const { chatSessionId, setChatSessionId } = useVideo();
     const [width, setWidth] = useState(DEFAULT_WIDTH);
     const [isResizing, setIsResizing] = useState(false);
@@ -241,180 +241,194 @@ function ChatBot({ videoId }) {
     };
 
     return (
-        <aside
-            className="hidden lg:flex flex-col border-l border-[var(--border-color)] bg-surface shrink-0 h-full overflow-hidden relative"
-            style={{ width: `${width}px` }}
-        >
-            {/* Resize Handle */}
-            <div
-                onMouseDown={handleMouseDown}
-                className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-20 group flex items-center justify-center hover:bg-primary/30 transition-colors ${isResizing ? 'bg-primary/40' : ''}`}
+        <>
+            {/* Mobile Overlay */}
+            {isOpen && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-40 lg:hidden backdrop-blur-sm transition-opacity"
+                    onClick={onClose}
+                />
+            )}
+
+            <aside
+                className={`fixed lg:static inset-y-0 right-0 border-l border-[var(--border-color)] bg-surface shrink-0 h-full overflow-hidden relative z-50 transition-transform duration-300 transform ${isOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}`}
+                style={{ width: typeof window !== 'undefined' && window.innerWidth < 1024 ? '100%' : `${width}px`, maxWidth: '100%' }}
             >
-                <div className={`absolute left-0 w-3 h-full`} /> {/* Larger hit area */}
-                <div className={`opacity-0 group-hover:opacity-100 transition-opacity ${isResizing ? 'opacity-100' : ''}`}>
-                    <GripVertical className="w-3 h-3 text-primary" />
-                </div>
-            </div>
-            {/* Chat Header */}
-            <div className="p-4 border-b border-[var(--border-color)] bg-surface z-10 shadow-sm flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                    <Sparkles className="w-5 h-5 text-primary" />
-                    <h3 className="text-[var(--text-primary)] font-medium text-sm">Ask Re:View AI</h3>
-                </div>
-                <button
-                    onClick={handleClear}
-                    className="text-gray-400 hover:text-[var(--text-primary)]"
-                    title="Clear History"
+                {/* Resize Handle */}
+                <div
+                    onMouseDown={handleMouseDown}
+                    className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-20 group flex items-center justify-center hover:bg-primary/30 transition-colors ${isResizing ? 'bg-primary/40' : ''}`}
                 >
-                    <RotateCcw className="w-[18px] h-[18px]" />
-                </button>
-            </div>
-
-            {/* Messages Container */}
-            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
-                {messages.map((msg) => (
-                    <div key={msg.id} className={`flex gap-3 ${msg.type === 'user' ? 'flex-row-reverse' : ''}`}>
-                        {msg.type === 'bot' ? (
-                            <div className="size-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0 border border-primary/20">
-                                <Bot className="w-4 h-4 text-primary" />
-                            </div>
-                        ) : (
-                            <div className="size-8 rounded-full bg-gray-700 flex items-center justify-center shrink-0 text-white text-xs font-bold">
-                                U
-                            </div>
-                        )}
-
-                        <div className={`flex flex-col gap-1 ${msg.type === 'user' ? 'items-end' : ''} max-w-[85%]`}>
-                            <div className={`${msg.type === 'bot' ? 'bg-surface-highlight rounded-tl-none border border-[var(--border-color)] text-[var(--text-secondary)]' : 'bg-primary rounded-tr-none text-white'} p-3 rounded-2xl text-sm leading-relaxed shadow-sm`}>
-                                {msg.type === 'bot' ? (
-                                    <div className="chat-markdown overflow-hidden">
-                                        <MarkdownRenderer>{msg.text}</MarkdownRenderer>
-                                        {msg.streaming && (
-                                            msg.text ? (
-                                                <span className="inline-block w-2 h-4 bg-primary/70 animate-pulse align-middle ml-1 rounded-sm" />
-                                            ) : (
-                                                <Loader2 className="w-4 h-4 animate-spin text-primary inline-block" />
-                                            )
-                                        )}
-                                    </div>
-                                ) : (
-                                    <p className="whitespace-pre-wrap">{msg.text}</p>
-                                )}
-                            </div>
-                            {msg.type === 'bot' && !msg.streaming && Array.isArray(msg.suggestions) && msg.suggestions.length > 0 && (
-                                <div className="flex flex-wrap gap-2 pl-1">
-                                    {msg.suggestions.map((question, index) => (
-                                        <button
-                                            key={`${msg.id}-suggestion-${index}`}
-                                            type="button"
-                                            onClick={() => handleSuggestionClick(question)}
-                                            disabled={sending}
-                                            className="px-3.5 py-2 rounded-lg border-2 border-[var(--chip-suggestion-border)] bg-[var(--chip-suggestion-bg)] text-[13px] leading-snug text-[var(--chip-suggestion-text)] font-medium shadow-sm hover:bg-[var(--chip-suggestion-hover-bg)] hover:border-[var(--chip-suggestion-hover-border)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                                        >
-                                            {question}
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
-                            <span className={`text-[10px] text-gray-500 ${msg.type === 'user' ? 'pr-1' : 'pl-1'}`}>{msg.timestamp}</span>
-                        </div>
-                    </div>
-                ))}
-            </div>
-
-            {/* Input Area */}
-            <div className="p-4 border-t border-[var(--border-color)] bg-surface/95 backdrop-blur">
-                <div className="bg-surface-highlight rounded-xl">
-                    {/* Textarea */}
-                    <textarea
-                        ref={textareaRef}
-                        className="w-full bg-transparent border-0 px-4 pt-3 pb-0 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-0 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-400/50 [&::-webkit-scrollbar-thumb]:rounded-full"
-                        placeholder="Ask a question..."
-                        rows={1}
-                        value={inputValue}
-                        onChange={(e) => {
-                            setInputValue(e.target.value);
-                            adjustTextareaHeight();
-                        }}
-                        onKeyDown={handleKeyDown}
-                        disabled={sending}
-                        style={{ minHeight: '24px', maxHeight: '140px', overflowY: 'hidden' }}
-                    />
-                    {/* Bottom row: Mode selector + Send button */}
-                    <div className="flex items-center justify-between px-2 pb-2">
-                        {/* Mode Selector */}
-                        <div className="relative" ref={modeMenuRef}>
-                            <button
-                                onClick={() => setModeMenuOpen(!modeMenuOpen)}
-                                disabled={sending}
-                                className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-surface transition-all disabled:opacity-50 text-xs"
-                                title={reasoningMode === 'flash' ? '요약 기반 답변' : '원본 분석 답변'}
-                            >
-                                {reasoningMode === 'flash' ? (
-                                    <Zap className="w-3.5 h-3.5 text-yellow-500" />
-                                ) : (
-                                    <Clock className="w-3.5 h-3.5 text-blue-500" />
-                                )}
-                                <span className="font-medium">{reasoningMode === 'flash' ? 'Flash' : 'Thinking'}</span>
-                                <ChevronDown className={`w-3 h-3 transition-transform ${modeMenuOpen ? 'rotate-180' : ''}`} />
-                            </button>
-                            {/* Dropdown Menu (opens upward) */}
-                            {modeMenuOpen && (
-                                <div className="absolute bottom-full left-0 mb-2 w-52 bg-surface border border-[var(--border-color)] rounded-xl shadow-xl overflow-hidden z-50">
-                                    <button
-                                        onClick={() => {
-                                            setReasoningMode('flash');
-                                            setModeMenuOpen(false);
-                                        }}
-                                        className={`w-full flex items-start gap-3 px-3 py-3 text-left hover:bg-surface-highlight transition-colors ${
-                                            reasoningMode === 'flash' ? 'bg-primary/10' : ''
-                                        }`}
-                                    >
-                                        <Zap className={`w-4 h-4 mt-0.5 shrink-0 ${reasoningMode === 'flash' ? 'text-yellow-500' : 'text-gray-400'}`} />
-                                        <div>
-                                            <div className={`text-sm font-medium ${reasoningMode === 'flash' ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
-                                                Flash
-                                            </div>
-                                            <div className="text-[11px] text-gray-500 mt-0.5">
-                                                요약 기반 빠른 답변
-                                            </div>
-                                        </div>
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            setReasoningMode('thinking');
-                                            setModeMenuOpen(false);
-                                        }}
-                                        className={`w-full flex items-start gap-3 px-3 py-3 text-left hover:bg-surface-highlight transition-colors ${
-                                            reasoningMode === 'thinking' ? 'bg-primary/10' : ''
-                                        }`}
-                                    >
-                                        <Clock className={`w-4 h-4 mt-0.5 shrink-0 ${reasoningMode === 'thinking' ? 'text-blue-500' : 'text-gray-400'}`} />
-                                        <div>
-                                            <div className={`text-sm font-medium ${reasoningMode === 'thinking' ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
-                                                Thinking
-                                            </div>
-                                            <div className="text-[11px] text-gray-500 mt-0.5">
-                                                원본 분석 심층 답변
-                                            </div>
-                                        </div>
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                        {/* Send Button */}
-                        <button
-                            onClick={handleSend}
-                            disabled={sending || !inputValue.trim()}
-                            className="p-2 bg-primary hover:bg-[var(--accent-coral-dark)] rounded-lg text-white transition-colors shadow-sm disabled:opacity-50"
-                        >
-                            <Send className="w-4 h-4" />
-                        </button>
+                    <div className={`absolute left-0 w-3 h-full`} /> {/* Larger hit area */}
+                    <div className={`opacity-0 group-hover:opacity-100 transition-opacity ${isResizing ? 'opacity-100' : ''}`}>
+                        <GripVertical className="w-3 h-3 text-primary" />
                     </div>
                 </div>
-                <p className="text-[10px] text-center text-gray-600 mt-2">AI can make mistakes. Check important info.</p>
-            </div>
-        </aside>
+                {/* Chat Header */}
+                <div className="p-4 border-b border-[var(--border-color)] bg-surface z-10 shadow-sm flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={onClose}
+                            className="lg:hidden p-1 mr-1 text-gray-400 hover:text-primary transition-colors"
+                        >
+                            <ChevronDown className="w-5 h-5 rotate-90" />
+                        </button>
+                        <Sparkles className="w-5 h-5 text-primary" />
+                        <h3 className="text-[var(--text-primary)] font-medium text-sm">Ask Re:View AI</h3>
+                    </div>
+                    <button
+                        onClick={handleClear}
+                        className="text-gray-400 hover:text-[var(--text-primary)]"
+                        title="Clear History"
+                    >
+                        <RotateCcw className="w-[18px] h-[18px]" />
+                    </button>
+                </div>
+
+                {/* Messages Container */}
+                <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 custom-scrollbar">
+                    {messages.map((msg) => (
+                        <div key={msg.id} className={`flex gap-3 ${msg.type === 'user' ? 'flex-row-reverse' : ''}`}>
+                            {msg.type === 'bot' ? (
+                                <div className="size-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0 border border-primary/20">
+                                    <Bot className="w-4 h-4 text-primary" />
+                                </div>
+                            ) : (
+                                <div className="size-8 rounded-full bg-gray-700 flex items-center justify-center shrink-0 text-white text-xs font-bold">
+                                    U
+                                </div>
+                            )}
+
+                            <div className={`flex flex-col gap-1 ${msg.type === 'user' ? 'items-end' : ''} max-w-[85%]`}>
+                                <div className={`${msg.type === 'bot' ? 'bg-surface-highlight rounded-tl-none border border-[var(--border-color)] text-[var(--text-secondary)]' : 'bg-primary rounded-tr-none text-white'} p-3 rounded-2xl text-sm leading-relaxed shadow-sm`}>
+                                    {msg.type === 'bot' ? (
+                                        <div className="chat-markdown overflow-hidden">
+                                            <MarkdownRenderer>{msg.text}</MarkdownRenderer>
+                                            {msg.streaming && (
+                                                msg.text ? (
+                                                    <span className="inline-block w-2 h-4 bg-primary/70 animate-pulse align-middle ml-1 rounded-sm" />
+                                                ) : (
+                                                    <Loader2 className="w-4 h-4 animate-spin text-primary inline-block" />
+                                                )
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <p className="whitespace-pre-wrap">{msg.text}</p>
+                                    )}
+                                </div>
+                                {msg.type === 'bot' && !msg.streaming && Array.isArray(msg.suggestions) && msg.suggestions.length > 0 && (
+                                    <div className="flex flex-wrap gap-2 pl-1">
+                                        {msg.suggestions.map((question, index) => (
+                                            <button
+                                                key={`${msg.id}-suggestion-${index}`}
+                                                type="button"
+                                                onClick={() => handleSuggestionClick(question)}
+                                                disabled={sending}
+                                                className="px-3.5 py-2 rounded-lg border-2 border-[var(--chip-suggestion-border)] bg-[var(--chip-suggestion-bg)] text-[13px] leading-snug text-[var(--chip-suggestion-text)] font-medium shadow-sm hover:bg-[var(--chip-suggestion-hover-bg)] hover:border-[var(--chip-suggestion-hover-border)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {question}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                                <span className={`text-[10px] text-gray-500 ${msg.type === 'user' ? 'pr-1' : 'pl-1'}`}>{msg.timestamp}</span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Input Area */}
+                <div className="p-4 border-t border-[var(--border-color)] bg-surface/95 backdrop-blur">
+                    <div className="bg-surface-highlight rounded-xl">
+                        {/* Textarea */}
+                        <textarea
+                            ref={textareaRef}
+                            className="w-full bg-transparent border-0 px-4 pt-3 pb-0 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-0 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-400/50 [&::-webkit-scrollbar-thumb]:rounded-full"
+                            placeholder="Ask a question..."
+                            rows={1}
+                            value={inputValue}
+                            onChange={(e) => {
+                                setInputValue(e.target.value);
+                                adjustTextareaHeight();
+                            }}
+                            onKeyDown={handleKeyDown}
+                            disabled={sending}
+                            style={{ minHeight: '24px', maxHeight: '140px', overflowY: 'hidden' }}
+                        />
+                        {/* Bottom row: Mode selector + Send button */}
+                        <div className="flex items-center justify-between px-2 pb-2">
+                            {/* Mode Selector */}
+                            <div className="relative" ref={modeMenuRef}>
+                                <button
+                                    onClick={() => setModeMenuOpen(!modeMenuOpen)}
+                                    disabled={sending}
+                                    className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-surface transition-all disabled:opacity-50 text-xs"
+                                    title={reasoningMode === 'flash' ? '요약 기반 답변' : '원본 분석 답변'}
+                                >
+                                    {reasoningMode === 'flash' ? (
+                                        <Zap className="w-3.5 h-3.5 text-yellow-500" />
+                                    ) : (
+                                        <Clock className="w-3.5 h-3.5 text-blue-500" />
+                                    )}
+                                    <span className="font-medium">{reasoningMode === 'flash' ? 'Flash' : 'Thinking'}</span>
+                                    <ChevronDown className={`w-3 h-3 transition-transform ${modeMenuOpen ? 'rotate-180' : ''}`} />
+                                </button>
+                                {/* Dropdown Menu (opens upward) */}
+                                {modeMenuOpen && (
+                                    <div className="absolute bottom-full left-0 mb-2 w-52 bg-surface border border-[var(--border-color)] rounded-xl shadow-xl overflow-hidden z-50">
+                                        <button
+                                            onClick={() => {
+                                                setReasoningMode('flash');
+                                                setModeMenuOpen(false);
+                                            }}
+                                            className={`w-full flex items-start gap-3 px-3 py-3 text-left hover:bg-surface-highlight transition-colors ${reasoningMode === 'flash' ? 'bg-primary/10' : ''
+                                                }`}
+                                        >
+                                            <Zap className={`w-4 h-4 mt-0.5 shrink-0 ${reasoningMode === 'flash' ? 'text-yellow-500' : 'text-gray-400'}`} />
+                                            <div>
+                                                <div className={`text-sm font-medium ${reasoningMode === 'flash' ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                                                    Flash
+                                                </div>
+                                                <div className="text-[11px] text-gray-500 mt-0.5">
+                                                    요약 기반 빠른 답변
+                                                </div>
+                                            </div>
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setReasoningMode('thinking');
+                                                setModeMenuOpen(false);
+                                            }}
+                                            className={`w-full flex items-start gap-3 px-3 py-3 text-left hover:bg-surface-highlight transition-colors ${reasoningMode === 'thinking' ? 'bg-primary/10' : ''
+                                                }`}
+                                        >
+                                            <Clock className={`w-4 h-4 mt-0.5 shrink-0 ${reasoningMode === 'thinking' ? 'text-blue-500' : 'text-gray-400'}`} />
+                                            <div>
+                                                <div className={`text-sm font-medium ${reasoningMode === 'thinking' ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                                                    Thinking
+                                                </div>
+                                                <div className="text-[11px] text-gray-500 mt-0.5">
+                                                    원본 분석 심층 답변
+                                                </div>
+                                            </div>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                            {/* Send Button */}
+                            <button
+                                onClick={handleSend}
+                                disabled={sending || !inputValue.trim()}
+                                className="p-2 bg-primary hover:bg-[var(--accent-coral-dark)] rounded-lg text-white transition-colors shadow-sm disabled:opacity-50"
+                            >
+                                <Send className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                    <p className="text-[10px] text-center text-gray-600 mt-2">AI can make mistakes. Check important info.</p>
+                </div>
+            </aside>
+        </>
     );
 }
 
