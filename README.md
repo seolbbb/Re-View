@@ -339,18 +339,10 @@ python src/run_fusion_only.py --video_name "lecture"
 
 | Resource | Description |
 |----------|-------------|
-| [Project Map](./PROJECT_MAP.md) | 전체 코드베이스 구조 및 데이터 흐름 가이드 |
-| [Pipeline Analysis](./PIPELINE_ANALYSIS_REPORT.md) | 파이프라인 실행 흐름 상세 기술 분석 |
-| [Chatbot Feature Spec](./docs/chatbot_suggestions_feature.md) | 챗봇 후속 질문 추천 기능 기술 명세 |
-| [Pipeline Timeline](./docs/current-pipeline-timeline.md) | 현재 파이프라인 실행 타임라인 및 Gantt 차트 |
-| [Async Pipeline Plan](./docs/pipeline-plan.md) | 비동기 이벤트 기반 파이프라인 마이그레이션 계획 |
-| [Target Architecture](./docs/target-pipeline-timeline.md) | 목표 이벤트 드리븐 아키텍처 설계 |
+| [Pipeline Architecture](./docs/pipeline.md) | 파이프라인 아키텍처, API 엔드포인트, DB 구조 |
+| [Project Guide](./docs/project-guide.md) | 코드베이스 구조, 모듈별 핵심 파일, 설정 |
+| [Chatbot Feature](./docs/chatbot.md) | 챗봇 기능 (RAG, 후속 질문, SSE 스트리밍) |
 | [Supabase Schema](./src/db/supabase_schema.sql) | 데이터베이스 스키마 (PostgreSQL + pgvector) |
-| [Google Gemini API](https://ai.google.dev/docs) | Gemini API 공식 문서 |
-| [Qwen VLM (DashScope)](https://help.aliyun.com/zh/dashscope/) | Qwen Vision Language Model 문서 |
-| [Clova Speech API](https://api.ncloud-docs.com/docs/ai-application-service-clovaspeech) | Clova Speech STT API 문서 |
-| [Supabase Docs](https://supabase.com/docs) | Supabase 공식 문서 |
-| [LangGraph](https://langchain-ai.github.io/langgraph/) | LangGraph 공식 문서 |
 
 ---
 
