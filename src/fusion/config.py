@@ -58,6 +58,9 @@ class JudgeConfig(BaseModel):
     json_repair_attempts: int = Field(1, ge=0)
     verbose: bool = False
     prompt_version: Optional[str] = None
+    temperature: float = Field(0.2, ge=0.0, le=1.0)
+    max_score: int = Field(10, ge=1)
+    prompts_file: str = "prompts.yaml"
 
 
 class DeveloperApiConfig(BaseModel):
@@ -157,6 +160,7 @@ class ConfigBundle:
     repo_root: Path
     paths: ResolvedPaths
     judge: JudgeConfig
+    judge_prompts_path: Path
 
 
 def _find_repo_root(config_path: Path) -> Path:
@@ -206,6 +210,8 @@ def load_config(config_path: str) -> ConfigBundle:
         judge_payload = yaml.safe_load(handle) or {}
     judge_config = JudgeConfig.model_validate(judge_payload)
 
+    judge_prompts_path = judge_config_path.parent / judge_config.prompts_file
+
     resolved_paths = ResolvedPaths(
         stt_json=_resolve_path(config.paths.stt_json, repo_root),
         vlm_json=_resolve_path(config.paths.vlm_json, repo_root),
@@ -218,4 +224,5 @@ def load_config(config_path: str) -> ConfigBundle:
         repo_root=repo_root,
         paths=resolved_paths,
         judge=judge_config,
+        judge_prompts_path=judge_prompts_path,
     )
