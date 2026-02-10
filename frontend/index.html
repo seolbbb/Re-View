@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Re:view</title>
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com" rel="preconnect" />
@@ -15,45 +15,8 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
         rel="stylesheet" />
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-    <!-- Tailwind Config -->
-    <script>
-        tailwind.config = {
-            darkMode: "class",
-            theme: {
-                extend: {
-                    colors: {
-                        "primary": "var(--accent-coral)",
-                        "primary-light": "var(--accent-coral-light)",
-                        "background-main": "var(--bg-primary)",
-                        "background-dark": "var(--bg-primary)",
-                        "background-light": "var(--bg-secondary)",
-                        "surface": "var(--bg-secondary)",
-                        "surface-highlight": "var(--bg-hover)",
-                        "border-color": "var(--border-color)",
-                        "border-custom": "var(--border-color)",
-                        "text-main": "var(--text-primary)",
-                        "text-secondary": "var(--text-secondary)",
-                        "text-muted": "var(--text-muted)"
-                    },
-                    fontFamily: {
-                        "display": ["Inter", "sans-serif"]
-                    },
-                    borderRadius: { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" },
-                    animation: {
-                        'shimmer': 'shimmer 2s infinite',
-                    },
-                    keyframes: {
-                        shimmer: {
-                            '0%': { transform: 'translateX(-100%)' },
-                            '100%': { transform: 'translateX(100%)' }
-                        }
-                    }
-                },
-            },
-        }
-    </script>
+    <!-- Tailwind CSS (Migrated to build process) -->
+
 
 <body>
     <div id="root"></div>
