@@ -139,7 +139,7 @@ function Sidebar({ isOpen, onClose }) {
                 />
             )}
 
-            <aside className={`fixed lg:relative z-40 transition-all duration-300 ease-in-out pointer-events-none lg:pointer-events-auto
+            <aside className={`fixed lg:relative z-[95] transition-all duration-300 ease-in-out pointer-events-none lg:pointer-events-auto
                 /* Mobile: Full Screen Overlay */
                 inset-0 w-full
                 /* Desktop: Left Column with Padding for Gradient Effect */

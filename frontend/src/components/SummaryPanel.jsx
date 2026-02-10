@@ -174,17 +174,37 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                                 <span className="text-[var(--text-secondary)] text-[10px] font-medium opacity-70">
                                     {item.start_ms != null ? formatMs(item.start_ms) : '00:00'}
                                 </span>
+                                <div className="h-[4px]" />
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onAskChatBot?.({ segIdx, timeRange, content: item.summary });
+                                    }}
+                                    className="flex items-center justify-center w-6 h-6 rounded-full hover:bg-white/10 text-orange-500 transition-colors"
+                                    title="원본 분석 답변"
+                                >
+                                    <Bot size={20} />
+                                </button>
                             </div>
                         </div>
 
                         <div className="flex-1 min-w-0 px-4">
                             {/* Mobile: Center Title */}
                             <div className="lg:hidden flex items-center justify-center h-6 mb-1">
-                                <h4 className="text-[var(--text-primary)] font-semibold truncate text-center text-[15px]">
+                                <h4 className="text-[var(--text-primary)] font-semibold truncate text-center text-[15px] flex items-center gap-2">
                                     {title}
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            onAskChatBot?.({ segIdx, timeRange, content: item.summary });
+                                        }}
+                                        className="flex items-center justify-center w-6 h-6 rounded-full hover:bg-white/10 text-orange-500 transition-colors shrink-0"
+                                        title="원본 분석 답변"
+                                    >
+                                        <Bot size={20} />
+                                    </button>
                                 </h4>
                             </div>
-
                             {!hasSections && <p className="text-[var(--text-secondary)] text-[13px] italic">요약 데이터 준비 중...</p>}
 
                             {bullets.length > 0 && (
@@ -200,19 +220,6 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                             )}
                         </div>
 
-                        {/* Action Buttons */}
-                        <div className="absolute right-2 top-0 flex items-center h-full opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onAskChatBot?.({ segIdx, timeRange, content: item.summary });
-                                }}
-                                className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-[var(--text-secondary)] hover:text-blue-400 transition-colors"
-                                title="원본 분석 답변"
-                            >
-                                <Clock size={16} />
-                            </button>
-                        </div>
                     </div>
                 </div>
             );
@@ -232,7 +239,24 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
 
 
                 {/* 1. Top Header Row Info */}
-                <div className="flex flex-row items-center border-b border-[var(--border-color)]/30 pb-3 mb-4">
+                {/* Mobile/Tablet: Compact header matching simple view */}
+                <div className="lg:hidden flex items-center justify-center h-6 mb-1">
+                    <h4 className="text-[var(--text-primary)] font-semibold truncate text-center text-[15px] flex items-center gap-2">
+                        {title}
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onAskChatBot?.({ segIdx, timeRange, content: item.summary });
+                            }}
+                            className="flex items-center justify-center w-6 h-6 rounded-full hover:bg-white/10 text-orange-500 transition-colors"
+                            title="원본 분석 답변"
+                        >
+                            <Bot size={20} />
+                        </button>
+                    </h4>
+                </div>
+                {/* Desktop: Full header with Seg column */}
+                <div className="hidden lg:flex flex-row items-center border-b border-[var(--border-color)]/30 pb-3 mb-4">
                     <div className="w-[60px] shrink-0 border-r border-[var(--border-color)]/30 mr-4 self-stretch flex items-center justify-center">
                         <div className="flex flex-col items-center justify-center h-full">
                             <span className="text-[var(--text-primary)] font-bold text-[15px]">Seg {segIdx}</span>
@@ -249,7 +273,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                                 className="flex items-center justify-center w-8 h-8 rounded-full hover:bg-white/10 text-orange-500 transition-colors ml-1"
                                 title="원본 분석 답변"
                             >
-                                <Bot size={24} />
+                                <Bot size={20} />
                             </button>
                         </h4>
                     </div>

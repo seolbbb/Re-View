@@ -432,7 +432,7 @@ function AnalysisPage() {
                             <div ref={videoSectionRef} className="w-full max-w-[1024px] px-5 sm:px-8 mx-auto shrink-0 pt-6">
                                 <div
                                     className={scrollPip
-                                        ? `fixed z-50 aspect-video animate-pipSlideIn transition-all duration-300 hover:scale-[1.02] ${chatbotOpen ? 'right-[calc(1.5rem+var(--chatbot-width))]' : 'right-6'} top-[58px] w-80 lg:top-auto lg:bottom-6 lg:w-96 rounded-xl overflow-hidden border border-[var(--border-color)] shadow-2xl`
+                                        ? `fixed z-50 aspect-video animate-pipSlideIn transition-all duration-300 hover:scale-[1.02] right-6 ${chatbotOpen ? 'lg:right-[calc(1.5rem+var(--chatbot-width))]' : 'lg:right-6'} top-[58px] w-80 md:w-96 lg:top-auto lg:bottom-6 lg:w-96 rounded-xl overflow-hidden border border-[var(--border-color)] shadow-2xl`
                                         : "relative w-full aspect-video border-b border-[var(--border-color)] bg-black shadow-sm"}
                                 >
                                     <VideoPlayer
