@@ -39,7 +39,7 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     const pendingSeekRef = useRef(null);
     const seekingRef = useRef(false);
 
-    const defaultClasses = "relative w-full rounded-xl overflow-hidden shadow-2xl bg-black aspect-video group";
+    const defaultClasses = "relative w-full overflow-hidden shadow-2xl bg-black aspect-video group";
     const finalClasses = className || defaultClasses;
 
     const desiredStreamUrl = videoId && mediaTicket ? getVideoStreamUrl(videoId, mediaTicket) : null;
@@ -154,8 +154,8 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     const handleVolumeChange = useCallback((e) => {
         e.stopPropagation();
         const rect = e.currentTarget.getBoundingClientRect();
-        const y = rect.bottom - e.clientY;
-        const pct = Math.max(0, Math.min(1, y / rect.height));
+        const x = e.clientX - rect.left;
+        const pct = Math.max(0, Math.min(1, x / rect.width));
         applyVolume(pct);
     }, [applyVolume]);
 
@@ -203,7 +203,7 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     useEffect(() => {
         if (!showSettings) return;
         const handleClickOutside = (e) => {
-            if (settingsRef.current && !settingsRef.current.contains(e.target)) {
+            if (showSettings && settingsRef.current && !settingsRef.current.contains(e.target)) {
                 setShowSettings(false);
             }
         };
@@ -306,7 +306,7 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
                     setCurrentTime(time);
                 }
                 if (wasPlaying) {
-                    v.play().catch(() => {});
+                    v.play().catch(() => { });
                     setPlaying(true);
                 }
                 playbackRestore.current = { time: 0, playing: false };
@@ -348,7 +348,7 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
     const getTooltipFixedStyle = () => {
         const bar = progressBarRef.current;
         if (!hoverInfo || !bar) return { position: 'fixed', visibility: 'hidden', pointerEvents: 'none' };
-        
+
         try {
             const barRect = bar.getBoundingClientRect();
             if (!barRect) return { position: 'fixed', visibility: 'hidden', pointerEvents: 'none' };
@@ -378,25 +378,13 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
                 <video
                     ref={videoRef}
                     src={streamUrl}
-                    className="absolute inset-0 w-full h-full object-contain"
+                    className="absolute inset-0 w-full h-full object-cover"
                     muted={muted}
                     playsInline
                 />
             ) : (
                 <div className="absolute inset-0 bg-gray-900 flex items-center justify-center">
                     <p className="text-gray-500 text-sm">No video source</p>
-                </div>
-            )}
-
-            {/* Play Overlay (only when paused) */}
-            {!playing && (
-                <div
-                    className={`absolute inset-0 flex items-center justify-center ${isPip ? 'bg-black/10 group-hover:bg-black/20' : 'bg-black/20 group-hover:bg-black/10'} transition-all cursor-pointer`}
-                    onClick={togglePlay}
-                >
-                    <button className={`flex items-center justify-center rounded-full ${isPip ? 'size-12 opacity-0 group-hover:opacity-100 scale-90 group-hover:scale-100' : 'size-16 hover:scale-105 hover:bg-primary'} bg-white/20 backdrop-blur-sm text-white hover:bg-primary transition-all shadow-lg border border-white/10`}>
-                        <Play className={isPip ? 'w-6 h-6' : 'w-8 h-8'} fill="currentColor" />
-                    </button>
                 </div>
             )}
 
@@ -408,163 +396,118 @@ function VideoPlayer({ isPip, onTogglePip, videoId, className = "", videoElRef, 
                 />
             )}
 
-            {/* PIP Mode Top Overlay */}
+            {/* Top Controls Overlay (Live Label only in PIP) */}
             {isPip && (
-                <div className="absolute top-0 inset-x-0 p-2 bg-gradient-to-b from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex justify-between items-start">
+                <div className="absolute top-0 inset-x-0 p-2 bg-gradient-to-b from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex justify-between items-start z-10">
                     <span className="bg-red-500/80 text-white text-[10px] font-bold px-1.5 rounded uppercase tracking-wide">Live</span>
-                    <button
-                        onClick={(e) => { e.stopPropagation(); onTogglePip?.(); }}
-                        className="text-white hover:text-primary transition-colors bg-black/40 rounded p-1 backdrop-blur-md"
-                    >
-                        <Maximize2 className="w-4 h-4" />
-                    </button>
                 </div>
             )}
 
             {/* Bottom Controls */}
-            <div className={`absolute inset-x-0 bottom-0 ${isPip ? 'p-3' : 'p-4'} bg-gradient-to-t from-black/90 to-transparent`}>
-                <div className="flex flex-col gap-1">
+            <div className={`video-controls absolute inset-x-0 bottom-0 ${isPip ? 'p-3' : 'pb-6 pt-12'} bg-gradient-to-t from-black/90 via-black/40 to-transparent z-10`}>
+                <div className="flex flex-col gap-0">
                     {/* Progress Bar */}
                     <div
                         ref={progressBarRef}
-                        className="relative group/slider cursor-pointer h-1.5 bg-white/30 rounded-full flex items-center"
+                        className="relative group/slider cursor-pointer h-1.5 bg-white/30 flex items-center mb-1"
                         onClick={handleSeek}
                         onMouseMove={handleProgressHover}
                         onMouseLeave={handleProgressLeave}
                     >
-                        <div className="absolute h-full bg-primary rounded-full" style={{ width: `${progressPercent}%` }}></div>
-                        {!isPip && <div className="absolute size-3 bg-white rounded-full shadow opacity-0 group-hover/slider:opacity-100 transition-opacity" style={{ left: `${progressPercent}%` }}></div>}
+                        <div className="absolute h-full bg-primary" style={{ width: `${progressPercent}%` }}></div>
+                        {hoverInfo && !isPip && (
+                            <div className="absolute top-0 h-full bg-white/30" style={{ left: 0, width: `${hoverInfo.x}px` }}></div>
+                        )}
                     </div>
 
-                    {/* Thumbnail / Time Preview Tooltip (fixed position to escape overflow-hidden) */}
-                    {!isPip && hoverInfo && (
-                        <div
-                            className="pointer-events-none z-[9999] flex flex-col items-center"
-                            style={getTooltipFixedStyle()}
-                        >
-                            {thumbUrl && (
-                                <div className="rounded-md overflow-hidden border border-white/20 shadow-lg mb-1" style={{ width: 160, height: 90 }}>
-                                    <img
-                                        src={thumbUrl}
-                                        alt=""
-                                        className="block w-full h-full"
-                                    />
-                                </div>
-                            )}
-                            <span className="bg-black/85 text-white text-[11px] font-mono px-2 py-0.5 rounded shadow whitespace-nowrap">
-                                {formatTime(hoverInfo.time)}
-                            </span>
-                        </div>
-                    )}
-
                     {/* Button Row */}
-                    <div className={`flex items-center justify-between ${isPip ? 'mt-0.5' : 'mt-1'}`}>
-                        {isPip ? (
-                            <>
-                                <span className="text-[10px] font-medium text-white/90">{formatTime(currentTime)} / {formatTime(duration)}</span>
-                                <button onClick={toggleMute} className="text-white hover:text-primary transition-colors">
-                                    <VolumeIcon className="w-4 h-4" />
+                    <div className="flex items-center justify-between py-0.5">
+                        {/* Left Controls */}
+                        <div className="flex items-center">
+                            <div className={isPip ? "w-0.5" : "w-1"} />
+                            <div className="flex items-center gap-1.5 sm:gap-2">
+                                <button onClick={togglePlay} className="text-white hover:text-primary transition-colors">
+                                    {playing ? <Pause className={isPip ? "w-3.5 h-3.5" : "w-4 h-4"} /> : <Play className={isPip ? "w-3.5 h-3.5" : "w-4 h-4"} />}
                                 </button>
-                            </>
-                        ) : (
-                            <>
-                                <div className="flex items-center gap-4">
-                                    <button onClick={togglePlay} className="text-white hover:text-primary transition-colors">
-                                        {playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
-                                    </button>
 
-                                    {/* Volume button + slider */}
-                                    <div
-                                        className="relative flex items-center"
-                                        onMouseEnter={handleVolumeAreaEnter}
-                                        onMouseLeave={handleVolumeAreaLeave}
+                                {/* Volume button + slider (Mini version for PIP) */}
+                                <div
+                                    className={`flex items-center ${isPip ? 'h-8 rounded-lg' : 'h-10 rounded-xl'} border border-white/10 bg-white/5 transition-all duration-300 overflow-hidden`}
+                                    style={{ width: showVolumeSlider ? (isPip ? '120px' : '160px') : (isPip ? '36px' : '44px') }}
+                                    onMouseEnter={handleVolumeAreaEnter}
+                                    onMouseLeave={handleVolumeAreaLeave}
+                                >
+                                    <button
+                                        className={`flex items-center justify-center ${isPip ? 'w-8' : 'w-11'} shrink-0 text-white hover:text-primary transition-colors`}
+                                        onClick={toggleMute}
                                     >
-                                        <button onClick={toggleMute} className="text-white hover:text-primary transition-colors">
-                                            <VolumeIcon className="w-5 h-5" />
-                                        </button>
-
-                                        {/* Vertical volume slider */}
-                                        <div className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 transition-all origin-bottom ${showVolumeSlider ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
-                                            <div className="bg-black/90 backdrop-blur-md rounded-lg px-2.5 py-3 shadow-xl border border-white/10 flex flex-col items-center gap-1.5">
-                                                <span className="text-[10px] text-white/70 font-mono tabular-nums">{Math.round((muted ? 0 : volume) * 100)}</span>
-                                                <div
-                                                    className="relative w-1.5 h-24 bg-white/20 rounded-full cursor-pointer"
-                                                    onClick={handleVolumeChange}
-                                                    onMouseDown={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                        const sliderRect = e.currentTarget.getBoundingClientRect();
-                                                        handleVolumeChange(e);
-                                                        const onMove = (ev) => {
-                                                            const y = sliderRect.bottom - ev.clientY;
-                                                            const pct = Math.max(0, Math.min(1, y / sliderRect.height));
-                                                            applyVolume(pct);
-                                                        };
-                                                        const onUp = () => {
-                                                            window.removeEventListener('mousemove', onMove);
-                                                            window.removeEventListener('mouseup', onUp);
-                                                        };
-                                                        window.addEventListener('mousemove', onMove);
-                                                        window.addEventListener('mouseup', onUp);
-                                                    }}
-                                                >
-                                                    <div
-                                                        className="absolute bottom-0 left-0 w-full bg-primary rounded-full transition-[height] duration-75"
-                                                        style={{ height: `${(muted ? 0 : volume) * 100}%` }}
-                                                    ></div>
-                                                    <div
-                                                        className="absolute left-1/2 -translate-x-1/2 w-3 h-3 bg-white rounded-full shadow-md border border-white/30 transition-[bottom] duration-75"
-                                                        style={{ bottom: `calc(${(muted ? 0 : volume) * 100}% - 6px)` }}
-                                                    ></div>
-                                                </div>
-                                            </div>
+                                        <VolumeIcon className={isPip ? "w-3.5 h-3.5" : "w-4 h-4"} />
+                                    </button>
+                                    <div className={`flex-1 pr-4 flex items-center h-full transition-opacity duration-300 ${showVolumeSlider ? 'opacity-100' : 'opacity-0'}`}>
+                                        <div
+                                            className="relative w-full h-1 bg-white/20 rounded-full cursor-pointer"
+                                            onClick={handleVolumeChange}
+                                        >
+                                            <div
+                                                className="absolute left-0 top-0 h-full bg-primary rounded-full"
+                                                style={{ width: `${(muted ? 0 : volume) * 100}%` }}
+                                            ></div>
                                         </div>
                                     </div>
-
-                                    <span className="text-xs font-medium text-white/90">{formatTime(currentTime)} / {formatTime(duration)}</span>
                                 </div>
-                                <div className="flex items-center gap-4">
-                                    {/* Settings button with playback speed menu */}
-                                    <div className="relative flex items-center" ref={settingsRef}>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }}
-                                            className="text-white hover:text-primary transition-colors"
-                                        >
-                                            <Settings className="w-5 h-5" />
-                                        </button>
+                            </div>
+                        </div>
 
-                                        {/* Playback speed menu */}
-                                        {showSettings && (
-                                            <div className="absolute bottom-full right-0 mb-2 bg-black/90 backdrop-blur-md rounded-lg shadow-xl border border-white/10 overflow-hidden min-w-[140px]">
-                                                <div className="px-3 py-2 border-b border-white/10">
-                                                    <span className="text-xs text-white/70 font-medium">재생 속도</span>
-                                                </div>
-                                                <div className="py-1">
-                                                    {PLAYBACK_RATES.map((rate) => (
-                                                        <button
-                                                            key={rate}
-                                                            onClick={(e) => { e.stopPropagation(); changePlaybackRate(rate); }}
-                                                            className={`w-full flex items-center justify-between px-3 py-1.5 text-sm transition-colors ${playbackRate === rate ? 'text-primary bg-white/10' : 'text-white hover:bg-white/10'}`}
-                                                        >
-                                                            <span>{rate === 1 ? '1x (기본)' : `${rate}x`}</span>
-                                                            {playbackRate === rate && <Check className="w-4 h-4" />}
-                                                        </button>
-                                                    ))}
-                                                </div>
+                        {/* Right Controls */}
+                        <div className="flex items-center">
+                            <div className="flex items-center gap-1.5 sm:gap-2">
+                                <div className={`flex items-center ${isPip ? 'h-8 px-2.5 rounded-lg' : 'h-10 px-4 rounded-xl'} border border-white/10 bg-white/5 shadow-sm`}>
+                                    <span className={`${isPip ? 'text-[11px]' : 'text-sm'} font-bold leading-none tracking-tight text-white/90 tabular-nums`}>
+                                        {formatTime(currentTime)} <span className="text-white/30 mx-1">/</span> {formatTime(duration)}
+                                    </span>
+                                </div>
+
+                                {/* Settings (Simplified icon for PIP) */}
+                                <div className="relative flex items-center" ref={settingsRef}>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); setShowSettings(!showSettings); }}
+                                        className="text-white hover:text-primary transition-colors"
+                                    >
+                                        <Settings className={isPip ? "w-3.5 h-3.5" : "w-4 h-4"} />
+                                    </button>
+
+                                    {showSettings && (
+                                        <div className="absolute bottom-full right-0 mb-3 bg-[var(--bg-primary)] backdrop-blur-md rounded-xl shadow-2xl border border-[var(--border-color)] overflow-hidden min-w-[140px] animate-fade-in z-20">
+                                            <div className="px-4 py-2.5 border-b border-[var(--border-color)] bg-surface-highlight/5">
+                                                <span className="text-[10px] text-[var(--text-secondary)] font-bold uppercase tracking-wider block text-center">재생 속도</span>
                                             </div>
-                                        )}
-                                    </div>
+                                            <div className="py-1">
+                                                {PLAYBACK_RATES.map((rate) => (
+                                                    <button
+                                                        key={rate}
+                                                        onClick={(e) => { e.stopPropagation(); changePlaybackRate(rate); }}
+                                                        className={`w-full flex items-center justify-center px-4 py-2 relative text-sm transition-all ${playbackRate === rate ? 'text-primary bg-primary/10 font-bold' : 'text-[var(--text-primary)] hover:bg-surface-highlight'}`}
+                                                    >
+                                                        <span>{rate === 1 ? '1.0x' : `${rate}x`}</span>
+                                                        {playbackRate === rate && <Check className="absolute right-3 w-3.5 h-3.5" />}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
 
-                                    {/* Fullscreen button */}
+                                {!isPip && (
                                     <button
                                         onClick={toggleFullscreen}
                                         className="text-white hover:text-primary transition-colors"
                                     >
-                                        {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                                        {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
                                     </button>
-                                </div>
-                            </>
-                        )}
+                                )}
+                            </div>
+                            <div className={isPip ? "w-0.5" : "w-1"} />
+                        </div>
                     </div>
                 </div>
             </div>
