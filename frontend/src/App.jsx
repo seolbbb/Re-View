@@ -8,6 +8,7 @@ import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import HomePage from './pages/HomePage';
 import AnalysisPage from './pages/AnalysisPage';
+import SummaryPrintPage from './pages/SummaryPrintPage';
 import LoadingPage from './pages/LoadingPage';
 import './index.css';
 
@@ -25,6 +26,9 @@ function App() {
               } />
               <Route path="/analysis/:id" element={
                 <ProtectedRoute><AnalysisPage /></ProtectedRoute>
+              } />
+              <Route path="/analysis/:id/print" element={
+                <ProtectedRoute><SummaryPrintPage /></ProtectedRoute>
               } />
               <Route path="/loading" element={
                 <ProtectedRoute><LoadingPage /></ProtectedRoute>
