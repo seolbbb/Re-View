@@ -51,25 +51,25 @@ AI가 슬라이드의 시각 정보(텍스트, 수식, 도표)와 교수자의 �
                           +-----------------+
                           |    Frontend     |
                           |  React + Vite   |
-                          |   (Vercel)      |
+                          |    (Vercel)     |
                           +--------+--------+
                                    |
-                              REST API / SSE
+                             REST API / SSE
                                    |
                           +--------v--------+
-                          |    Backend      |
-                          |    FastAPI      |
-                          | (Cloud Run)     |
+                          |     Backend     |
+                          |     FastAPI     |
+                          |   (Cloud Run)   |
                           +--------+--------+
                                    |
                  +-----------------+-----------------+
                  |                 |                 |
-          +------v------+  +------v------+  +-------v------+
-          |  Supabase   |  | Cloudflare  |  |   AI APIs    |
-          | PostgreSQL  |  |     R2      |  |              |
-          |  + pgvector |  |  (Storage)  |  | Gemini / Qwen|
-          |  + Auth     |  |             |  | Clova Speech |
-          +-------------+  +-------------+  +--------------+
+         +-------v------+  +-------v------+  +-------v------+
+         |   Supabase   |  |  Cloudflare  |  |   AI APIs    |
+         |  PostgreSQL  |  |      R2      |  |              |
+         |  + pgvector  |  |  (Storage)   |  | Gemini / Qwen|
+         |  + Auth      |  |              |  | Clova Speech |
+         +--------------+  +--------------+  +--------------+
 ```
 
 ### Pipeline Flow
