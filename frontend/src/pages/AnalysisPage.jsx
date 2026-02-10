@@ -8,7 +8,6 @@ import Sidebar from '../components/Sidebar';
 import VideoPlayer from '../components/VideoPlayer';
 import ChatBot from '../components/ChatBot';
 import SummaryPanel from '../components/SummaryPanel';
-import katex from 'katex';
 import { Menu, ChevronRight, Sun, Moon, Download, ChevronDown, Video } from 'lucide-react';
 
 function formatMs(ms) {
@@ -17,73 +16,6 @@ function formatMs(ms) {
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-/** Replace $...$ and $$...$$ with KaTeX HTML, and escape the rest for safe HTML. */
-function renderTextToHtml(text) {
-    if (!text) return '';
-    const parts = [];
-    // Split on display math first, then inline math
-    let remaining = text;
-    // Display math $$...$$
-    remaining = remaining.replace(/\$\$([\s\S]+?)\$\$/g, (_m, inner) => {
-        try { return katex.renderToString(inner.trim(), { displayMode: true, throwOnError: false }); }
-        catch { return _m; }
-    });
-    // Inline math $...$
-    remaining = remaining.replace(/\$([^\$\n]+?)\$/g, (_m, inner) => {
-        try { return katex.renderToString(inner.trim(), { displayMode: false, throwOnError: false }); }
-        catch { return _m; }
-    });
-    // Bold **...**
-    remaining = remaining.replace(/\*\*([\s\S]+?)\*\*/g, '<strong>$1</strong>');
-    return remaining;
-}
-
-function buildHtmlExport(videoName, items) {
-    const lines = [];
-    lines.push(`<h1>${videoName}</h1>`);
-    items.forEach((item, index) => {
-        const segIdx = item.segment_index ?? index + 1;
-        const timeRange = `${formatMs(item.start_ms)}\u2013${formatMs(item.end_ms)}`;
-        lines.push(`<h2>Segment ${segIdx} (${timeRange})</h2>`);
-        const summary = item.summary || {};
-        const bullets = summary.bullets || [];
-        const definitions = summary.definitions || [];
-        const explanations = summary.explanations || [];
-        const openQuestions = summary.open_questions || [];
-
-        if (bullets.length > 0) {
-            lines.push('<h3>요약</h3><ul>');
-            bullets.forEach((b) => {
-                const text = typeof b === 'string' ? b : (b.bullet_id ? `(${b.bullet_id}) ` : '') + (b.claim || b.text || JSON.stringify(b));
-                lines.push(`<li>${renderTextToHtml(text)}</li>`);
-            });
-            lines.push('</ul>');
-        }
-        if (definitions.length > 0) {
-            lines.push('<h3>정의</h3><ul>');
-            definitions.forEach((d) => {
-                lines.push(`<li><strong>${renderTextToHtml(d.term)}</strong>: ${renderTextToHtml(d.definition)}</li>`);
-            });
-            lines.push('</ul>');
-        }
-        if (explanations.length > 0) {
-            lines.push('<h3>해설</h3><ul>');
-            explanations.forEach((e) => {
-                lines.push(`<li>${renderTextToHtml(e.point || e.text || JSON.stringify(e))}</li>`);
-            });
-            lines.push('</ul>');
-        }
-        if (openQuestions.length > 0) {
-            lines.push('<h3>열린 질문</h3><ul>');
-            openQuestions.forEach((q) => {
-                lines.push(`<li>${renderTextToHtml(q.question || q.text || JSON.stringify(q))}</li>`);
-            });
-            lines.push('</ul>');
-        }
-    });
-    return lines.join('\n');
 }
 
 function buildMarkdownExport(videoName, items) {
@@ -317,6 +249,13 @@ function AnalysisPage() {
         }
     };
 
+    const handleExportPdfPrint = () => {
+        setExportOpen(false);
+        if (!videoId) return;
+        const url = `/analysis/${encodeURIComponent(videoId)}/print?autoprint=1`;
+        window.open(url, '_blank', 'noopener,noreferrer');
+    };
+
 
     return (
         <div className="bg-[var(--bg-primary)] text-[var(--text-primary)] font-display flex h-screen overflow-hidden selection:bg-primary/40 selection:text-white transition-colors duration-300" data-theme={theme}>
@@ -370,6 +309,12 @@ function AnalysisPage() {
                             </button>
                             {exportOpen && (
                                 <div className="absolute right-0 top-full mt-2 w-48 bg-[var(--bg-secondary,var(--bg-primary))] border border-[var(--border-color)] rounded-lg shadow-xl z-50 overflow-hidden">
+                                    <button
+                                        onClick={handleExportPdfPrint}
+                                        className="w-full text-left px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-surface-highlight transition-colors"
+                                    >
+                                        PDF (KaTeX)
+                                    </button>
                                     <button
                                         onClick={handleExportMarkdown}
                                         className="w-full text-left px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-surface-highlight transition-colors"
