@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useVideo } from '../context/VideoContext';
@@ -9,7 +9,7 @@ import VideoPlayer from '../components/VideoPlayer';
 import ChatBot from '../components/ChatBot';
 import SummaryPanel from '../components/SummaryPanel';
 import katex from 'katex';
-import { Menu, ChevronRight, Sun, Moon, Download, ChevronDown, Video, Bot } from 'lucide-react';
+import { Menu, ChevronRight, Sun, Moon, Download, ChevronDown, Video, Bot, Library } from 'lucide-react';
 
 function formatMs(ms) {
     if (ms == null) return '--:--';
@@ -143,7 +143,8 @@ function AnalysisPage() {
     const [videoInfo, setVideoInfo] = useState(null);
     const [exportOpen, setExportOpen] = useState(false);
     const [sidebarOpen, setSidebarOpen] = useState(false);
-    const [chatbotOpen, setChatbotOpen] = useState(false);
+    const [chatbotOpen, setChatbotOpen] = useState(typeof window !== 'undefined' ? window.innerWidth >= 1024 : false);
+    const [chatPrefill, setChatPrefill] = useState(null);
     const exportRef = useRef(null);
 
     // Close export dropdown on outside click
@@ -154,7 +155,19 @@ function AnalysisPage() {
             }
         };
         document.addEventListener('mousedown', handleClick);
-        return () => document.removeEventListener('mousedown', handleClick);
+
+        // Auto-open chatbot on desktop resize
+        const handleResize = () => {
+            if (window.innerWidth >= 1024) {
+                setChatbotOpen(true);
+            }
+        };
+        window.addEventListener('resize', handleResize);
+
+        return () => {
+            document.removeEventListener('mousedown', handleClick);
+            window.removeEventListener('resize', handleResize);
+        };
     }, []);
 
     // Body scroll lock for mobile overlays
@@ -203,10 +216,20 @@ function AnalysisPage() {
     const playbackStateRef = useRef({ time: 0, playing: false });
 
     // Scroll-triggered PiP
+    // Scroll-triggered PiP
     const [scrollPip, setScrollPip] = useState(false);
     const videoSectionRef = useRef(null);
     const scrollContainerRef = useRef(null);
     const scrollPipRef = useRef(false);
+
+    const handleScrollPipClose = useCallback(() => {
+        videoSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, []);
+
+    const handleAskChatBot = useCallback((data) => {
+        setChatPrefill(data);
+        setChatbotOpen(true);
+    }, []);
 
     // Current playback time (ms) for segment highlighting
     const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
@@ -233,32 +256,27 @@ function AnalysisPage() {
 
     // Detect when video section scrolls out of view → show PiP
     useEffect(() => {
-        if (isExpanded) {
-            setScrollPip(false);
-            scrollPipRef.current = false;
-            return;
-        }
         const section = videoSectionRef.current;
         const container = scrollContainerRef.current;
         if (!section || !container) return;
 
         const observer = new IntersectionObserver(
             ([entry]) => {
+                // If even 10% of the video section is visible, we should show the non-PIP video
+                // This prevents the PIP from staying when the original spot is beginning to show
                 const shouldPip = !entry.isIntersecting;
                 if (shouldPip === scrollPipRef.current) return;
                 scrollPipRef.current = shouldPip;
                 setScrollPip(shouldPip);
             },
-            { root: container, threshold: 0 },
+            { root: container, threshold: 0.1 },
         );
 
         observer.observe(section);
         return () => observer.disconnect();
-    }, [isExpanded]);
-
-    const handleScrollPipClose = useCallback(() => {
-        videoSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, []);
+
+
 
     const handleSeekTo = useCallback((timeMs) => {
         const v = videoElRef.current;
@@ -288,7 +306,7 @@ function AnalysisPage() {
             } else if (e.key === ' ' || e.code === 'Space') {
                 e.preventDefault();
                 if (v.paused) {
-                    v.play().catch(() => {});
+                    v.play().catch(() => { });
                 } else {
                     v.pause();
                 }
@@ -331,63 +349,71 @@ function AnalysisPage() {
 
 
     return (
-        <div className="bg-[var(--bg-primary)] text-[var(--text-primary)] font-display flex h-screen overflow-hidden selection:bg-primary/40 selection:text-white transition-colors duration-300 relative" data-theme={theme}>
+        <div className="bg-[var(--bg-primary)] text-[var(--text-primary)] font-display flex h-[100dvh] overflow-hidden selection:bg-primary/40 selection:text-white transition-colors duration-300 relative" data-theme={theme}>
             {/* Left Sidebar */}
             <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
             {/* Main Content Area */}
             <main className="flex-1 flex flex-col min-w-0 h-full relative bg-[var(--bg-primary)] transition-colors duration-300">
                 {/* Header / Breadcrumbs */}
-                <header className="h-16 flex items-center justify-between px-6 border-b border-[var(--border-color)] bg-[var(--bg-primary)]/95 backdrop-blur z-30 shrink-0">
-                    <div className="flex items-center gap-2">
-                        <a href="/" className="text-gray-400 hover:text-[var(--text-primary)] transition-colors hidden sm:block" title="홈으로">
-                            <Video className="w-5 h-5" />
-                        </a>
+                <header className="h-[50px] flex items-center justify-between px-4 lg:px-8 border-b border-[var(--border-color)] bg-[var(--bg-primary)]/95 backdrop-blur z-30 shrink-0 shadow-sm">
+                    <div className="flex items-center gap-4 min-w-0 h-full">
                         <button
                             onClick={() => setSidebarOpen(true)}
-                            className="lg:hidden mr-2 text-gray-400 hover:text-primary transition-colors"
+                            className="lg:hidden w-12 h-[50px] flex items-center justify-center text-gray-400 hover:text-primary transition-colors shrink-0 bg-surface-highlight/5 border-r border-[var(--border-color)]"
                         >
-                            <Menu className="w-6 h-6" />
+                            <Menu className="w-5 h-5" />
                         </button>
-                        <a href="/" className="text-gray-400 text-sm font-medium hover:text-[var(--text-primary)] transition-colors">Library</a>
-                        <ChevronRight className="w-4 h-4 text-gray-400" />
-                        <div className="flex items-center gap-2">
-                            {videoInfo ? (
-                                <span className="text-[var(--text-primary)] text-sm font-medium truncate max-w-[200px]">{videoName}</span>
-                            ) : (
-                                <span className="text-gray-400 text-sm font-medium">
-                                    <span className="inline-flex">
-                                        <span className="animate-pulse">.</span>
-                                        <span className="animate-pulse" style={{ animationDelay: '0.2s' }}>.</span>
-                                        <span className="animate-pulse" style={{ animationDelay: '0.4s' }}>.</span>
-                                    </span>
-                                </span>
-                            )}
-                            <span className="bg-primary/20 text-primary text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">{statusLabel}</span>
+
+                        <div className="w-1 shrink-0" />
+                        <div className="flex items-center gap-3.5 min-w-0 overflow-hidden h-[50px] pl-6 pr-4 bg-surface-highlight/5 border-b border-[var(--border-color)]">
+                            <div className="flex items-center gap-3 min-w-0">
+                                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ml-4 shadow-sm ${statusLabel === 'DONE' ? 'bg-emerald-500 shadow-emerald-500/50' : 'bg-primary animate-pulse shadow-primary/50'}`} />
+                                {videoInfo ? (
+                                    <h1 className="text-base font-bold leading-none tracking-tight text-[var(--text-primary)] truncate">{videoName}</h1>
+                                ) : (
+                                    <div className="flex gap-1.5">
+                                        {[0, 1, 2].map(i => (
+                                            <span key={i} className="w-1.5 h-1.5 rounded-full bg-gray-600 animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-4">
+
+                    <div className="flex items-center gap-1.5 shrink-0 h-full ml-4">
+                        <button
+                            onClick={() => setChatbotOpen((prev) => !prev)}
+                            className={`lg:hidden w-9 h-9 flex items-center justify-center transition-colors rounded-xl border border-[var(--border-color)] shadow-sm ${chatbotOpen
+                                ? 'text-[var(--accent-coral)] bg-[var(--accent-coral)]/20'
+                                : 'text-gray-400 hover:text-[var(--accent-coral)] bg-surface-highlight/5'
+                                }`}
+                            title={chatbotOpen ? "Close AI Chat" : "Open AI Chat"}
+                        >
+                            <Bot className="w-5 h-5" />
+                        </button>
+
                         <button
                             onClick={toggleTheme}
-                            className="flex items-center justify-center text-gray-400 hover:text-[var(--text-primary)] transition-colors mr-2"
+                            className="w-9 h-9 flex items-center justify-center text-gray-400 hover:text-[var(--text-primary)] transition-colors bg-surface-highlight/5 border border-[var(--border-color)] rounded-xl shadow-sm"
                             title={theme === 'dark' ? "Switch to Light Mode" : "Switch to Dark Mode"}
                         >
                             {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
                         </button>
-                        <div className="relative" ref={exportRef}>
+                        <div className="relative h-9" ref={exportRef}>
                             <button
                                 onClick={() => setExportOpen((o) => !o)}
-                                className="flex items-center gap-2 text-gray-400 hover:text-[var(--text-primary)] transition-colors"
+                                className="w-9 h-9 flex items-center justify-center text-gray-400 hover:text-[var(--text-primary)] transition-colors bg-surface-highlight/5 border border-[var(--border-color)] rounded-xl shadow-sm"
+                                title="Export Video Summary"
                             >
                                 <Download className="w-5 h-5" />
-                                <span className="text-sm font-medium hidden sm:block">Export</span>
-                                <ChevronDown className="w-4 h-4" />
                             </button>
                             {exportOpen && (
-                                <div className="absolute right-0 top-full mt-2 w-48 bg-[var(--bg-secondary,var(--bg-primary))] border border-[var(--border-color)] rounded-lg shadow-xl z-50 overflow-hidden">
+                                <div className="absolute right-0 top-full mt-2 w-48 bg-[var(--bg-secondary,var(--bg-primary))] border border-[var(--border-color)] rounded-xl shadow-xl z-50 overflow-hidden animate-fade-in">
                                     <button
                                         onClick={handleExportMarkdown}
-                                        className="w-full text-left px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-surface-highlight transition-colors"
+                                        className="w-full text-center px-4 py-3 text-sm text-[var(--text-primary)] hover:bg-surface-highlight transition-colors"
                                     >
                                         Markdown (.md)
                                     </button>
@@ -398,71 +424,55 @@ function AnalysisPage() {
                 </header>
 
                 {/* Workspace Grid */}
-                <div className="flex flex-1 overflow-hidden relative">
-                    {/* Left Column: Video & Summary */}
-                    <div className="flex-1 relative min-w-0 bg-[var(--bg-primary)]">
-                        {isExpanded ? (
-                            <>
-                                {/* Detailed Summary View (Full) */}
-                                <SummaryPanel isExpanded={true} onToggleExpand={() => handleToggleExpand(false)} videoId={videoId} onSeekTo={handleSeekTo} currentTimeMs={currentPlaybackMs} />
-
-                                {/* PIP Video Player */}
-                                <div className="absolute bottom-6 right-6 w-80 lg:w-96 aspect-video z-50 transition-all hover:scale-[1.02]">
+                <div className="flex flex-col lg:flex-row flex-1 overflow-hidden relative">
+                    {/* Left Column: Video & Summary - Unified Scroll Content */}
+                    <div className="relative min-w-0 min-h-0 bg-[var(--bg-primary)] transition-all duration-300 ease-in-out flex-1 h-full">
+                        <div ref={scrollContainerRef} className="w-full h-full overflow-y-auto custom-scrollbar flex flex-col items-center">
+                            {/* 1. Video Section - Always Constrained at Top */}
+                            <div ref={videoSectionRef} className="w-full max-w-[1024px] px-5 sm:px-8 mx-auto shrink-0 pt-6">
+                                <div
+                                    className={scrollPip
+                                        ? `fixed z-50 aspect-video animate-pipSlideIn transition-all duration-300 hover:scale-[1.02] ${chatbotOpen ? 'right-[calc(1.5rem+var(--chatbot-width))]' : 'right-6'} top-[58px] w-80 lg:top-auto lg:bottom-6 lg:w-96 rounded-xl overflow-hidden border border-[var(--border-color)] shadow-2xl`
+                                        : "relative w-full aspect-video border-b border-[var(--border-color)] bg-black shadow-sm"}
+                                >
                                     <VideoPlayer
-                                        isPip={true}
-                                        onTogglePip={() => handleToggleExpand(false)}
+                                        isPip={scrollPip}
+                                        onTogglePip={scrollPip ? handleScrollPipClose : undefined}
                                         videoId={videoId}
                                         videoElRef={videoElRef}
                                         playbackRestore={playbackStateRef}
                                         onTimeUpdate={handleTimeUpdate}
-                                        className="relative w-full h-full rounded-xl overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.5)] border border-[var(--border-color)] ring-1 ring-white/5 group bg-black"
+                                        className={scrollPip
+                                            ? "relative w-full h-full bg-black group"
+                                            : "relative w-full h-full bg-black"}
                                     />
                                 </div>
-                            </>
-                        ) : (
-                            // Normal View
-                            <div ref={scrollContainerRef} className="flex flex-col overflow-y-auto custom-scrollbar p-6 lg:p-8 gap-8 min-w-0 h-full">
-                                {/* Video Player Section */}
-                                <div ref={videoSectionRef} className="flex flex-col gap-4 shrink-0 w-full max-w-[1600px] mx-auto">
-                                    <div className={scrollPip
-                                        ? "absolute bottom-6 right-6 w-80 lg:w-96 z-50 aspect-video animate-pipSlideIn transition-transform hover:scale-[1.02]"
-                                        : ""}>
-                                        <VideoPlayer
-                                            isPip={scrollPip}
-                                            onTogglePip={scrollPip ? handleScrollPipClose : undefined}
-                                            videoId={videoId}
-                                            videoElRef={videoElRef}
-                                            playbackRestore={playbackStateRef}
-                                            onTimeUpdate={handleTimeUpdate}
-                                            className={scrollPip
-                                                ? "relative w-full h-full rounded-xl overflow-hidden shadow-[0_8px_30px_rgb(0,0,0,0.5)] border border-[var(--border-color)] ring-1 ring-white/5 group bg-black"
-                                                : undefined}
-                                        />
-                                    </div>
-                                    {scrollPip && <div style={{ aspectRatio: '16/9' }} className="rounded-xl" />}
-                                </div>
-
-                                {/* Summary Section */}
-                                <SummaryPanel isExpanded={false} onToggleExpand={() => handleToggleExpand(true)} videoId={videoId} onSeekTo={handleSeekTo} currentTimeMs={currentPlaybackMs} />
+                                {scrollPip && <div style={{ aspectRatio: '16/9' }} className="rounded-none bg-black/5" />}
                             </div>
-                        )}
+
+                            {/* 2. Summary Section - Width depends on Expanded state */}
+                            <div className="w-full mx-auto transition-all duration-300 max-w-[1024px] px-5 sm:px-8">
+                                <SummaryPanel
+                                    isExpanded={isExpanded}
+                                    onToggleExpand={() => handleToggleExpand(!isExpanded)}
+                                    videoId={videoId}
+                                    onSeekTo={handleSeekTo}
+                                    currentTimeMs={currentPlaybackMs}
+                                    chatbotOpen={chatbotOpen}
+                                    onAskChatBot={handleAskChatBot}
+                                />
+                            </div>
+                        </div>
                     </div>
 
                     {/* Right Column: AI Chatbot */}
                     <ChatBot
                         videoId={videoId}
                         isOpen={chatbotOpen}
-                        onClose={() => setChatbotOpen(false)}
+                        onToggle={() => setChatbotOpen((prev) => !prev)}
+                        prefillData={chatPrefill}
+                        onPrefillClear={() => setChatPrefill(null)}
                     />
-
-                    {/* Mobile Chat Toggle Button */}
-                    <button
-                        onClick={() => setChatbotOpen(true)}
-                        className="lg:hidden fixed bottom-6 left-6 z-40 bg-primary text-white p-4 rounded-full shadow-2xl hover:scale-110 active:scale-95 transition-all"
-                        title="AI Chat"
-                    >
-                        <Bot className="w-6 h-6" />
-                    </button>
                 </div>
             </main>
         </div>
