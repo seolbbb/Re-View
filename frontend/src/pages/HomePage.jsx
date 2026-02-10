@@ -93,7 +93,7 @@ function HomePage() {
                             스마트하게 분석하세요
                         </h1>
                         <p className="hero-subtitle">
-                            영상을 업로드하면 AI가 자동으로 요약하고, 질문에 답변해드립니다
+                            영상을 업로드하면 AI가 자동으로 요약하고<br />질문에 답변해드립니다
                         </p>
                         <div className="hero-upload">
                             <UploadArea />
@@ -106,7 +106,7 @@ function HomePage() {
                 <section className="library-section">
                     <div className="section-header">
                         <div className="section-title-group">
-                            <h2><Library className="inline-block w-6 h-6 mr-2 align-text-bottom" /> 내 라이브러리</h2>
+                            <h2><Library className="inline-block w-6 h-6 mr-2 align-text-bottom text-primary" /> 내 라이브러리</h2>
                             <span className="video-count">{filtered.length}개 영상</span>
                         </div>
                         <div className="section-filters">
