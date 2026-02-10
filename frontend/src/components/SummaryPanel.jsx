@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StickyNote, RefreshCw, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw } from 'lucide-react';
+import { StickyNote, RefreshCw, Minimize2, Maximize2, Loader2, AlertTriangle, RotateCcw, Clock, Bot } from 'lucide-react';
 import { getVideoSummaries, restartProcessing } from '../api/videos';
 import useVideoStatusStream from '../hooks/useVideoStatusStream';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -12,7 +12,7 @@ function formatMs(ms) {
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTimeMs }) {
+function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTimeMs, chatbotOpen, onAskChatBot }) {
     const [items, setItems] = useState([]);
     const [initialLoading, setInitialLoading] = useState(true);
     const [videoStatus, setVideoStatus] = useState(null);
@@ -26,16 +26,13 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
     const [preprocessInfo, setPreprocessInfo] = useState({ status: null });
     const [pipelineMode, setPipelineMode] = useState('sequential');
 
-    // 비디오 상태 확인: 처리 중인지 판단
     const isProcessing = videoStatus && !['DONE', 'FAILED'].includes((videoStatus).toUpperCase());
 
-    // SSE 상태 콜백: 상태 데이터 반영
     const handleStatus = useCallback((statusData) => {
         if (!statusData) return;
         setVideoStatus(statusData.video_status);
         setErrorMessage(statusData.error_message || null);
 
-        // 전처리 상태 및 파이프라인 모드 추적
         const ppJob = statusData.preprocess_job;
         if (ppJob) setPreprocessInfo({ status: (ppJob.status || '').toUpperCase() });
         setPipelineMode(statusData.pipeline_mode || 'sequential');
@@ -50,13 +47,10 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
             if (jobStatus === 'DONE') {
                 percent = 100;
             } else if (total > 0) {
-                // 기존 로직: total이 확정된 경우 (순차 파이프라인)
                 const basePct = (current / total) * 100;
                 const batchWidth = 100 / total;
                 const stageWeight = { VLM_RUNNING: 0.3, SUMMARY_RUNNING: 0.6, JUDGE_RUNNING: 0.9 };
 
-                // Guard: after current_batch increments, status may still show the
-                // previous batch's JUDGE_RUNNING for 1+ poll cycles.
                 if (prevBatchRef.current >= 0 && current !== prevBatchRef.current) {
                     staleFlagRef.current = true;
                 }
@@ -64,28 +58,18 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                 if (staleFlagRef.current && jobStatus !== 'JUDGE_RUNNING') {
                     staleFlagRef.current = false;
                 }
-                const stageBonus = staleFlagRef.current
-                    ? 0
-                    : (stageWeight[jobStatus] || 0) * batchWidth;
-
+                const stageBonus = staleFlagRef.current ? 0 : (stageWeight[jobStatus] || 0) * batchWidth;
                 percent = Math.min(Math.round(basePct + stageBonus), 99);
             } else if (current > 0) {
-                // 비동기 파이프라인: total 미정. 로그 기반 점진 증가 (최대 95%)
                 percent = Math.min(Math.round(95 * (1 - 1 / (1 + current * 0.3))), 95);
             } else {
                 percent = 0;
             }
 
-            setProgressInfo({
-                current,
-                total,
-                percent,
-                stage: jobStatus,
-            });
+            setProgressInfo({ current, total, percent, stage: jobStatus });
         }
     }, []);
 
-    // SSE 요약 콜백: 새 배치가 추가되면 자동 업데이트
     const handleSummaries = useCallback((summaryData) => {
         if (!summaryData?.items) return;
         const newItems = summaryData.items;
@@ -95,14 +79,12 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         }
     }, []);
 
-    // SSE 완료 콜백
     const handleDone = useCallback((data) => {
         if (data?.video_status) {
             setVideoStatus(data.video_status);
         }
     }, []);
 
-    // SSE 스트리밍 (polling 대신 사용)
     const { reconnect } = useVideoStatusStream(videoId, {
         enabled: !!videoId,
         onStatus: handleStatus,
@@ -110,7 +92,6 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         onDone: handleDone,
     });
 
-    // 초기 요약 로드
     useEffect(() => {
         if (!videoId) return;
         setInitialLoading(true);
@@ -124,7 +105,6 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
             .finally(() => setInitialLoading(false));
     }, [videoId, streamKey]);
 
-    // 처리 완료 시 최종 요약 한 번 더 로드
     useEffect(() => {
         if (!videoId) return;
         if (videoStatus && (videoStatus.toUpperCase() === 'DONE')) {
@@ -136,8 +116,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
 
     const stageLabel = (() => {
         const s = (progressInfo.stage || videoStatus || '').toUpperCase();
-        if (s === 'PROCESSING' && progressInfo.total === 0 && progressInfo.current === 0)
-            return '분석 시작 중...';
+        if (s === 'PROCESSING' && progressInfo.total === 0 && progressInfo.current === 0) return '분석 시작 중...';
         if (s === 'VLM_RUNNING') return 'AI 분석 진행 중...';
         if (s === 'SUMMARY_RUNNING') return '요약 생성 중...';
         if (s === 'JUDGE_RUNNING') return '품질 평가 중...';
@@ -145,96 +124,7 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
         return '영상 분석 중...';
     })();
 
-    const ProcessingStatusBar = () => {
-        if (!isProcessing) return null;
-        return (
-            <div className="bg-surface rounded-lg p-4 border border-[var(--border-color)] flex flex-col gap-3 shadow-sm mb-4">
-                <div className="flex gap-6 justify-between items-center">
-                    <div className="flex items-center gap-2">
-                        <RefreshCw className="w-5 h-5 text-primary animate-spin" />
-                        <p className="text-[var(--text-primary)] text-sm font-medium">{stageLabel}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        {progressInfo.total > 0 && (
-                            <span className="text-gray-400 text-xs">
-                                {progressInfo.current}/{progressInfo.total} batches
-                            </span>
-                        )}
-                        <p className="text-gray-400 text-xs font-mono">{progressInfo.percent}%</p>
-                    </div>
-                </div>
-                <div className="h-1.5 w-full bg-surface-highlight rounded-full overflow-hidden">
-                    <div
-                        className="h-full bg-primary rounded-full relative overflow-hidden transition-all duration-700"
-                        style={{ width: `${progressInfo.percent}%` }}
-                    >
-                        <div className="absolute inset-0 bg-white/20 w-full animate-[shimmer_2s_infinite] translate-x-[-100%]"></div>
-                    </div>
-                </div>
-                {pipelineMode === 'async' && preprocessInfo.status === 'RUNNING' && (
-                    <div className="flex justify-end mt-1">
-                        <span className="text-[10px] text-gray-500 bg-surface-highlight px-2 py-0.5 rounded-full">
-                            전처리 병렬 진행 중
-                        </span>
-                    </div>
-                )}
-            </div>
-        );
-    };
 
-    const CompletedBanner = () => {
-        if (!videoStatus || videoStatus.toUpperCase() !== 'DONE') return null;
-        return (
-            <div className="bg-green-500/10 rounded-lg p-3 border border-green-500/20 flex items-center gap-2 mb-4">
-                <span className="text-green-400 text-sm font-medium">분석 완료 - {items.length}개 세그먼트</span>
-            </div>
-        );
-    };
-
-    const FailedBanner = () => {
-        if (!videoStatus || videoStatus.toUpperCase() !== 'FAILED') return null;
-
-        const handleRestart = async () => {
-            setIsRestarting(true);
-            try {
-                await restartProcessing(videoId);
-                setVideoStatus(null);
-                setErrorMessage(null);
-                setProgressInfo({ current: 0, total: 0, percent: 0, stage: '' });
-                prevBatchRef.current = -1;
-                staleFlagRef.current = false;
-                setStreamKey(k => k + 1);
-                // SSE 연결 재시작 (done 이벤트로 종료된 연결 복구)
-                reconnect();
-            } catch (err) {
-                setErrorMessage(`재시작 실패: ${err.message || '알 수 없는 오류'}`);
-            } finally {
-                setIsRestarting(false);
-            }
-        };
-
-        return (
-            <div className="bg-red-500/10 rounded-lg p-4 border border-red-500/20 flex flex-col gap-3 mb-4">
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <AlertTriangle className="w-5 h-5 text-red-400" />
-                        <span className="text-red-400 text-sm font-medium">분석 실패</span>
-                    </div>
-                    <button
-                        onClick={handleRestart}
-                        disabled={isRestarting}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-medium rounded-lg border border-red-500/30 transition-colors disabled:opacity-50"
-                    >
-                        <RotateCcw className={`w-3.5 h-3.5 ${isRestarting ? 'animate-spin' : ''}`} />
-                        {isRestarting ? '재시작 중...' : '요약 재시작'}
-                    </button>
-                </div>
-                {errorMessage && (
-                    <p className="text-red-400/70 text-xs">{errorMessage}</p>
-                )}
-            </div>
-        );
-    };
 
     const getBulletText = (b) => {
         if (typeof b === 'string') return b;
@@ -260,50 +150,117 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
             currentTimeMs >= item.start_ms && currentTimeMs < item.end_ms;
 
         const handleCardClick = () => {
-            if (!isExpanded && onSeekTo && item.start_ms != null) {
+            if (onSeekTo && item.start_ms != null) {
                 onSeekTo(item.start_ms);
             }
         };
 
+        if (!isExpanded) {
+            return (
+                <div
+                    key={item.summary_id || index}
+                    className={`group flex flex-col border border-[var(--border-color)] ${isActive
+                        ? 'bg-primary/10 border-primary shadow-[0_0_15px_rgba(224,126,99,0.1)] ring-1 ring-primary/20'
+                        : 'bg-white/[0.02] dark:bg-white/[0.03] hover:bg-white/[0.05] dark:hover:bg-white/[0.06] shadow-sm'
+                        } py-2.5 rounded-xl cursor-pointer ${isNew ? 'animate-fade-in' : ''} transition-all duration-300`}
+                    onClick={handleCardClick}
+                >
+                    <div className="flex flex-row items-start relative">
+                        {/* Simple View: Left Side Seg Info */}
+                        <div className="hidden lg:flex w-[60px] self-stretch shrink-0 items-center justify-center select-none border-r border-[var(--border-color)]/30">
+                            <div className="flex flex-col items-center justify-center leading-none">
+                                <span className="text-[var(--text-primary)] font-bold text-[13px]">Seg {segIdx}</span>
+                                <div className="h-[2px]" />
+                                <span className="text-[var(--text-secondary)] text-[10px] font-medium opacity-70">
+                                    {item.start_ms != null ? formatMs(item.start_ms) : '00:00'}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="flex-1 min-w-0 px-4">
+                            {/* Mobile: Center Title */}
+                            <div className="lg:hidden flex items-center justify-center h-6 mb-1">
+                                <h4 className="text-[var(--text-primary)] font-semibold truncate text-center text-[15px]">
+                                    {title}
+                                </h4>
+                            </div>
+
+                            {!hasSections && <p className="text-[var(--text-secondary)] text-[13px] italic">요약 데이터 준비 중...</p>}
+
+                            {bullets.length > 0 && (
+                                <div className="mb-0">
+                                    <ul className="list-disc list-inside text-[var(--text-secondary)] text-sm md:text-[15px] space-y-1 leading-relaxed">
+                                        {bullets.map((b, i) => (
+                                            <li key={i} className="markdown-inline">
+                                                <MarkdownRenderer>{getBulletText(b)}</MarkdownRenderer>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="absolute right-2 top-0 flex items-center h-full opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAskChatBot?.({ segIdx, timeRange, content: item.summary });
+                                }}
+                                className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-[var(--text-secondary)] hover:text-blue-400 transition-colors"
+                                title="원본 분석 답변"
+                            >
+                                <Clock size={16} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        /* Detail View: Card-based multi-row layout */
         return (
             <div
                 key={item.summary_id || index}
-                className={`group flex flex-col md:flex-row gap-2 md:gap-8 border-l-2 ${isActive
-                        ? 'border-l-primary bg-primary/10'
-                        : 'border-l-transparent'
-                    } ${isExpanded ? 'p-5 rounded-xl hover:bg-surface/30' : 'p-3 rounded-lg hover:bg-[var(--bg-hover)] cursor-pointer'
-                    } ${isNew ? 'animate-fade-in' : ''} transition-colors`}
+                className={`group flex flex-col border border-[var(--border-color)] ${isActive
+                    ? 'bg-primary/10 border-primary shadow-[0_0_20px_rgba(224,126,99,0.15)] ring-1 ring-primary/20'
+                    : 'bg-white/[0.02] dark:bg-white/[0.03] hover:bg-white/[0.05] dark:hover:bg-white/[0.06] shadow-sm'
+                    } p-4 sm:p-5 rounded-2xl cursor-pointer ${isNew ? 'animate-fade-in' : ''} transition-all duration-300 relative`}
                 onClick={handleCardClick}
             >
-                <div className="md:w-24 shrink-0 flex md:justify-end">
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            if (onSeekTo && item.start_ms != null) onSeekTo(item.start_ms);
-                        }}
-                        className={`font-mono text-sm bg-surface/50 px-2 py-0.5 rounded border transition-colors h-fit cursor-pointer ${isActive
-                                ? 'text-primary border-primary/50 bg-primary/10'
-                                : 'text-gray-400 border-[var(--border-color)] group-hover:border-primary/50 hover:text-primary hover:bg-primary/10'
-                            }`}
-                        title={`${formatMs(item.start_ms)} 으로 이동`}
-                    >
-                        {formatMs(item.start_ms)}
-                    </button>
+                {/* Float Clock Button - Top Right */}
+
+
+                {/* 1. Top Header Row Info */}
+                <div className="flex flex-row items-center border-b border-[var(--border-color)]/30 pb-3 mb-4">
+                    <div className="w-[60px] shrink-0 border-r border-[var(--border-color)]/30 mr-4 self-stretch flex items-center justify-center">
+                        <div className="flex flex-col items-center justify-center h-full">
+                            <span className="text-[var(--text-primary)] font-bold text-[15px]">Seg {segIdx}</span>
+                        </div>
+                    </div>
+                    <div className="flex-1 min-w-0 flex items-center justify-between">
+                        <h4 className="text-[var(--text-primary)] font-bold text-lg flex items-center gap-2">
+                            <span className="text-[var(--text-secondary)] text-[20px] font-medium opacity-70 h-[20px] flex items-center">{timeRange}</span>
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAskChatBot?.({ segIdx, timeRange, content: item.summary });
+                                }}
+                                className="flex items-center justify-center w-8 h-8 rounded-full hover:bg-white/10 text-orange-500 transition-colors ml-1"
+                                title="원본 분석 답변"
+                            >
+                                <Bot size={24} />
+                            </button>
+                        </h4>
+                    </div>
                 </div>
-                <div className="flex-1">
-                    <h4 className={`text-[var(--text-primary)] font-semibold ${isExpanded ? 'mb-3 text-lg' : 'mb-1'}`}>{title}</h4>
 
-                    {!hasSections && (
-                        <p className="text-[var(--text-secondary)] text-sm italic">요약 데이터 준비 중...</p>
-                    )}
-
-                    {/* 요약 (Bullets) */}
-                    {bullets.length > 0 && (
-                        <div className={isExpanded ? 'mb-4' : 'mb-1'}>
-                            {isExpanded && (
-                                <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">요약</h5>
-                            )}
-                            <ul className={`list-disc list-outside ml-4 text-[var(--text-secondary)] ${isExpanded ? 'text-base space-y-1.5' : 'text-sm space-y-0.5'} leading-relaxed`}>
+                {/* 2. Summary Section */}
+                {bullets.length > 0 && (
+                    <div className="flex flex-row items-start">
+                        <div className="hidden lg:block w-[60px] shrink-0 h-4 border-r border-[var(--border-color)]/30 mr-4" />
+                        <div className="flex-1 min-w-0">
+                            <ul className="list-disc list-inside text-[var(--text-secondary)] text-sm md:text-[15px] space-y-2 leading-relaxed">
                                 {bullets.map((b, i) => (
                                     <li key={i} className="markdown-inline">
                                         <MarkdownRenderer>{getBulletText(b)}</MarkdownRenderer>
@@ -311,135 +268,239 @@ function SummaryPanel({ isExpanded, onToggleExpand, videoId, onSeekTo, currentTi
                                 ))}
                             </ul>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {/* 정의 (Definitions) — expanded only */}
-                    {isExpanded && definitions.length > 0 && (
-                        <div className="mb-4">
-                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">정의</h5>
-                             <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
-                                 {definitions.map((d, i) => (
-                                     <li key={i} className="markdown-inline">
-                                        <MarkdownRenderer inline className="font-semibold text-[var(--text-primary)]">{d.term}</MarkdownRenderer>
-                                        {': '}
-                                        <MarkdownRenderer inline>{d.definition}</MarkdownRenderer>
-                                     </li>
-                                 ))}
-                             </ul>
-                         </div>
-                     )}
-
-                    {/* 해설 (Explanations) — expanded only */}
-                    {isExpanded && explanations.length > 0 && (
-                        <div className="mb-4">
-                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">해설</h5>
-                            <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed">
-                                {explanations.map((e, i) => (
-                                    <li key={i} className="markdown-inline">
-                                        <MarkdownRenderer>{e.point || e.text || JSON.stringify(e)}</MarkdownRenderer>
-                                    </li>
-                                ))}
-                            </ul>
+                {/* 3. Definitions Section */}
+                {definitions.length > 0 && (
+                    <>
+                        {/* Definitions Top Spacer: 12px height */}
+                        <div className="flex flex-row items-center mt-8">
+                            <div className="hidden lg:block w-[60px] shrink-0" />
+                            <div className="flex-1 min-w-0 h-3" />
                         </div>
-                    )}
-
-                    {/* 열린 질문 (Open Questions) — expanded only */}
-                    {isExpanded && openQuestions.length > 0 && (
-                        <div className="mb-2">
-                            <h5 className="text-primary text-xs font-bold uppercase tracking-wider mb-1.5">열린 질문</h5>
-                            <ul className="list-disc list-outside ml-4 text-[var(--text-secondary)] text-base space-y-1.5 leading-relaxed italic">
-                                {openQuestions.map((q, i) => (
-                                    <li key={i} className="markdown-inline">
-                                        <MarkdownRenderer>{q.question || q.text || JSON.stringify(q)}</MarkdownRenderer>
-                                    </li>
-                                ))}
-                            </ul>
+                        {/* Definitions Content Area: Label on the left, centered vertically */}
+                        <div className="flex flex-row items-stretch mt-1">
+                            <div className="hidden lg:flex w-[60px] shrink-0 items-center justify-center">
+                                <span className="text-primary text-[11px] font-bold uppercase tracking-wider h-4 flex items-center justify-center">정의</span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <ul className="list-disc list-inside ml-4 text-[var(--text-secondary)] text-sm md:text-base space-y-1.5 leading-relaxed">
+                                    {definitions.map((d, i) => (
+                                        <li key={i} className="markdown-inline">
+                                            <MarkdownRenderer inline className="font-semibold text-[var(--text-primary)]">{d.term}</MarkdownRenderer>
+                                            {': '}
+                                            <MarkdownRenderer inline>{d.definition}</MarkdownRenderer>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                            <div className="w-[2px] shrink-0" />
                         </div>
-                    )}
-                </div>
+                    </>
+                )}
+
+                {/* 4. Explanations Section */}
+                {explanations.length > 0 && (
+                    <>
+                        {/* Explanations Top Spacer: 12px height */}
+                        <div className="flex flex-row items-center mt-8">
+                            <div className="hidden lg:block w-[60px] shrink-0" />
+                            <div className="flex-1 min-w-0 h-3" />
+                        </div>
+                        {/* Explanations Content Area: Label on the left, centered vertically */}
+                        <div className="flex flex-row items-stretch mt-1">
+                            <div className="hidden lg:flex w-[60px] shrink-0 items-center justify-center">
+                                <span className="text-primary text-[11px] font-bold uppercase tracking-wider h-4 flex items-center justify-center">해설</span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <ul className="list-disc list-inside ml-4 text-[var(--text-secondary)] text-sm md:text-base space-y-1.5 leading-relaxed">
+                                    {explanations.map((e, i) => (
+                                        <li key={i} className="markdown-inline">
+                                            <MarkdownRenderer>{e.point || e.text || JSON.stringify(e)}</MarkdownRenderer>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                            <div className="w-[2px] shrink-0" />
+                        </div>
+                    </>
+                )}
+
+                {/* 5. Open Questions Section */}
+                {openQuestions.length > 0 && (
+                    <>
+                        {/* Open Questions Top Spacer: 12px height */}
+                        <div className="flex flex-row items-center mt-8">
+                            <div className="hidden lg:block w-[60px] shrink-0" />
+                            <div className="flex-1 min-w-0 h-3" />
+                        </div>
+                        {/* Open Questions Content Area: Label on the left, centered vertically */}
+                        <div className="flex flex-row items-stretch mt-1 mb-2">
+                            <div className="hidden lg:flex w-[60px] shrink-0 items-center justify-center">
+                                <span className="text-primary text-[11px] font-bold uppercase tracking-wider text-center leading-tight h-4 flex items-center justify-center">열린 질문</span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <ul className="list-disc list-inside ml-4 text-[var(--text-secondary)] text-sm md:text-base space-y-1.5 leading-relaxed italic">
+                                    {openQuestions.map((q, i) => (
+                                        <li key={i} className="markdown-inline">
+                                            <MarkdownRenderer>{q.question || q.text || JSON.stringify(q)}</MarkdownRenderer>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                            <div className="w-[2px] shrink-0" />
+                        </div>
+                    </>
+                )}
             </div>
         );
     };
 
     return (
-        <div className={`flex flex-col ${isExpanded ? 'items-center p-6 lg:p-10 overflow-y-auto custom-scrollbar absolute inset-0' : 'gap-4 pb-12 w-full max-w-[1600px] mx-auto'}`}>
-            <div className={`w-full ${isExpanded ? 'max-w-4xl flex flex-col gap-6 pb-24' : ''}`}>
-                {/* Header */}
-                {isExpanded ? (
-                    <div className="flex items-center justify-between border-b border-[var(--border-color)] pb-4 sticky top-0 bg-[var(--bg-primary)]/95 backdrop-blur z-40 py-2">
-                        <div className="flex items-center gap-3">
-                            <StickyNote className="w-7 h-7 text-primary" />
-                            <div className="flex flex-col">
-                                <h3 className="text-[var(--text-primary)] text-2xl font-bold tracking-tight">Real-time Summary</h3>
-                                <p className="text-gray-400 text-xs">
-                                    {items.length > 0 ? `${items.length} segments` : isProcessing ? 'Generating...' : 'No data'}
-                                </p>
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <button
-                                onClick={onToggleExpand}
-                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors"
-                            >
-                                <Minimize2 className="w-4 h-4" />
-                                간단히 보기
-                            </button>
-                        </div>
-                    </div>
-                ) : (
-                    <>
-                        <ProcessingStatusBar />
-                        <CompletedBanner />
-                        <FailedBanner />
-                        <div className="flex items-center justify-between border-b border-[var(--border-color)] pb-2">
-                            <div className="flex items-center gap-2">
-                                <StickyNote className="w-6 h-6 text-primary" />
-                                <h3 className="text-[var(--text-primary)] text-xl font-bold tracking-tight">Real-time Summary</h3>
-                                {items.length > 0 && (
-                                    <span className="text-gray-400 text-xs ml-1">({items.length})</span>
+        <div className={`flex flex-col transition-all duration-300 ${isExpanded
+            ? 'items-center py-6 lg:py-10 w-full'
+            : `gap-0 ${chatbotOpen ? 'pb-[70dvh] lg:pb-24' : 'pb-[70dvh] lg:pb-24'} w-full`}`}>
+            {/* 1. Header Section Area (Grouped Spacers + Header) */}
+            {!isExpanded ? (
+                <div className="flex-none">
+                    {/* Visual Spacer: Header Top h-3 (12px) */}
+                    <div className="h-3" />
+
+                    <div className="w-full">
+                        <div className="relative flex items-center justify-between h-6 box-content">
+                            <div className="w-1" /> {/* Far Side Spacer (4px) */}
+                            {/* Left: Status Badge Wrapper */}
+                            <div className="flex-1 flex items-center z-10">
+                                {videoStatus?.toUpperCase() === 'DONE' && (
+                                    <div className="px-1 flex items-center h-6 gap-1 sm:gap-1.5 animate-fade-in transition-all">
+                                        <span className="text-green-500 text-[10px] sm:text-xs font-semibold whitespace-nowrap">
+                                            분석 완료
+                                        </span>
+                                    </div>
+                                )}
+                                {isProcessing && (
+                                    <div className="px-1 flex items-center h-6 gap-1 sm:gap-1.5 animate-pulse transition-all">
+                                        <span className="text-primary text-[10px] sm:text-xs font-semibold whitespace-nowrap">
+                                            <span className="sm:hidden">분석 중</span>
+                                            <span className="hidden sm:inline">{stageLabel}</span>
+                                        </span>
+                                    </div>
                                 )}
                             </div>
+
+                            {/* Center: Title (Icon + Text) - Absolute Center */}
+                            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1.5 sm:gap-2.5 whitespace-nowrap h-6 transition-all">
+                                <StickyNote className="w-4 h-4 text-primary shrink-0" />
+                                <h3 className="text-[var(--text-primary)] text-sm sm:text-lg font-bold tracking-tight m-0 leading-none">
+                                    Real-time<span className="hidden sm:inline"> Summary</span>
+                                </h3>
+                                {items.length > 0 && (
+                                    <span className="text-gray-400 text-[10px] sm:text-xs ml-0.5 leading-none">({items.length})</span>
+                                )}
+                            </div>
+
+                            {/* Right: Toggle Button Wrapper */}
+                            <div className="flex-1 flex justify-end z-10">
+                                <button
+                                    onClick={onToggleExpand}
+                                    className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1 sm:gap-2 px-2.5 sm:px-4 h-6 rounded-xl hover:bg-surface-highlight transition-all"
+                                >
+                                    <Maximize2 className="w-4 h-4 shrink-0" />
+                                    <span className="flex flex-col items-center leading-tight text-center">
+                                        <span className="font-semibold whitespace-nowrap text-[10px] sm:text-xs">상세보기</span>
+                                        <span className="text-[9px] text-gray-500 hidden md:block">정의 · 해설 · 열린 질문</span>
+                                    </span>
+                                </button>
+                            </div>
+                            <div className="w-1" /> {/* Far Side Spacer (4px) */}
+                        </div>
+                    </div>
+
+                    {/* Visual Spacer: Header Bottom h-3 (12px) */}
+                    <div className="h-3" />
+                </div>
+            ) : (
+                /* Expanded Header Area */
+                <div className="w-full max-w-[1024px] mb-6 sticky top-0 z-40 bg-[var(--bg-primary)]/95 backdrop-blur border-b border-black/5 dark:border-white/10">
+                    <div className="h-3" /> {/* Header Top Spacer (12px) */}
+                    <div className="relative flex items-center justify-between h-6 box-content">
+                        <div className="w-1" /> {/* Far Side Spacer (4px) */}
+                        {/* Left: Status Badge Wrapper */}
+                        <div className="flex-1 flex items-center z-10">
+                            {videoStatus?.toUpperCase() === 'DONE' && (
+                                <div className="px-1 flex items-center h-6 gap-1 sm:gap-1.5 animate-fade-in transition-all">
+                                    <span className="text-green-500 text-[10px] sm:text-xs font-semibold whitespace-nowrap">
+                                        분석 완료
+                                    </span>
+                                </div>
+                            )}
+                            {isProcessing && (
+                                <div className="px-1 flex items-center h-6 gap-1 sm:gap-1.5 animate-pulse transition-all">
+                                    <span className="text-primary text-[10px] sm:text-xs font-semibold whitespace-nowrap">
+                                        <span className="sm:hidden">분석 중</span>
+                                        <span className="hidden sm:inline">{stageLabel}</span>
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Center: Title (Icon + Text) - Absolute Center */}
+                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1.5 sm:gap-2.5 whitespace-nowrap h-6 transition-all">
+                            <StickyNote className="w-4 h-4 text-primary shrink-0" />
+                            <h3 className="text-[var(--text-primary)] text-sm sm:text-lg font-bold tracking-tight m-0 leading-none">
+                                Real-time<span className="hidden sm:inline"> Summary</span>
+                            </h3>
+                            {items.length > 0 && (
+                                <span className="text-gray-400 text-[10px] sm:text-xs ml-0.5 leading-none">({items.length})</span>
+                            )}
+                        </div>
+
+                        {/* Right: Toggle Button Wrapper (Minimize) */}
+                        <div className="flex-1 flex justify-end z-10">
                             <button
                                 onClick={onToggleExpand}
-                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[var(--border-color)] hover:bg-surface-highlight transition-colors"
+                                className="text-gray-400 hover:text-[var(--text-primary)] text-xs flex items-center gap-1 sm:gap-2 px-2.5 sm:px-4 h-6 rounded-xl hover:bg-surface-highlight transition-all"
                             >
-                                <Maximize2 className="w-4 h-4" />
-                                <span className="flex flex-col items-start leading-tight">
-                                    <span className="font-medium">상세 보기</span>
-                                    <span className="text-[10px] text-gray-500">정의 · 해설 · 열린 질문</span>
+                                <Minimize2 className="w-4 h-4 shrink-0" />
+                                <span className="flex flex-col items-center leading-tight text-center">
+                                    <span className="font-semibold whitespace-nowrap text-[10px] sm:text-xs">간단히 보기</span>
+                                    <span className="text-[9px] text-gray-500 hidden md:block">리스트로 돌아가기</span>
                                 </span>
                             </button>
                         </div>
-                    </>
-                )}
+                        <div className="w-1" /> {/* Far Right Spacer (4px) */}
+                    </div>
+                    <div className="h-3" /> {/* Header Bottom Spacer (12px) */}
+                </div>
+            )}
 
-                {isExpanded && (
-                    <>
-                        <ProcessingStatusBar />
-                        <CompletedBanner />
-                        <FailedBanner />
-                    </>
-                )}
 
-                {/* Timeline */}
-                <div className={`flex flex-col gap-1 relative pl-2 ${isExpanded ? 'pt-4' : ''}`}>
-                    <div className="absolute left-[8.5rem] top-4 bottom-4 w-px bg-border-color hidden md:block"></div>
 
+            {/* 3. Timeline Area Wrapper */}
+            <div className={`w-full ${isExpanded ? 'max-w-[1024px]' : ''}`}>
+                <div className={`flex flex-col gap-3 relative ${isExpanded ? 'pt-4' : 'mt-4'}`}>
                     {initialLoading && items.length === 0 && (
                         <div className="flex justify-center py-8">
-                            <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                            <Loader2 className="w-5 h-5 animate-spin text-primary" />
                         </div>
                     )}
-
                     {!initialLoading && items.length === 0 && (
                         <div className="py-8 text-center text-gray-400 text-sm">
                             {isProcessing ? '요약이 생성되면 여기에 실시간으로 표시됩니다...' : '요약 데이터가 없습니다.'}
                         </div>
                     )}
-
                     {items.map((item, index) => renderSummaryItem(item, index))}
 
-                    {/* Skeleton: 다음 배치 대기 */}
+                    {/* Visual Spacer: List Bottom - Scales with ChatBot on Mobile */}
+                    <div className={`flex-none flex flex-col items-center justify-center transition-all duration-500 ${chatbotOpen ? 'h-[50dvh] lg:h-32' : 'h-32'}`}>
+                        <footer className="home-footer opacity-30 mt-auto">
+                            <p className="text-[var(--text-secondary)] text-[10px] md:text-xs">
+                                © 2026 Re:View. AI-Powered Video Analysis Platform
+                            </p>
+                        </footer>
+                    </div>
+
                     {isProcessing && (
                         <div className={`group flex flex-col md:flex-row gap-2 md:gap-8 ${isExpanded ? 'p-4 rounded-xl opacity-40' : 'p-3 rounded-lg opacity-40'} transition-colors`}>
                             <div className="md:w-24 shrink-0 flex md:justify-end">
