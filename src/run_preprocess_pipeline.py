@@ -27,7 +27,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -58,6 +60,7 @@ from src.db.pipeline_sync import (
 )
 from src.db.adapters import compute_config_hash
 from src.pipeline.benchmark import BenchmarkTimer, format_duration, get_video_info, print_benchmark_report
+from src.pipeline.cancel import PipelineCanceled, is_local_cancel_requested, raise_if_cancel_requested
 from src.pipeline.logger import pipeline_logger
 from src.pipeline.stages import run_capture, run_stt, run_stt_only, run_stt_from_storage
 from src.audio.extract_audio import extract_audio
@@ -248,6 +251,14 @@ def run_preprocess_pipeline(
         captures_dir = video_root / "captures"
         manifest_json = video_root / "manifest.json"
 
+        # Early cancel (e.g., user deleted the video while a BackgroundTask is running).
+        if db_context:
+            adapter, video_id, _preprocess_job_id = db_context
+            raise_if_cancel_requested(adapter, video_id)
+        else:
+            # No DB context: still honor same-process cancellation.
+            raise_if_cancel_requested(None, existing_video_id)
+
         print(f"\nStarting preprocessing (parallel={parallel})...")
         print("-" * 50)
 
@@ -271,7 +282,10 @@ def run_preprocess_pipeline(
             if db_context:
                 db_start = time.perf_counter()
                 adapter, video_id, preprocess_job_id = db_context
-                
+
+                # Don't upload artifacts after delete is requested.
+                raise_if_cancel_requested(adapter, video_id)
+                 
                 # [Fix] Capture 중복 업로드 방지
                 # 스트리밍으로 이미 업로드된 경우(skip_db_capture=True), 배치 업로드는 수행하지 않음
                 do_capture_sync = (stage == "capture" and not kwargs.get("skip_db_capture", False))
@@ -319,6 +333,10 @@ def run_preprocess_pipeline(
                 return
             adapter, video_id, preprocess_job_id = db_context
 
+            # Avoid frequent DB reads here; rely on local cancel marker for responsiveness.
+            if is_local_cancel_requested(video_id):
+                raise PipelineCanceled("local_cancel")
+
             try:
                 if event_type == "new":
                     # 단일 항목 리스트로 감싸서 업로드 재활용
@@ -354,6 +372,11 @@ def run_preprocess_pipeline(
         def handle_audio_stt_chain() -> Dict[str, Any]:
             """Audio 추출 → STT를 체인으로 실행."""
             nonlocal stt_elapsed
+            if db_context:
+                adapter, video_id, _ = db_context
+                raise_if_cancel_requested(adapter, video_id)
+            else:
+                raise_if_cancel_requested(None, existing_video_id)
             from src.audio.stt_router import load_audio_settings
             audio_settings = load_audio_settings()
             extract_settings = audio_settings.get("extract", {})
@@ -361,10 +384,14 @@ def run_preprocess_pipeline(
             codec_ext_map = {"pcm_s16le": ".wav", "flac": ".flac", "libmp3lame": ".mp3"}
             audio_ext = codec_ext_map.get(audio_codec, ".wav")
 
-            # (1) Audio Extract
-            audio_path = video_root / f"{video_name}{audio_ext}"
+            # (1) Audio Extract (메모리 처리 - 파일 저장 안 함)
             pipeline_logger.log("Audio", "Extracting...")
             start = time.perf_counter()
+
+            # 임시 파일 생성 (STT 분석용)
+            temp_audio_dir = tempfile.mkdtemp()
+            audio_path = Path(temp_audio_dir) / f"temp_audio{audio_ext}"
+
             extract_audio(
                 video_path,
                 output_path=audio_path,
@@ -376,7 +403,7 @@ def run_preprocess_pipeline(
             )
             elapsed_audio = time.perf_counter() - start
             timer.record_stage("audio", elapsed_audio)
-            _finalize_stage("audio", elapsed_audio, audio_path=audio_path)
+            _finalize_stage("audio", elapsed_audio, audio_path=None)  # audio_path는 저장하지 않음
 
             # (2) STT Analysis
             pipeline_logger.log("STT", "Analyzing...")
@@ -386,11 +413,24 @@ def run_preprocess_pipeline(
             stt_elapsed = elapsed_stt
             timer.record_stage("stt", elapsed_stt)
             _finalize_stage("stt", elapsed_stt, stt_payload=payload)
+
+            # 임시 오디오 파일 삭제
+            try:
+                shutil.rmtree(temp_audio_dir, ignore_errors=True)
+                pipeline_logger.log("Audio", "Temporary audio file cleaned up")
+            except Exception as e:
+                pipeline_logger.log("Audio", f"Warning: Failed to clean temp audio: {e}")
+
             return payload
 
         def handle_capture() -> List[Dict[str, Any]]:
             """캡처를 실행."""
             nonlocal capture_elapsed
+            if db_context:
+                adapter, video_id, _ = db_context
+                raise_if_cancel_requested(adapter, video_id)
+            else:
+                raise_if_cancel_requested(None, existing_video_id)
             pipeline_logger.log("Capture", "Extracting...")
             start = time.perf_counter()
             results = run_capture(
@@ -520,6 +560,41 @@ def run_preprocess_pipeline(
         print(f"Outputs: {rel_video_root}")
         print(f"Benchmark: {rel_report_path}")
         
+        if sync_to_db and db_context:
+            try:
+                _, video_id, _ = db_context
+                return video_id
+            except Exception:
+                pass
+        return None
+
+    except PipelineCanceled as exc:
+        # Canceled by user deletion request; exit quietly (no re-raise).
+        timer.end_total()
+        run_meta["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
+        run_meta["status"] = "canceled"
+        run_meta["error"] = str(exc)
+        run_meta.setdefault("durations_sec", {})
+        run_meta["durations_sec"]["total_sec"] = round(timer.get_total_elapsed(), 6)
+        run_meta_path.write_text(
+            json.dumps(run_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if sync_to_db and db_context:
+            try:
+                adapter, video_id, preprocess_job_id = db_context
+                finalize_preprocess_db_sync(
+                    adapter=adapter,
+                    video_id=video_id,
+                    preprocess_job_id=preprocess_job_id,
+                    run_meta=run_meta,
+                    errors=[f"canceled: {exc}"],
+                )
+            except Exception:
+                pass
+
+        print(f"\nPreprocessing canceled: {exc}")
         if sync_to_db and db_context:
             try:
                 _, video_id, _ = db_context

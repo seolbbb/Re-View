@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { Sun, Moon, LogOut } from 'lucide-react';
 import './Header.css';
 
 function Header() {
@@ -34,17 +35,14 @@ function Header() {
           )}
           <button className="theme-toggle" onClick={toggleTheme} aria-label="테마 변경">
             {theme === 'dark' ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="5" />
-                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-              </svg>
+              <Sun className="w-5 h-5" />
             ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
+              <Moon className="w-5 h-5" />
             )}
           </button>
-          <button className="btn-secondary" onClick={handleLogout}>로그아웃</button>
+          <button className="logout-btn" onClick={handleLogout} title="로그아웃">
+            <LogOut className="w-5 h-5" />
+          </button>
         </div>
       </div>
     </header>

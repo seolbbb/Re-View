@@ -11,6 +11,7 @@ class FakeAdapter:
                 "user_id": "owner",
                 "status": "FAILED",
                 "error_message": "boom",
+                "current_processing_job_id": "pj1",
             }
         }
         self.update_calls = []
@@ -55,6 +56,8 @@ def test_process_restart_marks_processing_and_clears_error(monkeypatch):
     assert adapter.videos["v1"]["error_message"] is None
     assert pipeline_calls and pipeline_calls[0]["video_id"] == "v1"
     assert pipeline_calls[0]["sync_to_db"] is True
+    assert pipeline_calls[0]["resume"] is True
+    assert pipeline_calls[0]["existing_processing_job_id"] == "pj1"
 
 
 def test_process_blocks_duplicate_run(monkeypatch):

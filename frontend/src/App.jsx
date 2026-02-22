@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { Analytics } from '@vercel/analytics/react';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider } from './context/AuthContext';
 import { VideoProvider } from './context/VideoContext';
@@ -29,6 +30,7 @@ function App() {
                 <ProtectedRoute><LoadingPage /></ProtectedRoute>
               } />
             </Routes>
+            <Analytics />
           </BrowserRouter>
         </VideoProvider>
       </AuthProvider>

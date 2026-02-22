@@ -124,6 +124,16 @@ export default function useVideoStatusStream(
       });
 
       if (!res.ok) {
+        // If the video was deleted, stop retrying and let the caller decide how to react.
+        if (res.status === 404) {
+          const err = new Error('Video not found');
+          err.status = 404;
+          stoppedRef.current = true;
+          setIsConnected(false);
+          setError(err);
+          if (onErrorRef.current) onErrorRef.current(err);
+          return;
+        }
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
 

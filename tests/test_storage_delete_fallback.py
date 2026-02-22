@@ -63,6 +63,8 @@ class FakeAdapter:
         self.s3_client = None
         self.r2_only = r2_only
         self.deleted_videos = []
+        self.delete_marks = []
+        self.delete_clears = []
         self.removed = []
         self.videos = {
             video_id: {
@@ -83,6 +85,18 @@ class FakeAdapter:
 
     def get_video(self, video_id: str):
         return self.videos.get(video_id)
+
+    def mark_video_delete_requested(self, video_id: str, *, when_iso: str | None = None) -> bool:
+        self.delete_marks.append((video_id, when_iso))
+        if video_id in self.videos:
+            self.videos[video_id]["delete_requested_at"] = when_iso or "now"
+        return True
+
+    def clear_video_delete_requested(self, video_id: str) -> bool:
+        self.delete_clears.append(video_id)
+        if video_id in self.videos:
+            self.videos[video_id]["delete_requested_at"] = None
+        return True
 
     def delete_video(self, video_id: str, user_id: str) -> bool:
         self.deleted_videos.append((video_id, user_id))

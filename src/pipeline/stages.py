@@ -110,6 +110,7 @@ from src.db.stage_uploader import (
     upload_judge_result,
     accumulate_segments_to_fusion,
 )
+from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 
 
 
@@ -327,6 +328,7 @@ def run_capture(
     output_base: Path,
     *,
     threshold: float,
+    dedupe_threshold: Optional[float] = None,
     min_interval: float,
     verbose: bool,
     video_name: str,
@@ -336,6 +338,7 @@ def run_capture(
 ) -> List[Dict[str, Any]]:
     """슬라이드 캡처를 실행하고 메타데이터 목록을 반환한다."""
     # Note: dedup_enabled is ignored - new HybridSlideExtractor always uses pHash+ORB dedup
+    # Note: dedupe_threshold is ignored - dedup thresholds are configured via config/capture/settings.yaml
     metadata = process_single_video_capture(
         str(video_path),
         str(output_base),
@@ -343,6 +346,7 @@ def run_capture(
         min_interval=min_interval,
         write_manifest=write_manifest,
         callback=callback,
+        video_name_override=video_name,
     )
     return metadata
 
@@ -695,8 +699,8 @@ def run_fusion_pipeline(
             config=config,
             segments_units_path=output_dir / "segments_units.jsonl",
             segment_summaries_path=output_dir / "segment_summaries.jsonl",
-            output_report_path=output_dir / "judge_report.json",
-            output_segments_path=judge_segments_path,
+            output_report_json=output_dir / "judge_report.json",
+            output_segments_jsonl=judge_segments_path,
             batch_size=config.judge.batch_size,
             workers=config.judge.workers,
             json_repair_attempts=config.judge.json_repair_attempts,
@@ -1075,6 +1079,8 @@ def run_batch_fusion_pipeline(
 
     first_batch = True
     for batch_idx, batch_info in enumerate(batch_ranges):
+        raise_if_cancel_requested(adapter, video_id)
+
         if batch_idx > 0:
             print(f"\n{_get_timestamp()} Waiting 5s to avoid API rate limiting...")
             t0 = time.perf_counter()
@@ -1135,6 +1141,7 @@ def run_batch_fusion_pipeline(
                 except Exception:
                     pass
 
+            raise_if_cancel_requested(adapter, video_id)
             t_vlm = time.perf_counter()
             vlm_info = run_vlm_for_batch(
                 captures_dir=captures_dir,
@@ -1157,6 +1164,7 @@ def run_batch_fusion_pipeline(
 
         # 2. DB Upload (VLM Results)
         if adapter and processing_job_id and sync_to_db:
+            raise_if_cancel_requested(adapter, video_id)
             status_map["DB"] = "UPLOAD..."
             _print_status()
             try:
@@ -1196,7 +1204,8 @@ def run_batch_fusion_pipeline(
         # Sync Engine
         # run_sync_engine 대신 run_batch_sync_engine 사용 (Time Range Filtering 지원)
         from src.fusion.sync_engine import run_batch_sync_engine
-        
+         
+        raise_if_cancel_requested(adapter, video_id)
         sync_result = run_batch_sync_engine(
             stt_json=stt_json,
             vlm_json=batch_dir / "vlm.json",
@@ -1238,9 +1247,10 @@ def run_batch_fusion_pipeline(
         last_batch_context = ""
 
         for attempt in range(1, 3):
+            raise_if_cancel_requested(adapter, video_id)
             if attempt > 1:
                 print(f"\n[Pipeline] Attempt {attempt}/2: Retrying fusion due to judge feedback...", flush=True)
-            
+             
             # 4. Summarize (LLM)
             status_map["Summarize"] = "RUNNING..."
             _print_status()
@@ -1291,21 +1301,17 @@ def run_batch_fusion_pipeline(
                 status_map["Judge"] = f"RUNNING.. {tokens} (token)"
                 _print_status()
 
+            raise_if_cancel_requested(adapter, video_id)
             t_judge = time.perf_counter()
             judge_result = run_judge(
                 config=config,
                 segments_units_path=batch_dir / "fusion" / "segments_units.jsonl",
                 segment_summaries_path=batch_dir / "fusion" / "segment_summaries.jsonl",
-                output_report_path=batch_dir / "judge_report.json",
-                output_segments_path=batch_dir / "judge_segments.jsonl",
+                output_report_json=batch_dir / "judge_report.json",
+                output_segments_jsonl=batch_dir / "judge_segments.jsonl",
                 write_outputs=True,
                 verbose=True,
-                batch_size=getattr(config.judge, "batch_size", 10),
-                workers=getattr(config.judge, "workers", 4),
-                json_repair_attempts=getattr(config.judge, "json_repair_attempts", 3),
                 limit=limit, 
-                status_callback=_judge_status_cb,
-                batch_label=f"Batch {current_batch_global_idx}",
             )
             batch_judge_elapsed = time.perf_counter() - t_judge
             total_judge_elapsed += batch_judge_elapsed
@@ -1361,6 +1367,7 @@ def run_batch_fusion_pipeline(
 
         # DB Upload (Fusion)
         if adapter and processing_job_id and sync_to_db:
+            raise_if_cancel_requested(adapter, video_id)
             try:
                 segment_map = {}
                 batch_units_path = batch_dir / "fusion" / "segments_units.jsonl"
@@ -1385,6 +1392,7 @@ def run_batch_fusion_pipeline(
 
         # 배치 완료 시 current_batch 진행률 업데이트 (total_batch는 건드리지 않음)
         if adapter and processing_job_id:
+            raise_if_cancel_requested(adapter, video_id)
             try:
                 # total=None으로 전달하여 current_batch만 업데이트
                 result = adapter.update_processing_job_progress(processing_job_id, current_batch_global_idx, None)

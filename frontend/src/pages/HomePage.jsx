@@ -61,11 +61,7 @@ function HomePage() {
             setVideos((prev) => (prev || []).filter((v) => v.id !== deleteTarget.id));
             window.dispatchEvent(new Event('videos:changed'));
         } catch (err) {
-            if (err?.status === 409) {
-                setError('아직 처리 중인 영상은 삭제할 수 없습니다.');
-            } else {
-                setError(err?.message || 'Failed to delete video');
-            }
+            setError(err?.message || 'Failed to delete video');
         } finally {
             setDeleteTarget(null);
         }
@@ -97,7 +93,7 @@ function HomePage() {
                             스마트하게 분석하세요
                         </h1>
                         <p className="hero-subtitle">
-                            영상을 업로드하면 AI가 자동으로 요약하고, 질문에 답변해드립니다
+                            영상을 업로드하면 AI가 자동으로 요약하고<br />질문에 답변해드립니다
                         </p>
                         <div className="hero-upload">
                             <UploadArea />
@@ -110,7 +106,7 @@ function HomePage() {
                 <section className="library-section">
                     <div className="section-header">
                         <div className="section-title-group">
-                            <h2><Library className="inline-block w-6 h-6 mr-2 align-text-bottom" /> 내 라이브러리</h2>
+                            <h2><Library className="inline-block w-6 h-6 mr-2 align-text-bottom text-primary" /> 내 라이브러리</h2>
                             <span className="video-count">{filtered.length}개 영상</span>
                         </div>
                         <div className="section-filters">
@@ -144,6 +140,7 @@ function HomePage() {
                                 <VideoCard
                                     id={video.id}
                                     title={video.name || video.original_filename}
+                                    thumbnail={video.thumbnail_url}
                                     thumbnailVideoId={video.id}
                                     duration={formatDuration(video.duration_sec)}
                                     date={formatDate(video.created_at)}

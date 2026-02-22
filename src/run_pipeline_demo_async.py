@@ -1,12 +1,24 @@
 """
-Queue/Event 기반 비동기 데모 파이프라인 엔트리포인트.
+[Intent]
+Queue/Event 기반 비동기 파이프라인의 메인 엔트리포인트입니다.
+비디오 입력으로부터 슬라이드 추출, 음성 분석, VLM 이미지 분석, 요약/평가까지
+전체 파이프라인을 asyncio.gather()로 병렬 실행합니다.
 
-실행 흐름:
-1) Producer: Audio/STT + Capture 이벤트 생성
-2) VLM Worker: Capture chunk를 VLM 처리
-3) Fusion Worker: STT gate 이후 Fusion/Summary/Judge 처리
+[Usage]
+- CLI에서 직접 실행: python src/run_pipeline_demo_async.py --video <path> [options]
+- 내부 모듈로 호출: run_async_demo() 함수를 직접 await
 
-세 워커를 `asyncio.gather()`로 동시에 실행한다.
+[Usage Method]
+- main() → argparse로 CLI 인자 파싱 → run_async_demo() 호출
+- run_async_demo() 내부 실행 흐름:
+  1) config/capture/settings.yaml → load_capture_settings() → CaptureSettings 로드
+  2) CaptureSettings의 12개 파라미터를 CaptureSttProducerConfig에 1:1 매핑
+  3) Producer(Capture+STT), VLM Worker, Fusion Worker를 asyncio.gather()로 동시 실행
+  4) sync_to_db=True 시 Supabase API로 진행 상태/결과 업로드
+
+- 실행 흐름:
+  Producer(Capture+STT) → capture_q → VLM Worker → vlm_done_q → Fusion Worker → fusion_q
+                        → stt_gate ────────────────────────────↗
 """
 
 from __future__ import annotations
@@ -54,6 +66,7 @@ from src.pipeline.producers_async import (
     CaptureSttProducerConfig,
 )
 from src.pipeline.vlm_worker_async import AsyncVlmWorker, VlmWorkerConfig
+from src.pipeline.cancel import PipelineCanceled, raise_if_cancel_requested
 
 QWEN_BASE_URL_DEFAULT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWEN_MODEL_DEFAULT = "qwen3-vl-32b-instruct"
@@ -287,6 +300,7 @@ async def run_async_demo(
     video_id = None
     preprocess_job_id = None
     processing_job_id = None
+    adapter_for_cancel = None
     if sync_to_db:
         from src.db import get_supabase_adapter
         from src.db.adapters import compute_config_hash
@@ -294,6 +308,7 @@ async def run_async_demo(
         adapter = get_supabase_adapter()
         if not adapter:
             raise RuntimeError("Supabase adapter not configured; set SUPABASE_URL/SUPABASE_KEY.")
+        adapter_for_cancel = adapter
 
         if existing_video_id:
             video_id = existing_video_id
@@ -388,9 +403,19 @@ async def run_async_demo(
             stt_backend=stt_backend,
             write_local_json=True,
             capture_batch_size=capture_batch_size,
+            # Capture settings from config/capture/settings.yaml
             capture_threshold=float(capture_settings.persistence_drop_ratio),
-            capture_dedupe_threshold=float(capture_settings.dedup_sim_threshold),
-            capture_min_interval=float(capture_settings.min_interval),
+            capture_sample_interval=float(capture_settings.sample_interval_sec),
+            capture_persistence_threshold=int(capture_settings.persistence_threshold),
+            capture_min_orb_features=int(capture_settings.min_orb_features),
+            capture_dedup_phash_threshold=int(capture_settings.dedup_phash_threshold),
+            capture_dedup_orb_distance=int(capture_settings.dedup_orb_distance),
+            capture_dedup_sim_threshold=float(capture_settings.dedup_sim_threshold),
+            capture_enable_roi_detection=bool(capture_settings.enable_roi_detection),
+            capture_roi_padding=int(capture_settings.roi_padding),
+            capture_enable_smart_roi=bool(capture_settings.enable_smart_roi),
+            capture_roi_warmup_frames=int(capture_settings.roi_warmup_frames),
+            capture_enable_adaptive_resize=bool(capture_settings.enable_adaptive_resize),
             capture_verbose=False,
         ),
     )
@@ -438,9 +463,69 @@ async def run_async_demo(
     fusion_task = asyncio.create_task(fusion_worker.run(), name="fusion_worker")
     core_tasks = [producer_task, vlm_task, fusion_task]
 
+    async def _watch_delete_requested() -> None:
+        # Block forever until a delete/cancel signal is observed.
+        # The caller cancels this task on normal completion/failure.
+        if not video_id:
+            while True:
+                await asyncio.sleep(3600)
+        while True:
+            raise_if_cancel_requested(adapter_for_cancel, video_id)
+            await asyncio.sleep(1)
+
+    cancel_watch_task = asyncio.create_task(_watch_delete_requested(), name="cancel_watcher")
+    # asyncio.gather() returns a Future (not a coroutine), so don't wrap it with create_task().
+    core_gather = asyncio.gather(*core_tasks)
+
     try:
-        producer_result, vlm_chunk_count, _fusion_processed = await asyncio.gather(*core_tasks)
+        done, _pending = await asyncio.wait(
+            {core_gather, cancel_watch_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if cancel_watch_task in done and not cancel_watch_task.cancelled():
+            cancel_exc: PipelineCanceled = PipelineCanceled("delete_requested")
+            try:
+                await cancel_watch_task
+            except PipelineCanceled as exc:
+                cancel_exc = exc
+            except Exception as exc:
+                cancel_exc = PipelineCanceled(str(exc))
+
+            await orchestrator.stop(reason="delete_requested")
+            for task in core_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*core_tasks, return_exceptions=True)
+            core_gather.cancel()
+            await asyncio.gather(core_gather, return_exceptions=True)
+            await fusion_consumer_task
+            await error_consumer_task
+
+            # 취소 상태 업데이트 (best-effort; the row may already be deleted).
+            if sync_to_db and processing_job_id:
+                try:
+                    from src.db import get_supabase_adapter
+                    adapter = get_supabase_adapter()
+                    if adapter:
+                        adapter.update_processing_job_status(
+                            processing_job_id, "FAILED", error_message=f"canceled: {cancel_exc}"
+                        )
+                        adapter.update_video_status(video_id, "FAILED", error=f"canceled: {cancel_exc}")
+                except Exception:
+                    pass
+
+            raise cancel_exc
+
+        # Core tasks finished first (success or failure).
+        cancel_watch_task.cancel()
+        await asyncio.gather(cancel_watch_task, return_exceptions=True)
+        producer_result, vlm_chunk_count, _fusion_processed = await core_gather
+
     except Exception as exc:
+        cancel_watch_task.cancel()
+        await asyncio.gather(cancel_watch_task, return_exceptions=True)
+
         for task in core_tasks:
             if not task.done():
                 task.cancel()
@@ -497,6 +582,10 @@ async def run_async_demo(
                         print(f"[DB] Warning: summary_results upsert failed: {summary_exc}")
             except Exception:
                 pass
+    finally:
+        if not cancel_watch_task.done():
+            cancel_watch_task.cancel()
+            await asyncio.gather(cancel_watch_task, return_exceptions=True)
 
     return AsyncDemoResult(
         run_id=run_id,

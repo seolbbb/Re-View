@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS videos (
     current_summary_result_id UUID,  -- FK added after summary_results created
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
+    delete_requested_at TIMESTAMPTZ,
     
     CONSTRAINT check_video_status CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'DONE', 'FAILED'))
 );
@@ -398,6 +399,11 @@ BEGIN
     ALTER TABLE videos DROP CONSTRAINT IF EXISTS check_video_status;
     ALTER TABLE videos ADD CONSTRAINT check_video_status
         CHECK (status IN ('UPLOADED', 'PREPROCESSING', 'PREPROCESS_DONE', 'PROCESSING', 'DONE', 'FAILED'));
+
+    -- videos.delete_requested_at 컬럼 추가 (처리 중 삭제/취소 신호용)
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'videos' AND column_name = 'delete_requested_at') THEN
+        ALTER TABLE videos ADD COLUMN delete_requested_at TIMESTAMPTZ;
+    END IF;
 
     -- stt_results.stt_id 컬럼 추가
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'stt_results' AND column_name = 'stt_id') THEN

@@ -6,7 +6,7 @@ export function ThemeProvider({ children }) {
     const [theme, setTheme] = useState(() => {
         // 로컬 스토리지에서 테마 불러오기
         const saved = localStorage.getItem('theme');
-        return saved || 'dark';
+        return saved || 'light';
     });
 
     useEffect(() => {

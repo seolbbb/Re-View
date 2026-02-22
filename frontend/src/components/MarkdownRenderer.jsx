@@ -4,6 +4,8 @@ import rehypeRaw from 'rehype-raw';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 
+const IS_DEV = Boolean(import.meta.env && import.meta.env.DEV);
+
 /**
  * Pre-process raw text so that markdown emphasis (**bold**, *italic*)
  * renders reliably regardless of surrounding punctuation or scripts.
@@ -20,6 +22,20 @@ import 'katex/dist/katex.min.css';
 function preprocessMarkdown(text) {
     if (!text) return text;
 
+    // Repair control characters that can be introduced when LaTeX backslashes are not
+    // JSON-escaped in model outputs (e.g. "\beta" in JSON becomes backspace + "eta").
+    // This makes KaTeX parsing reliable even if the upstream JSON escaping was imperfect.
+    const BS = '\b';
+    const FF = '\f';
+    const TAB = '\t';
+    const hadControlEscapes = text.includes(BS) || text.includes(FF) || text.includes(TAB);
+    // Avoid control-character regexes (eslint no-control-regex).
+    text = text
+        .split(BS).join('\\b')
+        .split(FF).join('\\f')
+        .split(TAB).join('\\t');
+    if (IS_DEV && hadControlEscapes) console.warn('[MarkdownRenderer] Repaired control characters in input.');
+
     const saved = [];
     let idx = 0;
     const protect = (html) => {
@@ -35,17 +51,19 @@ function preprocessMarkdown(text) {
     // Pre-render display math ($$...$$) with KaTeX, then protect
     text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, inner) => {
         try {
-            return protect(katex.renderToString(inner.trim(), { displayMode: true, throwOnError: false }));
-        } catch {
+            return protect(katex.renderToString(inner.trim(), { displayMode: true, throwOnError: false, output: 'html' }));
+        } catch (err) {
+            if (IS_DEV) console.warn('[MarkdownRenderer] KaTeX display math failed:', inner, err);
             return protect(_m);
         }
     });
 
     // Pre-render inline math ($...$) with KaTeX, then protect
-    text = text.replace(/\$([^\$\n]+?)\$/g, (_m, inner) => {
+    text = text.replace(/\$([^$\n]+?)\$/g, (_m, inner) => {
         try {
-            return protect(katex.renderToString(inner.trim(), { displayMode: false, throwOnError: false }));
-        } catch {
+            return protect(katex.renderToString(inner.trim(), { displayMode: false, throwOnError: false, output: 'html' }));
+        } catch (err) {
+            if (IS_DEV) console.warn('[MarkdownRenderer] KaTeX inline math failed:', inner, err);
             return protect(_m);
         }
     });
@@ -69,13 +87,16 @@ function preprocessMarkdown(text) {
     return text;
 }
 
-function MarkdownRenderer({ children, className = '' }) {
-    if (!children) return null;
-
-    const processed = useMemo(() => preprocessMarkdown(children), [children]);
+function MarkdownRenderer({ children, className = '', inline = false }) {
+    const raw = children == null ? '' : String(children);
+    const processed = useMemo(() => preprocessMarkdown(raw), [raw]);
+    if (!raw) return null;
 
     return (
-        <div className={`markdown-body ${className}`}>
+        <div
+            className={`markdown-body ${className}`}
+            style={inline ? { display: 'inline' } : undefined}
+        >
             <ReactMarkdown
                 rehypePlugins={[rehypeRaw]}
             >

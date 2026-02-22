@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { getMediaTicket } from '../api/videos';
+import { getMediaTicket, invalidateVideosCache } from '../api/videos';
 
 const AuthContext = createContext();
 
@@ -54,12 +54,27 @@ export function AuthProvider({ children }) {
             return;
         }
 
-        // 현재 세션 확인
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setUser(session?.user ?? null);
-            setLoading(false);
+        // 현재 세션 확인 → 먼저 기존 세션 사용자 세팅 후 백그라운드 refresh
+        supabase.auth.getSession().then(async ({ data: { session } }) => {
             if (session?.user) {
+                // 세션이 있으면 먼저 사용자 세팅 (네트워크 실패 시에도 로그아웃 안 됨)
+                setUser(session.user);
+                setLoading(false);
                 refreshMediaTicket();
+
+                // 백그라운드에서 토큰 갱신 시도
+                try {
+                    const { data, error } = await supabase.auth.refreshSession();
+                    if (!error && data.session?.user) {
+                        setUser(data.session.user);
+                    }
+                    // refresh 실패해도 기존 세션 유지 (onAuthStateChange가 만료 처리)
+                } catch {
+                    // 네트워크 일시 실패 — 기존 세션 유지
+                }
+            } else {
+                setUser(null);
+                setLoading(false);
             }
         });
 
@@ -70,6 +85,7 @@ export function AuthProvider({ children }) {
                 if (session?.user) {
                     refreshMediaTicket();
                 } else {
+                    invalidateVideosCache();
                     setMediaTicket(null);
                     setMediaTicketExpAt(0);
                     if (mediaTicketTimerRef.current) {
